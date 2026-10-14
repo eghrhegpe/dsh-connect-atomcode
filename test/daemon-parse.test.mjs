@@ -9,6 +9,7 @@ import {
   baseUrl,
   parseSseLine,
   defaultBinary,
+  spawnDaemon,
 } from '../lib/daemon.js';
 
 describe('daemon.js — pure helpers', () => {
@@ -70,3 +71,56 @@ describe('daemon.js — pure helpers', () => {
     assert.equal(ev.stop_reason, 'stopped');
   });
 });
+
+describe('daemon.js — spawnDaemon', () => {
+  it('a missing binary is logged, never an unhandled error that kills the host', async () => {
+    // Regression: Node reports ENOENT ASYNCHRONOUSLY on the child's 'error'
+    // event, not as a throw from spawn(). With no listener, the EventEmitter
+    // re-throws it as an uncaught exception — which took down the whole process
+    // (verified) and would take down the DSH host, since auto_start defaults on.
+    // If the guard regresses, THIS TEST PROCESS DIES rather than failing softly.
+    const logs = [];
+    const attempted = await spawnDaemon({
+      binary: 'definitely-not-a-real-binary-xyz-123',
+      log: (message) => logs.push(message),
+    });
+    assert.equal(attempted, true, 'the boolean means "a spawn was attempted", not "it succeeded"');
+    // Give the async 'error' event a chance to arrive.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.ok(
+      logs.some((line) => /spawn failed/i.test(line)),
+      `the async spawn failure must be reported through log(); got ${JSON.stringify(logs)}`,
+    );
+  });
+
+  it('survives a nonexistent working directory and reports it', async () => {
+    // A bad cwd fails inside uv_spawn, so it arrives the same async way as a
+    // missing binary. This asserts the REPORT, not just survival: the earlier
+    // version's `assert.ok(Array.isArray(logs))` was a tautology that could only
+    // fail by killing the process.
+    const logs = [];
+    await spawnDaemon({
+      binary: process.execPath,
+      workingDir: 'Z:\\definitely\\not\\a\\real\\directory\\xyz',
+      log: (message) => logs.push(message),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.ok(
+      logs.some((line) => /spawn failed/i.test(line)),
+      `a bad cwd must be reported through log(); got ${JSON.stringify(logs)}`,
+    );
+  });
+
+  it('a throwing log callback cannot re-arm the crash', async () => {
+    // The guard uses typeof, not truthiness: a truthy non-function (or a logger
+    // that throws) would otherwise throw inside the 'error' callback — itself an
+    // uncaught exception, i.e. the original crash reintroduced.
+    const attempted = await spawnDaemon({
+      binary: 'definitely-not-a-real-binary-xyz-123',
+      log: 'not-a-function',
+    });
+    assert.equal(attempted, true);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+});
+

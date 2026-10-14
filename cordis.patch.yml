@@ -16,10 +16,18 @@
 #                     subcommand (round + wall-clock fuses, structured JSON)
 #
 # Every knob is plain configuration — edit here, or override the same row id
-# in the profile's cordis.patch.yml, then reload. There is no API key to
-# configure: the bridge authenticates with the local ~/.atomcode daemon token
-# (ask) and the ~/.atomcode config (review); the gateway signature rides the
-# official AtomCode binary.
+# in the profile's cordis.patch.yml, then reload. There is no BRIDGE-side API
+# key: the bridge authenticates with the local ~/.atomcode daemon token (ask)
+# and the ~/.atomcode config (review).
+#
+# KNOWN LIMITATION (measured on atomcode 5.2.2): the review CLI cannot use
+# AtomGit-gateway or account-resolved providers — it resolves providers from
+# direct `[providers.<name>]` entries with a plain base_url + api_key only, and
+# refuses the AtomGit gateway outright ("signing-enforced gateway ... cannot
+# authenticate"). The daemon path (atomcode_ask) is unaffected. The plugin
+# probes ~/.atomcode/config.toml at mount and downgrades the atomcode_review
+# tool description when no usable direct provider exists, so the model is told
+# before it calls, not after it fails.
 - insert:
     - id: dsh-atomcode-bridge
       name: dsh-atomcode-bridge
@@ -41,12 +49,33 @@
         # independent of DSH's permission presets — review the trade-off
         # before leaving it on in a shared repo.)
         approval_mode: bypass
+        # Default review working directory (atomcode_review only). Empty = the
+        # HOST PROCESS's cwd, which is usually NOT the user's repository — set
+        # this if you rely on review without passing working_dir per call.
+        review_working_dir: ''
         # Default working directory for bridged turns (ask + review). Empty =
         # the tool arguments / daemon's own default.
         working_dir: ''
         # Where the side-conversation session map lives. Empty = the DSH home
         # convention (~/.dsh/state/dsh-atomcode-bridge/sessions.json).
         state_path: ''
+        # Ask-path agent round fuse. DEFAULT IS NOW BOUNDED (25) rather than
+        # unlimited: the bridge counts `tool_start` SSE events and stops
+        # waiting once the agent exceeds that many tool rounds, so a runaway
+        # or prompt-injected turn cannot spin forever. Set 0 to hand the budget
+        # back to the daemon's own loop (unbounded). NOTE: the fuse aborts the
+        # bridge's HTTP stream only; the daemon-side turn is not guaranteed to
+        # stop and may run to completion in the background — it is a "stop
+        # waiting" backstop, not a remote kill.
+        ask_max_rounds: 25
+        # Cooldown before a FAILED auto-start is retried. Without it the first
+        # failure (binary not yet installed, daemon wedged) would silence
+        # auto-start for the whole mount. 0 = retry on the next panel poll.
+        daemon_retry_secs: 60
+        # Session-key prefix, isolating concurrently running profiles (web +
+        # desktop) that share one state_path. Empty = auto-detect from
+        # $DSH_PROFILE / argv. Set explicitly when running a custom profile.
+        session_key_prefix: ''
         # Disable web_search for review runs (default true: this host's
         # network is proxy-gated; a stalled web_search would abort the run).
         # Set false to let reviews search the web when egress is available.
@@ -54,3 +83,15 @@
         # Review agent fuses: hard round cap and absolute wall-clock cap.
         review_max_rounds: 35
         review_max_duration_secs: 900
+        # CodingPlan quota refresh interval (seconds) for the detail-page panel.
+        # The daemon exposes no quota endpoint, so this drives a cached
+        # `POST /command {"command":"status"}` whose localized text is parsed.
+        # 0 disables the extra daemon call. Default 60 keeps a 5s panel poll from
+        # becoming a 5s daemon call.
+        quota_refresh_secs: 60
+        # How long to wait for a spawned daemon to answer /health before giving
+        # up (seconds). The daemon is started by the ask path AND by the stats
+        # route — so merely opening the plugin panel or showing the composer
+        # quota chip brings it up; no tool call is required. 0 = spawn without
+        # waiting. Default 30 (polled every 1.5s).
+        daemon_start_timeout_secs: 30

@@ -3,9 +3,16 @@
  *
  * Builds a scratch git repo with a planted off-by-one bug in an uncommitted
  * change, then runs the wrapper's real spawn path (`atomcode review --json`)
- * with tight fuses. Consumes one bounded review turn on the configured
- * default model; `--max-rounds 8` + `--max-duration 300` keep the cost
- * small. Run only via `npm run test:live`.
+ * with tight fuses. Consumes one bounded review turn on a usable provider.
+ *
+ * GATED TWICE. A run needs (a) a direct `[providers.<name>]` with a non-gateway
+ * base_url — on a host whose only models are AtomGit-gateway/account-resolved,
+ * the review CLI cannot authenticate at all ("missing base URL" /
+ * ATOMCODE_SIG_MISSING), so a green run there is impossible — and (b) an
+ * explicit opt-in to spend a real review turn:
+ *
+ *   PowerShell:  $env:ATOMCODE_LIVE_TURNS=1; npm run test:live
+ *   bash/zsh:    ATOMCODE_LIVE_TURNS=1 npm run test:live
  */
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
@@ -13,11 +20,26 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, before, after } from 'node:test';
-import { runReview } from '../lib/review.js';
+import { runReview, checkReviewProvision } from '../lib/review.js';
 
 const sh = (cmd, cwd) => execSync(cmd, { cwd, stdio: 'pipe' }).toString().trim();
 
-describe('review live — real CLI (skip if binary missing)', () => {
+// Decide the gate before collecting the suite. Two independent conditions: a
+// usable provider must exist, AND the caller must opt in to spending a real
+// review turn (`npm run test:live` is safe by default).
+const provision = checkReviewProvision();
+const turnsEnabled = process.env.ATOMCODE_LIVE_TURNS === '1';
+const skipReason = !provision.available
+  ? `review CLI has no usable provider on this host: ${provision.reason}`
+  : turnsEnabled
+    ? false
+    : 'consumes a real review turn (billed against the configured provider) — set ATOMCODE_LIVE_TURNS=1 to run';
+
+if (skipReason) {
+  console.log(`[review-live] SKIP — ${skipReason}`);
+}
+
+describe('review live — real CLI (skips when no usable direct provider)', { skip: skipReason }, () => {
   let repo;
   let review;
 
@@ -50,15 +72,11 @@ describe('review live — real CLI (skip if binary missing)', () => {
         '',
       ].join('\n'),
     );
-    // One bounded real review run.
-    // NOTE: this host's `default_provider` (AtomGit-*) is an account-resolved
-    // model that the review CLI cannot see (it only reads direct
-    // `[providers.<name>]` entries), so we pin the one provider entry that
-    // carries base_url + key on this machine. The daemon side (ask tool)
-    // resolves the account default fine — this nuance is specific to review.
+    // One bounded real review run, pinned to a provider the probe proved usable.
+    // Never pin a name from another machine: take the first usable entry.
     review = await runReview({
       workingDir: repo,
-      provider: 'agnes-3.0-flash',
+      ...(provision.providers.length > 0 ? { provider: provision.providers[0] } : {}),
       maxRounds: 8,
       maxDurationSecs: 300,
       noWeb: true,
@@ -66,7 +84,7 @@ describe('review live — real CLI (skip if binary missing)', () => {
   });
 
   after(() => {
-    rmSync(repo, { recursive: true, force: true });
+    if (repo) rmSync(repo, { recursive: true, force: true });
   });
 
   it('binary present and process exited 0', () => {

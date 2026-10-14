@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, it, before, after } from 'node:test';
 import {
   buildReviewArgs,
@@ -75,6 +75,22 @@ describe('review.js — argument construction', () => {
     assert.ok(argv.includes('--no-web'));
     const withWeb = buildReviewArgs({ noWeb: false });
     assert.ok(!withWeb.argv.includes('--no-web'));
+  });
+
+  it('a non-positive or non-finite fuse never reaches the CLI verbatim', () => {
+    // `--max-rounds -5` / `--max-duration 0` would be the CLI's guess to
+    // interpret; a zero round cap could abort the review immediately.
+    for (const bad of [-5, 0, -0.5, NaN, Infinity, -Infinity, null, undefined, '12']) {
+      const { argv } = buildReviewArgs({ maxRounds: bad, maxDurationSecs: bad });
+      assert.equal(argv[argv.indexOf('--max-rounds') + 1], '35', `maxRounds=${String(bad)} must fall back to 35`);
+      assert.equal(argv[argv.indexOf('--max-duration') + 1], '900', `maxDurationSecs=${String(bad)} must fall back to 900`);
+    }
+  });
+
+  it('positive fuses are forwarded, floored to whole seconds/rounds', () => {
+    const { argv } = buildReviewArgs({ maxRounds: 12.7, maxDurationSecs: 300.9 });
+    assert.equal(argv[argv.indexOf('--max-rounds') + 1], '12');
+    assert.equal(argv[argv.indexOf('--max-duration') + 1], '300');
   });
 
   it('working_dir and provider map to --repo / --provider', () => {
@@ -148,6 +164,44 @@ describe('review.js — run outcomes', () => {
     assert.match(r.error, /missing base URL/);
     assert.match(r.error, /default_provider/);
     assert.match(r.error, /\[providers\.<name>\]/);
+  });
+
+  it('a synchronous spawn throw is structured and leaks no temp diff file', async () => {
+    // buildReviewArgs has already written the diff to a temp dir by the time the
+    // spawner runs, so a throwing spawn must clean up before returning.
+    let tempDir = null;
+    setSpawnOverride((bin, args) => {
+      const i = args.indexOf('--diff-file');
+      tempDir = i >= 0 ? dirname(args[i + 1]) : null;
+      throw new Error('spawn EINVAL (simulated)');
+    });
+    const r = await runReview({ diffText: 'diff --git a/x b/x\n+1' });
+    assert.equal(r.ok, false);
+    assert.equal(r.exitCode, -1);
+    assert.match(r.error, /spawn failed/);
+    assert.ok(tempDir, 'the temp diff dir should have existed before the throw');
+    assert.equal(existsSync(tempDir), false, 'temp dir must be cleaned up when spawn throws synchronously');
+  });
+
+  it('the wall-clock backstop kills a stalled process and names the timeout', async () => {
+    // The plugin passes timeoutMs, so this fuse is live on the real path: a run
+    // that ignores its own --max-duration must not hang the bridge forever, and
+    // must not surface as a bare signal exit code.
+    setSpawnOverride(() => {
+      const c = new FakeChild({ stdout: 'partial findings' });
+      let exitCb;
+      c.on = (event, cb) => {
+        if (event === 'exit') exitCb = cb; // never auto-emitted: the run stalls
+      };
+      c.kill = () => {
+        if (exitCb) setImmediate(() => exitCb(null));
+      };
+      return c;
+    });
+    const r = await runReview({ task: 'x', timeoutMs: 60 });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /timed out after 60ms/);
+    assert.equal(r.report, 'partial findings', 'partial output is still handed back');
   });
 
   it('caller abort kills the child and reports canceled', async () => {

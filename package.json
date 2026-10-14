@@ -1,8 +1,8 @@
 {
   "name": "dsh-atomcode-bridge",
   "displayName": "DSH AtomCode Bridge",
-  "version": "0.3.0",
-  "description": "Bridge the locally signed-in AtomCode (official binary, terminal AI coding assistant) into DeepSeek Harness as side tools: `atomcode_ask` (daemon side-conversation with session continuity) and `atomcode_review` (one-shot bounded code review via the CLI, structured findings). No API key, no model-provider takeover — the bridge is intentionally tools-only.",
+  "version": "0.4.0",
+  "description": "Bridge the locally signed-in AtomCode (official binary, terminal AI coding assistant) into DeepSeek Harness as side tools: `atomcode_ask` (daemon side-conversation with session continuity, bounded by default) and `atomcode_review` (one-shot bounded code review via the CLI, with an explicit repository requirement). No API key, no model-provider takeover — the bridge is intentionally tools-only, and degrades loudly (never silently) when AtomCode's private protocol drifts.",
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
@@ -28,7 +28,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node test/daemon-parse.test.mjs && node test/review.test.mjs && node test/wiring.test.mjs && node test/daemon-live.test.mjs",
+    "test": "node test/daemon-parse.test.mjs && node test/daemon-stream.test.mjs && node test/review.test.mjs && node test/review-select.test.mjs && node test/wiring.test.mjs && node test/client-id.test.mjs && node test/client-fns.test.mjs && node test/ask-glue.test.mjs && node test/stats-route.test.mjs && node test/quota.test.mjs && node test/protocol.test.mjs",
     "test:live": "node test/daemon-live.test.mjs && node test/review-live.test.mjs"
   },
   "dsh": {
