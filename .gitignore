@@ -17,3 +17,7 @@ Thumbs.db
 # Temp / state writes
 *.tmp
 *.tmp.*
+
+# 参考文件
+
+upstream/
