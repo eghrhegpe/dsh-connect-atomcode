@@ -1,0 +1,55 @@
+{
+  "name": "dsh-atomcode-bridge",
+  "displayName": "DSH AtomCode Bridge",
+  "version": "0.3.0",
+  "description": "Bridge the locally signed-in AtomCode (official binary, terminal AI coding assistant) into DeepSeek Harness as side tools: `atomcode_ask` (daemon side-conversation with session continuity) and `atomcode_review` (one-shot bounded code review via the CLI, structured findings). No API key, no model-provider takeover — the bridge is intentionally tools-only.",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "atomcode",
+    "bridge",
+    "tools"
+  ],
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/daemon-parse.test.mjs && node test/review.test.mjs && node test/wiring.test.mjs && node test/daemon-live.test.mjs",
+    "test:live": "node test/daemon-live.test.mjs && node test/review-live.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ]
+    }
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yinyuan34513/dsh-atomcode-bridge.git"
+  },
+  "license": "MIT"
+}

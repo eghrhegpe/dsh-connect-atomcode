@@ -1,0 +1,175 @@
+/**
+ * review.test.mjs — unit tests for the `atomcode review` CLI wrapper.
+ * No binary needed: the spawner is a seam (`setSpawnOverride`), so argument
+ * construction, temp-diff handling, JSON capture and failure mapping are
+ * asserted against fake child processes.
+ */
+import assert from 'node:assert/strict';
+import { existsSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, it, before, after } from 'node:test';
+import {
+  buildReviewArgs,
+  resolveBinary,
+  runReview,
+  setSpawnOverride,
+  cleanupTempFiles,
+} from '../lib/review.js';
+
+class FakeChild {
+  constructor({ stdout = '', stderr = '', code = 0, stderrAsError = false } = {}) {
+    this.stdout = { on(event, cb) { if (event === 'data' && stdout) cb(stdout); } };
+    this.stderr = { on(event, cb) { if (event === 'data' && stderr) cb(stderr); } };
+    this.code = code;
+    this.emitted = false;
+    this.killed = false;
+    this.on = (event, cb) => {
+      if (event === 'exit' && !stderrAsError && !this.emitted) {
+        this.emitted = true;
+        setImmediate(() => cb(code));
+      } else if (event === 'error' && stderrAsError && !this.emitted) {
+        this.emitted = true;
+        setImmediate(() => cb(new Error('spawn atomcode.exe ENOENT')));
+      }
+    };
+    this.kill = (sig) => {
+      this.killed = true;
+      this.killedSignal = sig;
+    };
+  }
+}
+
+describe('review.js — argument construction', () => {
+  it('task mode skips diff selection', () => {
+    const { argv } = buildReviewArgs({ task: 'explain this module' });
+    assert.deepEqual(argv.slice(0, 3), ['review', '--task', 'explain this module']);
+    for (const flag of ['--base', '--staged', '--pr', '--diff-file']) assert.ok(!argv.includes(flag));
+  });
+
+  it('diff-text mode writes a temp file and passes --diff-file', () => {
+    const { argv, tempFiles } = buildReviewArgs({ diffText: 'diff --git a/x b/x\n+1' });
+    const idx = argv.indexOf('--diff-file');
+    assert.ok(idx >= 0);
+    const file = argv[idx + 1];
+    assert.ok(existsSync(file), 'temp diff file must exist for the run');
+    assert.equal(readFileSync(file, 'utf8'), 'diff --git a/x b/x\n+1');
+    assert.equal(tempFiles.length, 1);
+    cleanupTempFiles(tempFiles);
+    assert.ok(!existsSync(file), 'temp file is cleaned up');
+  });
+
+  it('selection precedence: diff_text > pr > staged > base', () => {
+    assert.ok(buildReviewArgs({ diffText: 'd', pr: 7, staged: true, base: 'main' }).argv.includes('--diff-file'));
+    assert.ok(buildReviewArgs({ pr: 7, staged: true, base: 'main' }).argv.includes('--pr'));
+    assert.ok(buildReviewArgs({ staged: true, base: 'main' }).argv.includes('--staged'));
+    assert.ok(buildReviewArgs({ base: 'main' }).argv.includes('--base'));
+  });
+
+  it('fuses and no-web defaults are always present', () => {
+    const { argv } = buildReviewArgs({});
+    assert.ok(argv.includes('--json'));
+    assert.ok(argv.includes('--no-telemetry'));
+    assert.ok(argv.includes('--max-rounds') && argv[argv.indexOf('--max-rounds') + 1] === '35');
+    assert.ok(argv.includes('--max-duration') && argv[argv.indexOf('--max-duration') + 1] === '900');
+    assert.ok(argv.includes('--no-web'));
+    const withWeb = buildReviewArgs({ noWeb: false });
+    assert.ok(!withWeb.argv.includes('--no-web'));
+  });
+
+  it('working_dir and provider map to --repo / --provider', () => {
+    const { argv } = buildReviewArgs({ workingDir: 'C:\\code\\repo', provider: 'AtomGit-glm5.3-flash' });
+    assert.ok(argv.includes('--repo'));
+    assert.ok(argv.includes('C:\\code\\repo'));
+    assert.ok(argv.includes('--provider'));
+    assert.ok(argv.includes('AtomGit-glm5.3-flash'));
+  });
+
+  it('resolveBinary precedence: config > env > platform default', () => {
+    assert.equal(resolveBinary('D:\\bin\\atomcode.exe'), 'D:\\bin\\atomcode.exe');
+    const saved = process.env.ATOMCODE_BIN;
+    try {
+      process.env.ATOMCODE_BIN = 'C:\\elsewhere\\atomcode.exe';
+      assert.equal(resolveBinary(''), 'C:\\elsewhere\\atomcode.exe');
+      process.env.ATOMCODE_BIN = '';
+      assert.equal(resolveBinary(''), process.platform === 'win32' ? 'atomcode.exe' : 'atomcode');
+    } finally {
+      if (saved === undefined) delete process.env.ATOMCODE_BIN;
+      else process.env.ATOMCODE_BIN = saved;
+    }
+  });
+});
+
+describe('review.js — run outcomes', () => {
+  before(() => setSpawnOverride((bin, args, opts) => new FakeChild({})));
+  after(() => setSpawnOverride(null));
+
+  it('exit 0 with stdout → ok:true, report captured', async () => {
+    setSpawnOverride(() => new FakeChild({ stdout: '{"findings":[]}' }));
+    const r = await runReview({ task: 'x' });
+    assert.equal(r.ok, true);
+    assert.equal(r.report, '{"findings":[]}');
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.error, '');
+  });
+
+  it('non-zero exit → ok:false with stderr detail', async () => {
+    setSpawnOverride(() => new FakeChild({ code: 2, stderr: 'git: not a repository' }));
+    const r = await runReview({ task: 'x' });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /exited 2/);
+    assert.match(r.error, /not a repository/);
+  });
+
+  it('spawn error (ENOENT) → ok:false, exitCode -1', async () => {
+    setSpawnOverride(() => new FakeChild({ stderrAsError: true }));
+    const r = await runReview({ task: 'x' });
+    assert.equal(r.ok, false);
+    assert.equal(r.exitCode, -1);
+  });
+
+  it('empty output on exit 0 → ok:false ("no output")', async () => {
+    setSpawnOverride(() => new FakeChild({ stdout: '   ' }));
+    const r = await runReview({ task: 'x' });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /no output/);
+  });
+
+  it('missing-base-URL failure carries the actionable provider hint', async () => {
+    setSpawnOverride(
+      () =>
+        new FakeChild({
+          code: 1,
+          stderr: 'AtomCode error: missing base URL: pass --base-url, set $ATOMCODE_BASE_URL, or add base_url to the config provider',
+        }),
+    );
+    const r = await runReview({ task: 'x' });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /missing base URL/);
+    assert.match(r.error, /default_provider/);
+    assert.match(r.error, /\[providers\.<name>\]/);
+  });
+
+  it('caller abort kills the child and reports canceled', async () => {
+    const makeHangingChild = () => {
+      const c = new FakeChild({ stdout: 'partial' });
+      let exitCb;
+      c.on = (event, cb) => {
+        if (event === 'exit') exitCb = cb; // captured but never auto-emitted
+      };
+      c.kill = (sig) => {
+        c.killed = true;
+        c.killedSignal = sig;
+        if (exitCb) setImmediate(() => exitCb(137));
+      };
+      return c;
+    };
+    setSpawnOverride(() => makeHangingChild());
+    const ctrl = new AbortController();
+    const p = runReview({ task: 'x', signal: ctrl.signal });
+    setTimeout(() => ctrl.abort(), 50);
+    const r = await p;
+    assert.equal(r.ok, false);
+    assert.match(r.error, /canceled/);
+  });
+});

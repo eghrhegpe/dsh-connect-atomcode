@@ -1,0 +1,56 @@
+# dsh-atomcode-bridge — the bundle's own patch layer.
+#
+# Mounts the AtomCode bridge plugin into the host Loader tree. The row `name`
+# below MUST equal this package.json's `name` verbatim (and the install
+# directory for a link: checkout): the host discovers bundles by comparing the
+# row specifier to the nearest manifest and silently drops a mismatch.
+#
+# v0.3 is intentionally TOOLS-ONLY: the original "ATOMCODE as model provider"
+# takeover was dropped on purpose — a full autonomous agent (own tool loop,
+# own system prompt, bypass approval) does not fit DSH's one-completion
+# socket (it breaks DSH's tool loop, punches through its permission model,
+# and re-feeds O(N²) tokens per turn). What the bridge offers instead:
+#   - atomcode_ask    side-conversation relay over the daemon /chat SSE,
+#                     with per-working_dir session continuity
+#   - atomcode_review  one-shot bounded code review via the CLI `review`
+#                     subcommand (round + wall-clock fuses, structured JSON)
+#
+# Every knob is plain configuration — edit here, or override the same row id
+# in the profile's cordis.patch.yml, then reload. There is no API key to
+# configure: the bridge authenticates with the local ~/.atomcode daemon token
+# (ask) and the ~/.atomcode config (review); the gateway signature rides the
+# official AtomCode binary.
+- insert:
+    - id: dsh-atomcode-bridge
+      name: dsh-atomcode-bridge
+      config:
+        # Loopback port for the ask-path daemon. Kept distinct from the
+        # AtomCode TUI's default 13456 so the two never collide.
+        port: 13459
+        # Probe /health on demand and, when nothing answers, spawn
+        # `atomcode daemon --port <port> --no-telemetry` detached. Set false
+        # to require a daemon you start yourself.
+        auto_start: true
+        # AtomCode binary name/path. Empty = PATH lookup (atomcode.exe on
+        # Windows, atomcode elsewhere); ATOMCODE_BIN env also works. The
+        # OFFICIAL signed binary is required for the default gateway models —
+        # a source build has no AtomGit gateway signature.
+        binary: ''
+        # Approval mode for bridged ask turns: bypass = AtomCode's own tools
+        # run unattended inside the turn. (This is AtomCode-side autonomy,
+        # independent of DSH's permission presets — review the trade-off
+        # before leaving it on in a shared repo.)
+        approval_mode: bypass
+        # Default working directory for bridged turns (ask + review). Empty =
+        # the tool arguments / daemon's own default.
+        working_dir: ''
+        # Where the side-conversation session map lives. Empty = the DSH home
+        # convention (~/.dsh/state/dsh-atomcode-bridge/sessions.json).
+        state_path: ''
+        # Disable web_search for review runs (default true: this host's
+        # network is proxy-gated; a stalled web_search would abort the run).
+        # Set false to let reviews search the web when egress is available.
+        review_no_web: true
+        # Review agent fuses: hard round cap and absolute wall-clock cap.
+        review_max_rounds: 35
+        review_max_duration_secs: 900
