@@ -265,6 +265,45 @@ describe('TOML provider parsing — quoted names must not become false negatives
     assert.doesNotThrow(() => parseTomlProviders('[[[broken\nproviders\n= = =\n'));
   });
 
+  it('strips INLINE comments and trailing whitespace from values', () => {
+    // The kv regex grabs everything to end-of-line, so a real-world line like
+    // `base_url = "http://127.0.0.1:8899/v1"  # 本地代理` used to parse as
+    // `http://127.0.0.1:8899/v1"  # 本地代理` — quote and comment included.
+    // The corrupted value feeds this plugin's own loopback/gateway decisions
+    // while the review CLI parses config.toml correctly itself: two parsers,
+    // one silently wrong.
+    const ps = parseTomlProviders([
+      '# leading comment',
+      '[providers.atomcode-local]',
+      'provider = "openai"',
+      'base_url = "http://127.0.0.1:8899/v1"  # 本地代理',
+      'api_key = "local-proxy-any-string"',
+      'model = "deepseek-ai/DeepSeek-V4-Flash" #no-space-comment',
+      '',
+      '[providers.ollama]',
+      "base_url = 'http://127.0.0.1:11434/v1'  ",
+      'model = "qwen3"',
+    ].join('\n'));
+    assert.equal(ps.length, 2);
+    const [first, second] = ps;
+    assert.equal(first.name, 'atomcode-local');
+    assert.equal(first.base_url, 'http://127.0.0.1:8899/v1', 'inline comment must not corrupt the value');
+    assert.equal(first.api_key, 'local-proxy-any-string');
+    assert.equal(first.model, 'deepseek-ai/DeepSeek-V4-Flash', '# without a space is still a comment');
+    assert.equal(second.name, 'ollama');
+    assert.equal(second.base_url, 'http://127.0.0.1:11434/v1', 'trailing whitespace must go');
+    assert.equal(second.model, 'qwen3');
+  });
+
+  it('accepts dashed KEYS (legal TOML bare keys)', () => {
+    // TOML bare keys may contain dashes; the old regex only allowed [a-zA-Z0-9_].
+    const ps = parseTomlProviders(['[providers.dash]', 'api-key = "sk-1"', 'base_url = "https://x.test/v1"'].join('\n'));
+    assert.equal(ps.length, 1);
+    assert.equal(ps[0].name, 'dash');
+    assert.equal(ps[0]['api-key'], 'sk-1');
+    assert.equal(ps[0].base_url, 'https://x.test/v1');
+  });
+
   it('collects several providers, including one without base_url', () => {
     const ps = parseTomlProviders([
       '[providers.a]',

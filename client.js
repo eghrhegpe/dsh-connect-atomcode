@@ -497,7 +497,8 @@
 			return "";
 		};
 		const catalog = Array.isArray(src.catalog) ? src.catalog.map(optionValue).filter(Boolean) : null;
-		const list = catalog === null ? [] : catalog.indexOf(panel) === -1 && panel ? [panel].concat(catalog) : catalog;
+		const pinned = panel ? [panel] : [];
+		const list = catalog === null ? pinned : catalog.indexOf(panel) === -1 ? pinned.concat(catalog) : catalog;
 		const options = [{
 			value: "",
 			label: fallbackLabel

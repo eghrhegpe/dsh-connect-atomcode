@@ -523,6 +523,22 @@ describe('providerSelectModel — one slot, one dropdown, one namespace', () => 
     assert.equal(foreign.value, 'X', 'and the pick it holds is still shown');
   });
 
+  it('keeps a panel pick VISIBLE when the catalogue is unfetchable', () => {
+    // A disabled select whose value has no matching <option> renders as
+    // "nothing selected" — the pick on disk must stay visible (红线 3).
+    const m = providerSelectModel(
+      { ask: { panel: 'atomcode-local', catalog: null, catalogError: 'daemon 未在线' } },
+      'ask',
+      ASK_FALLBACK
+    );
+    assert.equal(m.disabled, true);
+    assert.equal(m.value, 'atomcode-local');
+    assert.ok(
+      m.options.some((o) => o.value === 'atomcode-local'),
+      'the stored pick must be among the options even when the catalogue is null',
+    );
+  });
+
   it('reports an old host without the provider branch', () => {
     for (const missing of [undefined, null, {}, 'nope']) {
       const m = providerSelectModel(missing, 'ask', ASK_FALLBACK);

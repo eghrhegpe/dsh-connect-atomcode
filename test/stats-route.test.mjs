@@ -856,6 +856,79 @@ describe('stats route — auto-start on observation', () => {
       rmSync(dir2, { recursive: true, force: true });
     }
   });
+
+  it('answers promptly with a named reason when the daemon is wedged half-open', async () => {
+    // A daemon that accepts the TCP connection but never answers is the
+    // likeliest wedged state. The start-poll budget assumes "each probe fails
+    // fast" — a half-open socket violates that by definition, so the health
+    // probe itself needs a deadline or the route hangs forever and
+    // `daemon_start_timeout_secs` silently stops meaning anything.
+    const wedged = createServer(() => { /* accept, never respond */ });
+    const sockets = new Set();
+    wedged.on('connection', (s) => {
+      sockets.add(s);
+      s.on('close', () => sockets.delete(s));
+    });
+    await new Promise((resolve) => wedged.listen(0, '127.0.0.1', resolve));
+    try {
+      const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wedged-')), 'sessions.json');
+      const route = mountRoute({ statePath, port: wedged.address().port, extra: { auto_start: false } });
+      const startedAt = Date.now();
+      const { body } = await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
+      const elapsed = Date.now() - startedAt;
+      assert.equal(body.daemon.up, false, 'a wedged daemon is not up');
+      assert.equal(body.quota.available, false);
+      assert.match(body.quota.reason, /daemon 未运行/, 'and the reason names the state');
+      // The probe deadline is 5s; allow CI slack but fail on a hang.
+      assert.ok(elapsed < 9000, `the route must answer within the probe deadline, took ${elapsed}ms`);
+      rmSync(dirname(statePath), { recursive: true, force: true });
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise((resolve) => wedged.close(resolve));
+    }
+  });
+
+  it('answers promptly when /health is fine but /models hangs', async () => {
+    // The metadata probe had no deadline either: a daemon that is alive but
+    // stalled on /models would hang the route (and the ask dropdown) forever.
+    const half = createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', service: 'atomcode-daemon', version: '5.2.2-test' }));
+        return;
+      }
+      if (req.url === '/command') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ kind: 'status', text: '' }));
+        return;
+      }
+      // /models: accept, never respond.
+    });
+    const sockets = new Set();
+    half.on('connection', (s) => {
+      sockets.add(s);
+      s.on('close', () => sockets.delete(s));
+    });
+    await new Promise((resolve) => half.listen(0, '127.0.0.1', resolve));
+    try {
+      const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wedged-models-')), 'sessions.json');
+      const route = mountRoute({ statePath, port: half.address().port, extra: { auto_start: false } });
+      const startedAt = Date.now();
+      const { body } = await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
+      const elapsed = Date.now() - startedAt;
+      assert.equal(body.daemon.up, true, 'the daemon IS up — only /models is wedged');
+      assert.equal(body.provider.ask.catalog, null, 'the catalogue is reported unavailable, not empty');
+      assert.ok(
+        body.provider.ask.catalogError.length > 0,
+        'and the dropdown gets a named reason instead of a bare empty list',
+      );
+      assert.ok(elapsed < 9000, `the route must answer within the probe deadline, took ${elapsed}ms`);
+      rmSync(dirname(statePath), { recursive: true, force: true });
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise((resolve) => half.close(resolve));
+    }
+  });
 });
 
 /**

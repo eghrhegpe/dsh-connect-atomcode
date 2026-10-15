@@ -30,6 +30,7 @@
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { defaultBinary } from './daemon.ts';
 
 /** Spawn seam shape: the `child_process.spawn` surface this module calls. */
 type Spawner = (
@@ -130,14 +131,15 @@ export function setSpawnOverride(spawner?: Spawner | null) {
 
 /**
  * Resolve the AtomCode binary: explicit value > $ATOMCODE_BIN > platform
- * default (atomcode.exe on Windows, atomcode elsewhere).
+ * default (atomcode.exe on Windows, atomcode elsewhere). The platform default
+ * is reused from `daemon.ts` so the two host modules cannot drift apart.
  * @param {string} [configBinary]
  * @returns {string}
  */
 export function resolveBinary(configBinary?: string): string {
   if (typeof configBinary === 'string' && configBinary.trim() !== '') return configBinary.trim();
   if (process.env.ATOMCODE_BIN && process.env.ATOMCODE_BIN.trim() !== '') return process.env.ATOMCODE_BIN.trim();
-  return process.platform === 'win32' ? 'atomcode.exe' : 'atomcode';
+  return defaultBinary();
 }
 
 /**
@@ -228,6 +230,35 @@ export function cleanupTempFiles(tempFiles: string[] = []) {
 }
 
 /**
+ * Unquote one raw TOML value and strip an inline comment.
+ *
+ * The kv regex grabs everything to end-of-line, so a real-world line like
+ * `base_url = "http://127.0.0.1:8899/v1"  # 本地代理` used to parse as
+ * `http://127.0.0.1:8899/v1"  # 本地代理` — quote and comment included. That
+ * corrupted value feeds THIS plugin's own decisions (loopback detection,
+ * gateway filtering); the review CLI parses config.toml itself, so the two
+ * parsers can diverge silently. TOML comments start at '#' OUTSIDE a quoted
+ * string, so: quoted values end at their closing quote; bare values end at
+ * the first '#'.
+ *
+ * @param {string} raw
+ * @returns {string}
+ */
+function unquoteTomlValue(raw: string): string {
+  const v = (raw ?? '').trim();
+  if (v.startsWith('"')) {
+    const end = v.indexOf('"', 1);
+    return end === -1 ? v : v.slice(1, end);
+  }
+  if (v.startsWith("'")) {
+    const end = v.indexOf("'", 1);
+    return end === -1 ? v : v.slice(1, end);
+  }
+  const hash = v.indexOf('#');
+  return (hash === -1 ? v : v.slice(0, hash)).trim();
+}
+
+/**
  * Minimal TOML section parser: collect `[providers.<name>]` entries and their
  * keys from a config.toml string. Pure and exported so the quoted-name edge
  * cases can be unit-tested directly.
@@ -236,7 +267,8 @@ export function cleanupTempFiles(tempFiles: string[] = []) {
  * (`[providers."my provider"]` — a legal TOML key); the fully-quoted form
  * `["providers.x"]` is a single literal key, NOT a providers section, and is
  * deliberately ignored (its raw text starts with `"`, not `providers.`).
- * Values are unquoted on read. Keys may be bare or quoted (`"base_url" = "x"`).
+ * Values are unquoted on read (see `unquoteTomlValue`); keys may be bare,
+ * dashed, or quoted (`"base_url" = "x"`).
  *
  * @param {string} raw
  * @returns {Array<{name:string, [key:string]:string}>}
@@ -264,9 +296,9 @@ export function parseTomlProviders(raw: unknown): TomlProvider[] {
       Object.keys(currentEntries).forEach((k) => delete currentEntries[k]);
       continue;
     }
-    const kvMatch = line.match(/^("?[a-zA-Z_][a-zA-Z0-9_]*"?)\s*=\s*(.+)$/);
+    const kvMatch = line.match(/^("?[a-zA-Z_][a-zA-Z0-9_-]*"?)\s*=\s*(.+)$/);
     if (kvMatch && currentSection) {
-      currentEntries[(kvMatch[1] ?? '').replace(/^["']|["']$/g, '')] = (kvMatch[2] ?? '').replace(/^["']|["']$/g, '');
+      currentEntries[(kvMatch[1] ?? '').replace(/^["']|["']$/g, '')] = unquoteTomlValue(kvMatch[2] ?? '');
     }
   }
   pushSection();

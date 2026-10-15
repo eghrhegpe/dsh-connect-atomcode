@@ -377,10 +377,15 @@ export async function* streamChat(opts: StreamChatOptions) {
  * @param {Parameters<typeof streamChat>[0]} opts
  * @returns {Promise<{ok:boolean, reply:string, sessionId:string, tokens:number,
  *   toolCalls:number, tools:Array<{name:string, success:boolean}>, stopReason:string,
- *   provider:string, error:string}>} `ok:true` means a terminal `done` carrying
- *   deliverable content (or a legitimately empty turn with no unknown types);
- *   `error` may be non-empty ALONGSIDE ok:true — a mid-turn error event that a
- *   later `done` does not cancel. Callers must surface it, not branch on it.
+ *   provider:string, providerReported:boolean, error:string}>} `ok:true` means a
+ *   terminal `done` carrying deliverable content (or a legitimately empty turn
+ *   with no unknown types); `error` may be non-empty ALONGSIDE ok:true — a
+ *   mid-turn error event that a later `done` does not cancel. Callers must
+ *   surface it, not branch on it. `providerReported` is true only when
+ *   `provider` came from the daemon's own runtime_info; false means the
+ *   daemon never reported one and `provider` is the requested value echoed
+ *   back — surfaced per-turn so a protocol drift that drops runtime_info is
+ *   visible instead of silently masquerading as "the model that ran".
  */
 export async function askChat(opts: StreamChatOptions) {
   const events = [];
@@ -397,6 +402,7 @@ export async function askChat(opts: StreamChatOptions) {
   let tokens = 0;
   let sessionId = '';
   let realProvider = undefined;
+  let providerReported = false;
   let roundCount = 0;
   // The aggregation gate for drift: a turn that produced NO recognizable
   // signal at all (no text, no tool, no done/error, no session, no tokens)
@@ -407,7 +413,10 @@ export async function askChat(opts: StreamChatOptions) {
   for (const ev of events) {
     if (ev.type === 'text') reply += String(ev.content || '');
     else if (ev.type === 'session_assigned' && typeof ev.session_id === 'string') sessionId = ev.session_id;
-    else if (ev.type === 'runtime_info' && typeof ev.provider === 'string') realProvider = ev.provider;
+    else if (ev.type === 'runtime_info' && typeof ev.provider === 'string' && ev.provider !== '') {
+      realProvider = ev.provider;
+      providerReported = true;
+    }
     else if (ev.type === 'tool_start') {
       usedTools.push({ name: String(ev.name || 'tool'), success: false });
       roundCount += 1;
@@ -455,6 +464,8 @@ export async function askChat(opts: StreamChatOptions) {
     stopReason: done && typeof done.stop_reason === 'string' ? done.stop_reason : '',
     /** Actual provider name reported by the daemon SSE runtime_info event, or the explicit provider passed in opts, or 'default'. */
     provider: realProvider || opts.provider || 'default',
+    /** True only when `provider` above is the daemon's own runtime_info value. */
+    providerReported,
     /** Count of tool_start events in this turn (agent rounds). */
     roundCount,
     // `done` does NOT erase a mid-turn error event (v0.4.0's `ok ? '' : error`

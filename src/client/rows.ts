@@ -175,8 +175,12 @@ export function providerSelectModel(
     return '';
   };
   const catalog = Array.isArray(src.catalog) ? src.catalog.map(optionValue).filter(Boolean) : null;
-  // A pinned name the catalogue no longer offers stays visible.
-  const list = catalog === null ? [] : catalog.indexOf(panel) === -1 && panel ? [panel].concat(catalog) : catalog;
+  // A pinned name the catalogue can't vouch for (unfetchable, or a shape the
+  // host never sent) still stays VISIBLE — a disabled select whose value has
+  // no matching <option> renders as "nothing selected", which reads as a lie
+  // when a pick is actually on disk.
+  const pinned = panel ? [panel] : [];
+  const list = catalog === null ? pinned : catalog.indexOf(panel) === -1 ? pinned.concat(catalog) : catalog;
   const options = [{ value: '', label: fallbackLabel }].concat(list.map((n) => ({ value: n, label: n })));
   const effective = name(src.effective);
   const source = name(src.source);

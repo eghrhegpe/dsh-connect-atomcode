@@ -503,9 +503,12 @@ describe('lib/index.js — default_provider / review_default_provider (two names
   /**
    * Fake daemon: answers /health so the ask path proceeds, and records the
    * POST /chat body it was actually handed.
+   * @param {{ withRuntimeInfo?: boolean }} [opts] `withRuntimeInfo: false`
+   *   omits the runtime_info event — the protocol-drift shape where `provider`
+   *   degrades from a measured value to an echo of the request.
    * @returns {Promise<{port:number, chats:Array<object>, port_server:import('node:http').Server}>}
    */
-  async function startChatProbe() {
+  async function startChatProbe(opts = {}) {
     /** @type {Array<object>} */
     const chats = [];
     const server = createServer((req, res) => {
@@ -526,15 +529,17 @@ describe('lib/index.js — default_provider / review_default_provider (two names
         chats.push(body);
         const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
         res.writeHead(200, { 'content-type': 'text/event-stream' });
-        res.end(
-          sse([
-            // Echo the provider the client asked for, the way the real daemon's
-            // runtime_info does — so `result.provider` is checked against intent.
-            { type: 'runtime_info', provider: body.provider || 'AtomGit-qwen3.8-27b', model: 'probe-model' },
-            { type: 'text', content: 'OK' },
-            { type: 'done', tokens: 12, tool_calls: 0, session_id: 'sid-probe', stop_reason: 'stopped' },
-          ]),
+        const events = [];
+        if (opts.withRuntimeInfo !== false) {
+          // Echo the provider the client asked for, the way the real daemon's
+          // runtime_info does — so `result.provider` is checked against intent.
+          events.push({ type: 'runtime_info', provider: body.provider || 'AtomGit-qwen3.8-27b', model: 'probe-model' });
+        }
+        events.push(
+          { type: 'text', content: 'OK' },
+          { type: 'done', tokens: 12, tool_calls: 0, session_id: 'sid-probe', stop_reason: 'stopped' },
         );
+        res.end(sse(events));
       });
     });
     openServers.push(server);
@@ -543,8 +548,8 @@ describe('lib/index.js — default_provider / review_default_provider (two names
   }
 
   /** Mount the plugin against the probe daemon and hand back the ask tool. */
-  async function mountAsk(extraConfig, picks) {
-    const probe = await startChatProbe();
+  async function mountAsk(extraConfig, picks, probeOpts) {
+    const probe = await startChatProbe(probeOpts);
     const dir = mkdtempSync(join(tmpdir(), 'atomcode-dp-'));
     stateDirs.push(dir);
     // The panel writes provider.json through the route; a test pre-seeds the same
@@ -566,6 +571,30 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
     return { ask, chats: probe.chats, calls, dir };
   }
+
+  it('flags an echoed provider when the daemon omits runtime_info', async () => {
+    // `provider=` is documented as the daemon's MEASURED value ("not an echo
+    // of what we asked for"). When a protocol drift drops runtime_info, the
+    // value silently degrades to an echo — the turn must say so per-turn
+    // instead of masquerading as the model that ran.
+    const { ask } = await mountAsk({}, undefined, { withRuntimeInfo: false });
+    const r = await ask.execute({ message: 'hi', provider: 'AtomGit-glm5.3-flash' }, {});
+    assert.equal(r.ok, true);
+    assert.equal(r.provider, 'AtomGit-glm5.3-flash', 'echoed when the daemon reports nothing');
+    assert.equal(r.providerReported, false, 'the echo must be flagged');
+    const text = ask.output.render({}, r).map((p) => p.text).join('\n');
+    assert.match(text, /未经远端证实/, 'the render must carry the caveat');
+  });
+
+  it('reports providerReported: true for a normal turn', async () => {
+    const { ask } = await mountAsk({}, undefined, { withRuntimeInfo: true });
+    const r = await ask.execute({ message: 'hi', provider: 'AtomGit-glm5.3-flash' }, {});
+    assert.equal(r.ok, true);
+    assert.equal(r.provider, 'AtomGit-glm5.3-flash');
+    assert.equal(r.providerReported, true, 'runtime_info arrived — this is a measured value');
+    const text = ask.output.render({}, r).map((p) => p.text).join('\n');
+    assert.doesNotMatch(text, /未经远端证实/, 'no caveat when the daemon reported the provider');
+  });
 
   it('both parameter comments state ONE precedence — and it is the real one', () => {
     // Comments have no tests, which is exactly why three stale ones shipped in a

@@ -62,7 +62,14 @@ function writeJson(res: any, status: number, body: unknown, headers?: Record<str
   res.end(JSON.stringify(body));
 }
 
-/** Reject cross-origin reads: the panel and the host share one origin. */
+/**
+ * Reject cross-origin reads: the panel and the host share one origin.
+ *
+ * Honest scope: this is a CSRF gate, not an authentication gate — a browser
+ * always sends Origin on cross-origin writes, but any same-machine process
+ * can simply omit the header and pass. That is acceptable here because the
+ * only write route (`/provider`) touches the plugin's OWN state file.
+ */
 function sameOrigin(request: any) {
   const reqHeaders = request && request.headers;
   const host = reqHeaders ? reqHeaders.host || reqHeaders.Host : undefined;
@@ -346,6 +353,18 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
       : 30;
   /** The start poll ticks every 1.5s; a 0s budget spawns without waiting. */
   const daemonStartAttempts = Math.max(0, Math.ceil((daemonStartTimeoutSecs * 1000) / 1500));
+  /**
+   * Hard deadline for the daemon's liveness and metadata probes. Loopback
+   * answers in single-digit milliseconds when healthy, so real elapsed time
+   * here means the daemon is wedged half-open. Every other wait in this plugin
+   * has a budget (`runCommand`'s internal timeout, `streamChat`'s timeoutMs,
+   * the review wall-clock fuse, the panel's client-side deadline) — the two
+   * calls that decide whether the daemon is alive AT ALL were the only ones
+   * without one, which left `daemon_start_timeout_secs` (a budget built on
+   * "each poll fails fast") silently ineffective in exactly the wedged state
+   * it was configured for.
+   */
+  const DAEMON_PROBE_TIMEOUT_MS = 5_000;
   // Cooldown before a FAILED auto-start is retried. Without this the shared
   // start promise is a permanent tombstone: the first failure (binary not yet
   // installed, daemon wedged) would silence auto-start for the whole mount,
@@ -438,7 +457,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
   async function refreshHealth(force = false) {
     if (!force && Date.now() - stats.lastHealthAt < 5000) return stats.daemonUp;
     try {
-      const info = await healthInfo(port);
+      const info = await healthInfo(port, AbortSignal.timeout(DAEMON_PROBE_TIMEOUT_MS));
       stats.daemonUp = info.up;
       // Surface which daemon protocol generation we are talking to (the panel
       // shows it; an unknown major is the plugin's earliest drift signal).
@@ -662,7 +681,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
       return;
     }
     try {
-      const list = await listModels(port);
+      const list = await listModels(port, AbortSignal.timeout(DAEMON_PROBE_TIMEOUT_MS));
       stats.modelCatalog = Array.isArray(list)
         ? list
             .filter((m) => m && typeof m.provider === 'string' && m.provider !== '')
@@ -724,7 +743,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
         provider: { type: 'string', description: '可选：点名 AtomCode 模型档位，传它就换本次回合用的模型。名字以 daemon GET /models 的 provider 字段为准（如 "AtomGit-glm5.3-flash"），不要传裸模型 id（"glm5.3-flash"）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
         working_dir: { type: 'string', description: '可选：回合的工作目录，同时是侧边对话的会话键；缺省用插件配置' },
         timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800' },
-        max_rounds: { type: 'number', description: '可选：agent 工具调用轮数上限（默认取插件配置，当前 25）。超限只中止本端等待并返回错误，不保证停掉 daemon 侧回合' },
+        max_rounds: { type: 'number', description: '可选：工具调用轮数上限（按 daemon SSE 的 tool_start 事件计数；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数。默认取插件配置，当前 25）。超限只中止本端等待并返回错误，不保证停掉 daemon 侧回合' },
       },
       required: ['message'],
     },
@@ -739,7 +758,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
           truncated: { type: 'boolean', description: 'reply 超过上限被截断（截断处有标记；让 AtomCode 把长内容落盘再读，别只靠这一份摘要）' },
           tokens: { type: 'number' },
           tool_calls: { type: 'number' },
-          round_count: { type: 'number' },
+          round_count: { type: 'number', description: '本回合 tool_start 事件数（≤ agent 轮数；并行工具会多次计数）' },
           tools: {
             type: 'array',
             items: {
@@ -751,9 +770,10 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
           },
           stop_reason: { type: 'string' },
           provider: { type: 'string' },
+          providerReported: { type: 'boolean', description: 'provider 是否来自 daemon SSE 的 runtime_info（true = 远端实测值；false = daemon 未报，回显本插件请求值、未经远端证实——daemon 升级后若不再发 runtime_info，每回合都会带 false 并标注）' },
           error: { type: 'string' },
         },
-        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'stop_reason', 'provider', 'error'],
+        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'stop_reason', 'provider', 'providerReported', 'error'],
         additionalProperties: false,
       },
       render(_args: any, value: any) {
@@ -770,6 +790,9 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
           }
           if (value.truncated) {
             lines.push('[注意：reply 已截断，让 AtomCode 把完整内容写到文件里再读]', '');
+          }
+          if (value.providerReported === false) {
+            lines.push('[注意：daemon 未报 runtime_info，provider= 是本插件回传请求值、未经远端证实（daemon 可能已升级）]', '');
           }
           const meta = [];
           meta.push(`session_id=${value.session_id}`);
@@ -803,6 +826,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
         tools: [],
         stop_reason: '',
         provider: askProvider || 'default',
+        providerReported: false,
         error,
       });
       const workDir =
@@ -903,6 +927,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
         tools: result.tools,
         stop_reason: result.stopReason,
         provider: result.provider,
+        providerReported: result.providerReported,
         error: result.error,
       };
     },
@@ -1168,6 +1193,14 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
           // list. Sync read of a ~200-byte file, then one cached metadata call.
           refreshPanelState();
           await refreshModelCatalog();
+          // HEAD gets headers only — a body on HEAD violates HTTP semantics.
+          // The panel only ever GETs, but the method gate above lets HEAD
+          // through deliberately, so honor it correctly here.
+          if (request.method === 'HEAD') {
+            response.writeHead(200, { 'cache-control': 'no-store' });
+            response.end();
+            return;
+          }
           writeJson(response, 200, buildStatsBody(stats, quota), { 'cache-control': 'no-store' });
         },
       })
