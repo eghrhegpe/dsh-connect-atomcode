@@ -14,6 +14,18 @@ import { fileURLToPath } from 'node:url';
 import { describe, it, after } from 'node:test';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+// Every path here is a BUILD ARTIFACT (`npm run build`), not a source: the host
+// half is now generated from `src/host/*.ts` into `lib/*.js`, exactly as the
+// client half is generated from `src/client/*.ts` into `client.js`.
+//
+// These must stay on the ARTIFACTS, and that is load-bearing rather than
+// stylistic: `wiring` installs the fake review spawner through
+// `setSpawnOverride`, which is module-level state. `lib/index.js` imports
+// `./review.js`, so the override only reaches it when the test and the plugin
+// hold the SAME module instance. Pointing this at `src/host/review.ts` instead
+// gives the test a private copy, the override lands on a module nobody calls,
+// and the suite drives the REAL review CLI. `test/build-gate.test.mjs` is what
+// guarantees these artifacts are a faithful build of `src/`.
 const BRIDGE = join(__dirname, '..', 'lib', 'index.js');
 const REVIEW = join(__dirname, '..', 'lib', 'review.js');
 const SESSIONS = join(__dirname, '..', 'lib', 'sessions.js');
@@ -277,7 +289,7 @@ describe('lib/index.js — ask safety defaults', () => {
   });
 });
 
-describe('lib/sessions.js — key prefixing', () => {
+describe('src/host/sessions.ts — key prefixing', () => {
   it('prefix isolates keys', async () => {
     const f = mkdtempSync(join(tmpdir(), 'atomcode-sess-'));
     const p = join(f, 's.json');
@@ -428,7 +440,7 @@ describe('lib/index.js — cancelled startup', () => {
   });
 });
 
-describe('lib/review.js — checkReviewProvision', () => {
+describe('src/host/review.ts — checkReviewProvision', () => {
   it('returns available=false with reason on absent config.toml', async () => {
     const { checkReviewProvision } = await import(fileUrl(REVIEW));
     const r = checkReviewProvision(join(tmpdir(), 'atomcode-nonexistent-999'));

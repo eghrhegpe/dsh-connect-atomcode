@@ -7,6 +7,10 @@
 
 本文件是**纪律文件不是教程**：钉死红线、验证、导航，不教一步步做。
 
+> 📌 **下表里的 `lib/*.js` 与 `client.js` 现在都是构建产物，不是源码。**要改行为一律改 `src/`
+> （host → `src/host/*.ts`，client → `src/client/*.ts`），跑 `npm run build` 后再提交——
+> 直接改产物的改动下一次构建就没了。细节见「工作目录与装载方式」。
+
 | 你的任务 | 第一站（先读） | 第二站（再读） | 动手前确认 |
 |---|---|---|---|
 | **额度读数改了不显示 / 位置不对** | 本文件红线 7（座位怎么挑） | `dsh-cordis-client-runner/lib/client.js` 里 `key: "conversation.composer.dock"` 的契约（`kind`/`scope`/`occupants`） | 座位的**摘要**是不是"ambient entries"这一类，而不是按名字挑 |
@@ -46,13 +50,18 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
   **源码与产物一起提交**。浏览器与 Host 执行的是磁盘上的**产物**，所以"只改源码不构建"= 改动不生效，
   "只改产物不改进源码"= 下一次构建就被抹掉。两条都由 `test/build-gate.test.mjs` 拦：
   它用真 `tsdown.config.mjs` 重跑一次构建，要求与提交的产物**逐字节**相同，跑不干净就红。
-- ⚠️ **迁移是分阶段的，两半现在不是同一种东西**（别按一半的规矩推另一半）：
-  · **client 半边已迁移完**——真源是 `src/client/*.ts`，`client.js` 是它的**构建产物**（IIFE）。
-    改面板 / 样式 / 额度渲染 / 座位，**只改 `src/client/`**，然后 `npm run build`。
-  · **host 半边还没迁移**——`lib/*.js` 仍**是手写源码**，`src/host/` 还不存在，
-    `tsdown.config.mjs` 里的 `host` 条目**还注释着**（指向不存在的入口会让 `npm run build` 直接失败）。
-    改 `lib/` 就是改源码，改完直接生效、不需要构建。
-  · 两半都进 `src/` 之后，**这一段要收成一句话**——别让它烂在这里当第二份真相。
+- ⚠️ **两半都已迁移，但产物的形状不一样**（别拿一半的形状推另一半）：
+  · **client 半边**：真源 `src/client/*.ts` → 产物 **`client.js`（单个 IIFE，在包根）**。
+    改面板 / 样式 / 额度渲染 / 座位，只改 `src/client/`。
+  · **host 半边**：真源 `src/host/*.ts` → 产物 **`lib/*.js`（每个源文件一个 ESM 文件，不是单包）**。
+    `lib/` 刻意**不打包成一个文件**：`wiring` / `protocol` 这些套件要往 `lib/review.js` 里装
+    假 spawner（`setSpawnOverride`，模块级状态），而 `lib/index.js` 是 `import './review.js'` 用它的。
+    一旦把它们捆成一坨，测试装的那份就成了**没人调用的私副本**，于是真的去跑 review CLI 了——
+    这个坑踩过，见 `tsdown.config.mjs` 的 `host` 条目注释。
+  · 两半都是"改 `src/` → `npm run build` → 提交源码+产物"，都由 `build-gate` 盯着。
+- **测试一律打产物，不打 `src/`**（与 client 侧 `client-id` / `client-fns` 载入 `client.js` 同规矩）：
+  产物才是真正跑起来的东西，而 build-gate 保证产物就是 `src/` 的忠实构建。改测试导入时**别图省事
+  指向 `src/host/*.ts`**——见上一条，那会让模块级接缝失效。
 - 桌面端走安装副本；以 `~/.dsh/profiles/{web,desktop}/node_modules` 里的实际 junction 为准。
 - **产物不许删、不许 gitignore**：pnpm 拒绝为 git 依赖跑构建脚本
   （`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，逃生阀是安装方没有的 `allowBuilds`），
@@ -90,8 +99,8 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 ## 面板的显示纪律（2026-10 那张卡被用户嫌弃"又丑又多字"之后写的）
 
 **先说一条元纪律（下面所有教训都是它的实例）：注释也是契约，而注释没有测试。**
-（**client 半边的契约注释现在住在 `src/client/*.ts`**：产物 `client.js` 里的函数体注释会被
-打包器抹掉——见「工作目录与装载方式」。改注释改 `src/`。）
+（**契约注释现在都住在 `src/`**：client 的产物 `client.js` 会被打包器抹掉函数体注释，见
+「工作目录与装载方式」。改注释改 `src/client/*.ts` / `src/host/*.ts`。）
 本仓库一个回合内放出过三条**过期注释**：`cordis.patch.yml` 里 `default_provider` 同时挂着
 两段互相矛盾的 `Precedence:`（加面板时漏删了旧那段）、`review_working_dir` 描述了一个
 **代码刻意拒绝**的回退（"空 = 用 host 进程 cwd"，而 `lib/index.js` 是明说不猜仓库并拒绝调用）、
@@ -184,7 +193,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
   链的名单看 `package.json` 的 `scripts.test`。**只看自己域的增减**，别去对总数。
 - `npm test` **不消耗额度**、不联网：全部用假 daemon / 假 spawn / 纯函数。
 - `test:live` 默认也**不消耗额度**——只有 `ATOMCODE_LIVE_TURNS=1` 才会跑真实回合。
-- **动了契约/接缝文件，跑全量**：`src/**`（含它构建出的 `client.js`）、`lib/index.js`、`cordis.patch.yml`、`package.json`。
+- **动了契约/接缝文件，跑全量**：`src/**`（含它构建出的 `client.js` 与 `lib/*.js`）、`cordis.patch.yml`、`package.json`。
   消费者不可枚举——按域裁剪会漏掉跨域契约。判断标准：这个文件的消费者我数得清吗？数不清就全量。
 - **改了 `src/` 就跑 `npm run typecheck` + `npm run build` + `npm test`**：`typecheck` 是
   `tsc --noEmit`（strict），`build-gate` 那条会替你确认产物没落后于源码。

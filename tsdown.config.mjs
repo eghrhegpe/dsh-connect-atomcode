@@ -1,7 +1,7 @@
 // @ts-check
 /**
- * Build configuration — `src/` holds the sources; the root `client.js` and (once the
- * host half lands) `lib/` are ARTIFACTS that stay VERSIONED.
+ * Build configuration — `src/` holds the sources; the root `client.js` and everything
+ * under `lib/` are ARTIFACTS that stay VERSIONED.
  *
  * Why the artifacts are committed rather than gitignored (this is a contract, not a
  * preference): the DSH marketplace installs plugins with pnpm, and pnpm refuses to run
@@ -15,13 +15,8 @@
  *
  * This repository previously had NO build layer on purpose ("edit and refresh"), which
  * is why `AGENTS.md` said so. That changed; the discipline now is "edit `src/`, run
- * `npm run build`, commit both".
- *
- * ⚠️ The migration is being done in two phases (client, then host). The host entry is
- * NOT here yet on purpose: it is added together with `src/host/`, because pointing an
- * entry at a file that does not exist makes `npm run build` fail outright. Until then
- * `lib/` is still the hand-written host half, and only the client half is a build
- * output.
+ * `npm run build`, commit both". Both halves are migrated: the client is an IIFE at the
+ * package root, the host is one ESM file per source module under `lib/`.
  *
  * Chunk/entry names carry NO content hash: a rebuild then rewrites the same filenames
  * in place, so `git status` shows one `M` per changed file instead of a `D` plus an
@@ -33,23 +28,42 @@ import { defineConfig } from "tsdown";
 const NEVER_BUNDLE_HOST = ["@deepseek-ai/cordis"];
 
 export default defineConfig([
-  // ── The host entry is added in the host phase, together with `src/host/`. ──
-  // {
-  //   name: "host",
-  //   entry: ["src/host/index.ts"],
-  //   outDir: "lib",
-  //   format: "esm",
-  //   platform: "node",
-  //   target: "es2023",
-  //   splitting: false,
-  //   clean: true,
-  //   minify: false,
-  //   sourcemap: false,
-  //   dts: false,
-  //   outExtensions: () => ({ js: ".js" }),
-  //   outputOptions: { entryFileNames: "index.js", chunkFileNames: "[name].js" },
-  //   deps: { neverBundle: [...NEVER_BUNDLE_HOST] },
-  // },
+  {
+    name: "host",
+    // Multiple entries, NOT one bundle. The host half is loaded as ESM from disk
+    // by Node, and its module graph is load-bearing at TEST time: `wiring` and
+    // `protocol` reach into `lib/review.js` to install the fake spawner
+    // (`setSpawnOverride`) that `lib/index.js` then runs. Bundling everything into
+    // `lib/index.js` inlined a SECOND copy of that module, so the override landed
+    // on a module nobody called and the test drove the REAL review CLI — which is
+    // how this was caught. Emitting one artifact per source file keeps the shared
+    // instance, and the suites keep driving the built host half.
+    entry: {
+      index: "src/host/index.ts",
+      daemon: "src/host/daemon.ts",
+      review: "src/host/review.ts",
+      quota: "src/host/quota.ts",
+      sessions: "src/host/sessions.ts",
+      "provider-store": "src/host/provider-store.ts",
+    },
+    outDir: "lib",
+    format: "esm",
+    platform: "node",
+    target: "es2023",
+    // Shared modules become shared chunks rather than being duplicated per entry
+    // (the duplication above is exactly what broke the seam).
+    splitting: true,
+    // `clean: true` is what makes the migration atomic: building REPLACES the
+    // hand-written `lib/*.js` leaves, so a half-built tree cannot linger.
+    clean: true,
+    minify: false,
+    sourcemap: false,
+    dts: false,
+    outExtensions: () => ({ js: ".js" }),
+    // NO content hash: a rebuild rewrites the same filenames in place.
+    outputOptions: { entryFileNames: "[name].js", chunkFileNames: "[name].js" },
+    deps: { neverBundle: [...NEVER_BUNDLE_HOST] },
+  },
   {
     name: "client",
     entry: ["src/client/index.ts"],
