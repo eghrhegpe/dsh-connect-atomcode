@@ -81,6 +81,51 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
     assert.equal(r.error, '');
   });
 
+  it('a renamed BODY with done still intact is NOT a silent success (half drift)', async () => {
+    // The shape the v0.4.0 gate missed (2026-10 code review): `done` keeps its
+    // name, only the payload events were renamed. The old aggregation produced
+    // ok:true with an EMPTY reply — "successful nothing", which red line 3
+    // exists to ban, and it passed every existing drift test green because
+    // `done !== null` made the turn recognizable. Must now fail loudly and
+    // name the observed types.
+    const fake = await startFakeDaemon((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(sse([
+        { type: 'llm.delta', text: 'hello' },
+        { type: 'done', session_id: 's1', stop_reason: 'stopped' },
+      ]));
+    });
+    open.push(fake);
+    const r = await askChat({ message: 'hi', port: fake.port, timeoutMs: 10_000 });
+    assert.equal(r.ok, false, 'a done carrying no recognizable content must not report success');
+    assert.match(r.error, /no recognizable content/);
+    assert.match(r.error, /llm\.delta/, 'the renamed payload type must be named');
+    assert.match(r.error, /upgrade dsh-atomcode-bridge/);
+    assert.equal(r.sessionId, 's1', 'the session carried by done is still handed back');
+  });
+
+  it('a mid-turn error event SURVIVES a later done instead of being erased', async () => {
+    // v0.4.0 returned `error: ok ? '' : error` — once done arrived, any error
+    // event was cleared unconditionally and a partially failed turn read as a
+    // full success (ask.ok++ in the panel, no caveat for the model). The turn
+    // stays ok — it DID complete with deliverable content — but carries the
+    // error out; the render shows it as a named caveat.
+    const fake = await startFakeDaemon((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(sse([
+        { type: 'text', content: 'partial ' },
+        { type: 'error', message: 'upstream hiccup' },
+        { type: 'text', content: 'answer' },
+        { type: 'done', session_id: 's', stop_reason: 'stopped' },
+      ]));
+    });
+    open.push(fake);
+    const r = await askChat({ message: 'hi', port: fake.port, timeoutMs: 10_000 });
+    assert.equal(r.ok, true, 'a completed turn is still completed');
+    assert.equal(r.reply, 'partial answer');
+    assert.equal(r.error, 'upstream hiccup', 'the mid-turn error must be carried out');
+  });
+
   it('a truncated turn with an additive unknown type is NOT called a protocol change', async () => {
     // The false positive this guards: recognized `text` arrives, one harmless new
     // event type shows up, then the stream dies without a terminal event (idle
@@ -118,6 +163,41 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
     const info = await healthInfo(45993);
     assert.equal(info.up, false);
     assert.equal(info.version, '');
+  });
+});
+
+describe('ask render — a completed turn must show its caveat, a clean one must not', () => {
+  it('surfaces value.error on ok:true, and stays silent when error is empty', () => {
+    // The carry-out fix in `askChat` is worthless if render's ok-branch hides
+    // `error` (v0.4.0's ok-branch only printed reply + meta). Pinned here: the
+    // model MUST see the caveat, and a healthy turn must NOT be smeared with
+    // one — both halves, or the next "cleanup" deletes it again.
+    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-render-home-'));
+    const tools = [];
+    const ctx = {
+      get: (name) => (name === 'tools' ? { register: (d) => { tools.push(d); return () => {}; } } : undefined),
+      logger: { warn() {}, error() {}, info() {} },
+      fiber: { entry: { options: { id: 'dsh-atomcode-bridge' } } },
+      inject() {},
+      effect() {},
+      on() {},
+    };
+    try {
+      mod.apply(ctx, { auto_start: false, port: 45995, state_path: join(fakeHome, 'sessions.json') });
+      const ask = tools.find((t) => t.name === 'atomcode_ask');
+      const render = ask.output.render; // the descriptor nests render under `output`
+      const base = {
+        reply: 'partial answer', session_id: 's', continued: false, truncated: false,
+        tokens: 1, tool_calls: 0, round_count: 0, tools: [], stop_reason: 'stopped', provider: 'P',
+      };
+      const warned = render({}, { ...base, ok: true, error: 'upstream hiccup' })[0].text;
+      assert.match(warned, /upstream hiccup/, 'the caveat must reach the model');
+      assert.match(warned, /partial answer/, 'the reply itself still comes through');
+      const clean = render({}, { ...base, ok: true, error: '' })[0].text;
+      assert.doesNotMatch(clean, /注意/, 'a healthy turn must not be smeared with a caveat');
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 });
 

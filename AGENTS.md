@@ -14,7 +14,7 @@
 | 改 host 逻辑 / 加配置字段 / 加路由 | 本文件「三条事实」「红线」 | `lib/index.js`（`apply` 是唯一装配点）→ `cordis.patch.yml` 对照字段注释 | `npm test` 里的 `wiring` / `stats-route` |
 | 改额度解析 / 面板渲染 | `lib/quota.js`（纯函数，无宿主依赖） | `test/quota.test.mjs` + `test/protocol.test.mjs` | 解析不出来时**必须**回落到原文，不得编数字 |
 | 排查"为什么没生效 / 报错" | 本文件「工作目录与装载方式」 | `lib/daemon.js`（daemon 探测真源） | 先分清 Host 进程 vs Client 控制台 |
-| daemon 起不来 / 端口被占 | `lib/daemon.js` 的 `ensureDaemonStarted` | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
+| daemon 起不来 / 端口被占 | `lib/index.js` 的 `ensureDaemonStarted`（拉起/重试/单飞在那；`lib/daemon.js` 是它调用的传输与探测层，没有这个符号） | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
 | `atomcode_review` 报不可用 | 本文件红线 1 | `lib/review.js` 的 `checkReviewProvision` | 这是**本机配置事实**，不是临时故障 |
 | 加/改 client 槽位 | 本文件「宿主 ABI 面」 | `test/client-id.test.mjs`（注册契约门禁） | 改 seat 名必须同步改那条测试的断言 |
 | **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」；`docs/AtomCode-CLI与daemon接口参考.md` §4「`POST /chat` 的请求体字段」 | host 侧 `lib/index.js` 的 `resolveProvider()`（顺序：调用参数 > 面板选择 > `default_provider` / `review_default_provider`）+ `lib/provider-store.js`（`provider.json`）；渲染侧 `client.js` 的 `providerSelectModel()` / `ProviderSelectRow`（详情页「运行环境」卡里两个下拉，一行两格） | 本文件**红线 8**（两条命名空间 + `config.toml` 只读）。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点**，不用碰任何配置文件 |

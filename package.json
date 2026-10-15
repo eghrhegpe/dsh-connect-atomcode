@@ -52,5 +52,9 @@
     "type": "git",
     "url": "git+https://github.com/Yinyuan34513/dsh-atomcode-bridge.git"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "tsdown": "^0.23.1",
+    "typescript": "^5.9.3"
+  }
 }
