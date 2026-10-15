@@ -41,22 +41,10 @@
  *
  * @module dsh-atomcode-bridge/sessions
  */
-import {
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-  renameSync,
-  readdirSync,
-  statSync,
-  rmSync,
-} from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname, basename } from 'node:path';
-
-/** How many `<path>.corrupt-<ts>` generations to keep for inspection. */
-const KEEP_QUARANTINES = 2;
-/** Orphan temp files younger than this may belong to a live writer — leave them. */
-const ORPHAN_TMP_MIN_AGE_MS = 60_000;
+import { join } from 'node:path';
+import { sweepStaleArtifacts, quarantineFile, writeJsonFile } from './state-file.ts';
 
 /** One entry of the on-disk map: the daemon session plus its write time. */
 export interface SessionEntry {
@@ -82,43 +70,9 @@ export function defaultStatePath(): string {
 export function createSessionStore(path = defaultStatePath(), keyPrefix = '') {
   const prefix = typeof keyPrefix === 'string' && keyPrefix.trim() !== '' ? keyPrefix.trim() + '::' : '';
 
-  /**
-   * Bound the growth of quarantine copies and orphaned temp files. Best-effort
-   * and cheap: run once per store creation, i.e. once per plugin mount, which
-   * is enough because each host start clears what previous crashes left.
-   */
-  function sweepStale() {
-    try {
-      const dir = dirname(path);
-      const base = basename(path);
-      const names = readdirSync(dir);
-      const quarantines = names
-        .filter((name) => name.startsWith(`${base}.corrupt-`))
-        .sort(); // the epoch-ms suffix makes lexicographic order chronological
-      for (const stale of quarantines.slice(0, Math.max(0, quarantines.length - KEEP_QUARANTINES))) {
-        try {
-          rmSync(join(dir, stale), { force: true });
-        } catch {
-          /* best-effort */
-        }
-      }
-      for (const name of names) {
-        if (!name.startsWith(`${base}.`) || !name.endsWith('.tmp')) continue;
-        const full = join(dir, name);
-        try {
-          // Only reclaim clearly-abandoned files: a fresh one may still be a
-          // live writer's in-flight temp awaiting its rename.
-          if (Date.now() - statSync(full).mtimeMs > ORPHAN_TMP_MIN_AGE_MS) rmSync(full, { force: true });
-        } catch {
-          /* best-effort */
-        }
-      }
-    } catch {
-      /* a missing directory is the normal first-run case */
-    }
-  }
-
-  sweepStale();
+  // Quarantine/temp reaping now lives in state-file.ts, shared with
+  // provider.json — it used to be a verbatim copy of the same loop.
+  sweepStaleArtifacts(path);
 
   /**
    * Read the whole map from disk on every call (never cached — see module note).
@@ -133,27 +87,21 @@ export function createSessionStore(path = defaultStatePath(), keyPrefix = '') {
       // Distinguish "no file yet" from "file is corrupt": the latter is worth
       // preserving, because the next write would otherwise erase session ids
       // that a running conversation still references.
-      if (error && error.code !== 'ENOENT') {
-        try {
-          renameSync(path, `${path}.corrupt-${Date.now()}`);
-          sweepStale();
-        } catch {
-          /* best-effort preservation */
-        }
-      }
+      //
+      // KNOWN ASYMMETRY, left alone on purpose: this branch also fires for
+      // EISDIR (the path is a directory), where quarantining means renaming a
+      // directory. provider.json special-cases EISDIR into a named error
+      // instead. Aligning them needs a decision about the WRITE path too
+      // (`writeJsonFile` throws when the destination is a directory, and "fail
+      // the turn" vs "degrade to no session" is a behaviour change, not a
+      // refactor) — so it is not smuggled into this one.
+      if (error && error.code !== 'ENOENT') quarantineFile(path);
       return {};
     }
   }
 
   function writeMap(map: SessionMap) {
-    mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(map, null, 2), 'utf8');
-    try {
-      renameSync(tmp, path);
-    } catch {
-      writeFileSync(path, JSON.stringify(map, null, 2), 'utf8');
-    }
+    writeJsonFile(path, map);
   }
 
   function internalKey(outerKey: string): string {

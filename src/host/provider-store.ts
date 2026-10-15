@@ -42,9 +42,10 @@
  *
  * @module dsh-atomcode-bridge/provider-store
  */
-import { mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname, basename } from 'node:path';
+import { join } from 'node:path';
+import { sweepStaleArtifacts, quarantineFile, writeJsonFile } from './state-file.ts';
 
 /** Shape version this build writes. */
 export const PROVIDER_FILE_VERSION = 1;
@@ -71,8 +72,6 @@ export interface ProviderDoc {
 
 /** A name longer than this is junk, not a provider. */
 const MAX_NAME_LEN = 200;
-const KEEP_QUARANTINES = 2;
-const ORPHAN_TMP_MIN_AGE_MS = 60_000;
 
 /** @returns {string} default state file, next to sessions.json. */
 export function defaultProviderStatePath(): string {
@@ -115,35 +114,9 @@ export function normalizeProviderName(raw: unknown) {
  * @param {string} [path] state file path (injectable for tests)
  */
 export function createProviderStore(path: string = defaultProviderStatePath()) {
-  /** Bound quarantine/temp churn. A missing directory is the normal first run. */
-  function sweepStale() {
-    try {
-      const dir = dirname(path);
-      const base = basename(path);
-      const names = readdirSync(dir);
-      const quarantines = names.filter((n) => n.startsWith(`${base}.corrupt-`)).sort();
-      for (const stale of quarantines.slice(0, Math.max(0, quarantines.length - KEEP_QUARANTINES))) {
-        try {
-          rmSync(join(dir, stale), { force: true });
-        } catch {
-          /* best-effort */
-        }
-      }
-      for (const name of names) {
-        if (!name.startsWith(`${base}.`) || !name.endsWith('.tmp')) continue;
-        const full = join(dir, name);
-        try {
-          if (Date.now() - statSync(full).mtimeMs > ORPHAN_TMP_MIN_AGE_MS) rmSync(full, { force: true });
-        } catch {
-          /* best-effort */
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-
-  sweepStale();
+  // Shared with sessions.json now (see state-file.ts) — this was a verbatim
+  // copy of the same loop, and the copy is where drift hides.
+  sweepStaleArtifacts(path);
 
   const blank = (error: string = '') => ({ ask: null, review: null, foreignVersion: false, error });
 
@@ -160,25 +133,21 @@ export function createProviderStore(path: string = defaultProviderStatePath()) {
     } catch (error: any) {
       if (error && error.code === 'ENOENT') return blank();
       if (error && error.code === 'EISDIR') return blank('state path is a directory, not a file');
-      try {
-        renameSync(path, `${path}.corrupt-${Date.now()}`);
-        sweepStale();
-        return blank('unreadable state file was preserved aside');
-      } catch {
-        return blank('state file is unreadable and could not be preserved aside');
-      }
+      return blank(
+        quarantineFile(path)
+          ? 'unreadable state file was preserved aside'
+          : 'state file is unreadable and could not be preserved aside',
+      );
     }
     let parsed;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      try {
-        renameSync(path, `${path}.corrupt-${Date.now()}`);
-        sweepStale();
-        return blank('corrupt state file was preserved aside');
-      } catch {
-        return blank('state file is not valid JSON');
-      }
+      return blank(
+        quarantineFile(path)
+          ? 'corrupt state file was preserved aside'
+          : 'state file is not valid JSON',
+      );
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return blank('state file is not an object');
     const version = Number.isInteger(parsed.version) ? parsed.version : 0;
@@ -204,15 +173,7 @@ export function createProviderStore(path: string = defaultProviderStatePath()) {
   }
 
   function writeDoc(doc: Record<string, unknown>) {
-    mkdirSync(dirname(path), { recursive: true });
-    const body = JSON.stringify(doc, null, 2);
-    const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, body, 'utf8');
-    try {
-      renameSync(tmp, path);
-    } catch {
-      writeFileSync(path, body, 'utf8');
-    }
+    writeJsonFile(path, doc);
   }
 
   return {
