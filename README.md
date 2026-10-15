@@ -209,10 +209,12 @@ AtomCode 5.x 在这条路上的 "provider" **就是模型档位名**，不是厂
 
 插件详情页的「运行环境」卡片**有这两个下拉**（数据来自 `/api/atomcode-bridge/stats` 的 `provider` 分支）：
 
-| 行 | 有选择时 | 没选择时 |
+| 下拉 | 选项来自 | 没选择时 |
 |---|---|---|
-| `默认档位`（ask） | 显示选中的档位名 | `未插手` 选项 |
-| `默认 provider`（review） | 显示选中的直连条目名 | `未插手` 选项 |
+| `默认档位 · ask` | daemon `GET /models` 的 `provider` 字段（档位名） | `未插手` |
+| `默认 provider · review` | `config.toml` 里 `[providers.<name>]` 的**直连条目名** | `未插手` |
+
+标签里带 `ask` / `review` 是刻意的：`atomcode-local` **是个条目名、不是文件路径**，而两个格子长得像同一个控件的两种模式，不写清路线就会读错（实测有人把它读成"配置文件"）。
 
 **两个控件永远都在，绝不合并成一个**：合并会让两个命名空间读起来像同一个旋钮（红线 8）。它们排成**一行两格**（各带自己的 hover 说明），而不是各占一整行。档位列表拿不到时**控件还在，但禁用并写出原因**，且**两条路的空态各说各的因**——ask 是「daemon 未列出档位」，review 是「config.toml 里没有直连条目」；它们曾经共用一句话，于是 ask 的空态用 review 的来源解释自己，读起来像 bug。长溯源（`/models`、`[providers.<name>]`）在 hover `title` 里，不占正文。
 
@@ -260,6 +262,7 @@ data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-f
 | **模型选择只能改配置文件**（改一行要开文件、且只在挂载时读一次） | 详情页加两个下拉（ask / review 各一，各自命名空间），持久化到**插件自己的** `provider.json`，**每次调用重读**所以选完即生效、不用重启 host。优先级定为：调用参数 > 面板选择 > 配置字段 > AtomCode 自己（面板赢在"那是用户刚做的动作"——控件输给配置文件就是死控件）。写入点单一路由 `POST /api/atomcode-bridge/provider`（同源 + 方法门禁 + 4KB 上限 + 槽位/名字校验），**从不写 `~/.atomcode/config.toml`**；测试里有一条"写一次 pick 后 config.toml 必须逐字节不变 + `~/.atomcode` 下不得出现任何 provider 文件"钉这条边界。两个工具的描述同步改成**只讲顺序、不讲结果**——描述挂载时注册一次而面板选择每次调用才读，任何"留空即 X"的固定句式都是掷硬币 |
 | **那张卡"又丑又多字"**（用户原话） | 详情页那张卡曾有 **6 行恒定值**：`来源`/`路径` 是同一件事说两遍，`审批模式`/`默认工作目录`/`ask 轮数上限` 报告的是**用户从没拨过的旋钮**，`评审可用性` 则永远显示「可用」。收敛为：① 拆成「运行环境」（`AtomCode` 一行含来源 + 两个下拉并排一行两格；`评审可用性`**只在不可用时出现**）与「回合边界」（`审批模式`/`工作目录`/`ask 轮数上限`，各标"（插件默认）"或"（已改）"）；② "改过没有"由 host 的 `config.authored`/`config.defaults` 判定，**不在渲染侧比缺省值**——显式写 `bypass` 与兜底 `bypass` 在值上分不开，且 `askMaxRounds === 25` 是第二份 25，`lib/index.js` 一改就撒谎；③ 空态文案**按槽位分家**（原先共用一句，于是 ask 的空态用 review 的来源解释自己）；④「生效 X（来自面板）」只在**实际生效值与所选不同**时出现，一致时不说话。`turnBoundaryRows()` 与 `providerRows()` 都是纯函数，由 `client-fns.test.mjs` 覆盖（含变异实验） |
 | **两个下拉的目录形状不同（实机才抓到）** | `GET /models` 给的是**对象数组** `{provider, model, isDefault, effortLevels}`，review 的直连条目是**字符串数组**，而两者都进同一个 `providerSelectModel()`。原先一起走 `map(name)`（只认字符串）→ **ask 下拉整个是空的**，review 正常。这条 bug 被上一条的**共用空态文案掩盖**成"像是文案问题"，隔了一轮才用真 daemon 快照（5.2.3）抓出来。现在按元素类型展平、只取 `provider`（档位名），`model`（裸 id）两条路都不认（红线 8）；并有一条测试直接喂**实机原样的两种载荷**，回退到 `map(name)` 时该测试失败。教训记进 `AGENTS.md`「面板的显示纪律」 |
+| **面板放错座位 + 宽度钉死 + 英文墙**（用户第二轮反馈） | 三条都成立：①**座位**——面板原注册在 `plugins.detail.section`，只因那个名字读着像"插件详情页"，它其实是 **list seat、渲染在 shipped rows 之后**；而兄弟插件用的 `plugins.bundle.config` 契约原文是 "rendered on the bundle's page **between its description and its rows**"，所以在**上方**。现改为优先 `plugins.bundle.config`（`kind: keyed`，`key` = 包名）、缺它时回落旧 seat，**且只允许一个 seat 拿走面板**（两个都注册会渲染两遍）；该 seat 还带 `view: 'summary'/'page'`，`summary` 压成一行，避免重蹈英文墙。②**布局**——`wrap.maxWidth` 曾是 `760px`（宽窗口留大片空白）+ `grid` 硬编码 `1fr 1fr`（**任何宽度都是两列**），故"宽面下卡片没有自动合并行数"；现为 `1180px` + `repeat(auto-fit, minmax(320px, 1fr))`（窄 1 列、宽 3 列），并给 row 钉 `lineHeight`/`minHeight` 修"没有最小行距"。③**i18n**——`package.json` 的 `description` 改为 locale map `{ en, zh }`：面板读 `pkg.meta.description` 并经 `resolveText()`，**字符串原样输出、对象才按语言查**；实测本机语言 id 是 `["zh","en"]`，**写 `zh-cn` 不报错但永远匹配不上**（面板会继续显示英文）。文案 474 → 108 字（中文）。另把两个下拉标签改成 `默认档位 · ask` / `默认 provider · review`——用户把 `atomcode-local` 读成了"配置文件"，因为屏幕上没有任何字说明它属于哪条路 |
 
 ### 未修 / 明确不做
 

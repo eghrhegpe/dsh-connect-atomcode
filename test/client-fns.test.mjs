@@ -410,8 +410,15 @@ describe('providerRows — the two provider knobs, never merged, never dropped',
     // read from slotName — which is also the wire value the route takes.
     assert.deepEqual(rows.map((r) => r.slotName), ['ask', 'review']);
     assert.notEqual(rows[0].label, rows[1].label, 'two knobs may not share one label');
-    assert.ok(/provider/.test(rows[1].label) && !/provider/.test(rows[0].label), 'the review knob says provider');
     assert.ok(rows[0].title.includes('atomcode_ask') && rows[1].title.includes('atomcode_review'), 'each title names its own tool');
+    // The LABEL names the route, because the two namespaces are the single most
+    // confusing thing on this card: the user read `atomcode-local` (a config.toml
+    // direct-entry NAME) as "a config file", since nothing on screen said which route
+    // it belonged to. Pinning the route in the label is the fix that does not depend
+    // on the reader hovering.
+    assert.match(rows[0].label, /ask/, 'the ask label names its route');
+    assert.match(rows[1].label, /review/, 'the review label names its route');
+    assert.match(rows[1].title, /不是文件路径/, 'and the review title kills the "config file" reading');
     assert.equal(rows[0].pinned, false);
     assert.equal(rows[1].pinned, false);
   });

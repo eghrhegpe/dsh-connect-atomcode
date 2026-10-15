@@ -18,7 +18,7 @@
 | `atomcode_review` 报不可用 | 本文件红线 1 | `lib/review.js` 的 `checkReviewProvision` | 这是**本机配置事实**，不是临时故障 |
 | 加/改 client 槽位 | 本文件「宿主 ABI 面」 | `test/client-id.test.mjs`（注册契约门禁） | 改 seat 名必须同步改那条测试的断言 |
 | **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」；`docs/AtomCode-CLI与daemon接口参考.md` §4「`POST /chat` 的请求体字段」 | host 侧 `lib/index.js` 的 `resolveProvider()`（顺序：调用参数 > 面板选择 > `default_provider` / `review_default_provider`）+ `lib/provider-store.js`（`provider.json`）；渲染侧 `client.js` 的 `providerSelectModel()` / `ProviderSelectRow`（详情页「运行环境」卡里两个下拉，一行两格） | 本文件**红线 8**（两条命名空间 + `config.toml` 只读）。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点**，不用碰任何配置文件 |
-| **详情页那张卡该显示什么** | `client.js` 的 `turnBoundaryRows()`（「回合边界」卡）与 `providerRows()`（「运行环境」卡） | 上面「面板的显示纪律」一段 | **恒定值不是信息**：patch-only 的旋钮要标出"你改过"还是"插件默认"，且这个判断来自 host 的 `config.authored` / `config.defaults`，不许在渲染侧硬编码缺省值去比 |
+| **详情页那张卡该显示什么 / 放哪儿** | `client.js` 的 `turnBoundaryRows()`（「回合边界」卡）与 `providerRows()`（「运行环境」卡）；座位在 `apply()` 里 | 上面「面板的显示纪律」一段 | ①**恒定值不是信息**，patch-only 旋钮要标"你改过/插件默认"，判断来自 host 的 `config.authored`/`config.defaults`；②**座位读契约摘要不读名字**——面板属于 `plugins.bundle.config`（描述与 rows **之间**），不是 `plugins.detail.section`（rows **之后**） |
 
 ## 项目一句话
 
@@ -65,7 +65,7 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 | `ctx.webServer.register({kind:'exact', path})` | **两条路由**：`/api/atomcode-bridge/stats`（只读快照）与 `/api/atomcode-bridge/provider`（面板的模型选择写入点，写插件自己的 `provider.json`）。两条都同源门禁 | 面板与 chip 永久 `null`（客户端渲染 `—`）；provider 路由没了则两个下拉**禁用并写出原因**（不是空下拉） |
 | `ctx.effect(fn)` | 卸载时注销工具与路由 | **注意语义**：它执行 `fn` 当 setup，把返回值当 cleanup |
 | `ctx.logger?.warn` | 可选，全部日志都带 `[atomcode-bridge]` 前缀 | — |
-| `client` 侧 `ctx.slots.inject/register` | 两个 seat：详情页 `plugins.detail.section` + 输入框下方 `conversation.composer.dock`（额度读数，`order: 1`） | 有 try/catch 兜底，缺 seat 只降级 |
+| `client` 侧 `ctx.slots.inject/register` | 两个 seat：详情页 `plugins.bundle.config`（**keyed，`key` = 包名**；有 `view: 'summary'\|'page'`，渲染在**描述与 rows 之间**；缺它时回落到 `plugins.detail.section`，那个是 list seat、渲染在 rows **之后**）+ 输入框下方 `conversation.composer.dock`（额度读数，`order: 1`） | 有 try/catch 兜底，缺 seat 只降级。**只允许一个 seat 拿走面板**——两个都注册会在新宿主上渲染两遍 |
 | `client` 侧 `require('react')` | 工厂期取 React，**必须**是 app 同一个实例 | 取错实例 → hooks 报错 |
 | `client` 侧 `require('react-dom')`、`require('@deepseek-ai/dsh-client-ui-primitives')` | chip 弹窗的 `createPortal` / `Tooltip` / `useAnchoredPosition` / `useDismissOnOutsidePointer` | **不需要加 `dsh.client.inject`**：两者都在 web boot 的 seed 表里，`require()` 先查 seed 表。仍要 try/catch——工厂抛错会连带拖垮消费者，缺 seed 时降级回原生 `title`（`test/client-fns.test.mjs` 守着这条） |
 
@@ -100,6 +100,21 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
   曾经一起走 `map(name)`（只认字符串）→ **ask 下拉整个是空的**，而 review 正常。
   这条 bug 被上面第 3 点那句共用文案**掩盖**成了"像是文案问题"，隔了一轮才被实机快照抓出来。
   取下拉值只取 `provider`（档位名）；`model`（裸 id）两条路都不认（红线 8）。
+- **面板要占"描述与 rows 之间"那个座位，不是"详情页随便哪个座位"。** 面板原先注册在
+  `plugins.detail.section`——只因为那个名字读着像"插件详情页"。它其实是 **list seat、渲染在
+  shipped rows 之后**，于是读数落在 `运行统计`/`包含的组件` 下面；而兄弟插件 sensenova 用
+  `plugins.bundle.config`（`kind: keyed`，`key` = 包名，契约原文 "rendered on the bundle's page
+  between its description and its rows"），所以在上方。**座位名像什么不代表它渲染在哪**——
+  这是红线 7 的同一条教训第二次发生（第一次是 `conversation.input.right`）。
+  该 seat 还带 `view: 'summary' | 'page'`：`summary` 是插件卡片的一行摘要，**只许一行**。
+- **`package.json` 的 `description` 支持 locale map。** 面板读的是 `pkg.meta.description` 并经
+  `resolveText()`：**字符串原样输出**，**对象则按 `{ en, "zh": ... }` 查当前语言**（键一律小写，
+  `en` 是必需兜底）。实测本机注册的语言 id 是 **`["zh", "en"]`**——写 `zh-cn` 不报错、但**永远匹配不上**，
+  面板会继续显示英文。改文案时两个键都要给。
+- **布局：不要把整个面板钉死宽度。** `wrap.maxWidth` 曾是 `760px`，于是宽窗口下留大片空白、
+  且两列卡片永远用不上多余空间；`grid` 还写成硬编码 `1fr 1fr`，**任何宽度都是两列**。
+  现在是 `maxWidth: 1180px` + `repeat(auto-fit, minmax(320px, 1fr))`：窄屏 1 列、宽屏 3 列。
+  行高也钉了 `lineHeight`/`minHeight`，否则一行换行的那张卡会比邻居高，两列的行距对不齐。
 
 ## 去哪参考（本机就有，别再全网瞎找）
 

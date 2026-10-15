@@ -129,15 +129,21 @@ async function claimSeats() {
   return claims;
 }
 
-  it('claims the detail section and the composer-dock quota readout, never the single-occupancy seat', async () => {
+  it('claims the bundle-config seat (the panel sits ABOVE the shipped rows) and the composer-dock quota readout', async () => {
     const claims = await claimSeats();
 
     const seats = claims.map((c) => c.name);
-    assert.ok(seats.includes('plugins.detail.section'), 'the detail page section must stay registered');
-    // The quota readout lives in the composer DOCK, beside the host's own
-    // readouts (turns, tokens, the context ring). It used to sit in
-    // `conversation.input.right`, which is the OPERATIONS row (mic / send) —
-    // a gauge among buttons. A quota number is a readout, so it moved.
+    // The panel belongs in `plugins.bundle.config`: a bundle's own configuration is
+    // documented as rendering "between its description and its rows". It was in
+    // `plugins.detail.section` because that seat's NAME reads like "the plugin detail
+    // page" — but that seat is a LIST appended AFTER the shipped rows, so the panel
+    // landed below 运行统计 / 包含的组件. The user spotted the difference against a
+    // sibling plugin before this test did, which is why the assertion now pins the
+    // POSITION rather than merely "some seat was claimed".
+    const panel = claims.find((c) => c.name === 'plugins.bundle.config');
+    assert.ok(panel, 'the panel must claim plugins.bundle.config (between description and rows)');
+    assert.equal(panel.key, 'dsh-atomcode-bridge', 'a keyed seat is addressed by the package name');
+    assert.equal(panel.id, undefined, 'the keyed seat takes `key`, not `id`');
     assert.ok(
       seats.includes('conversation.composer.dock'),
       'the compact quota readout must be claimed in the composer dock',
@@ -152,8 +158,38 @@ async function claimSeats() {
       !seats.includes('conversation.input.activity'),
       'must NOT claim the single-occupancy activity seat (owned by voice input)',
     );
-    for (const c of claims) assert.ok(c.id, `every claim needs an id; got ${JSON.stringify(c)}`);
-    assert.equal(new Set(claims.map((c) => c.id)).size, claims.length, 'claim ids must be unique');
+    // Only ONE seat carries the panel. Registering on two would render it twice.
+    const panelSeats = seats.filter((s) => s === 'plugins.bundle.config' || s === 'plugins.detail.section');
+    assert.equal(panelSeats.length, 1, `exactly one panel seat, got ${JSON.stringify(panelSeats)}`);
+    for (const c of claims) assert.ok(c.id || c.key, `every claim needs an id or key; got ${JSON.stringify(c)}`);
+    const claimKeys = claims.map((c) => c.id || c.key);
+    assert.equal(new Set(claimKeys).size, claimKeys.length, 'claim ids/keys must be unique');
+  });
+
+  it('FALLS BACK to the detail-section seat when the host lacks the bundle-config seat', async () => {
+    // An older host (or the desktop install copy) may not offer `plugins.bundle.config`.
+    // The panel must still mount — in the fallback seat — rather than disappear
+    // (红线 3). `ctx.slots.inject` only invokes its callback when the seat exists,
+    // which is exactly what makes the fallback safe to attempt unconditionally.
+    const registered = await loadClientRegistration();
+    const mod = registered[0].factory(fakeRequire);
+    const claims = [];
+    mod.apply({
+      slots: {
+        inject(seat, fn) {
+          if (seat === 'plugins.bundle.config') throw new Error('unknown slot');
+          fn();
+        },
+        register(config) { claims.push(config); return () => {}; },
+      },
+    });
+    assert.deepEqual(
+      claims.filter((c) => c.name !== 'conversation.composer.dock').map((c) => c.name),
+      ['plugins.detail.section'],
+      'the fallback seat takes the panel when the preferred seat is missing',
+    );
+    assert.equal(claims[0].id, 'atomcode-bridge-status');
+    assert.equal(typeof claims[0].order, 'number', 'the list seat needs an order');
   });
 
   it('orders the dock readout between the host stat pills and decorations', async () => {
@@ -194,6 +230,8 @@ async function claimSeats() {
       },
     };
     assert.doesNotThrow(() => mod.apply(ctx));
+    // The composer dock inject throws here, and the bundle-config seat is absent —
+    // so the panel takes its fallback seat and nothing else is claimed.
     assert.deepEqual(claims.map((c) => c.name), ['plugins.detail.section']);
   });
 

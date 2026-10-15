@@ -62,7 +62,14 @@
 
       const S = {
         wrap: {
-          maxWidth: '760px',
+          // NO fixed maxWidth. This used to be `760px`, which (a) left long empty
+          // margins on a wide window and (b) stopped the two-column card grid from
+          // ever using the room it was given. The host's page already constrains the
+          // reading measure; we only need a sane upper bound for very wide monitors,
+          // and a floor so the grid does not collapse into unreadable slivers.
+          width: '100%',
+          maxWidth: '1180px',
+          minWidth: 0,
           display: 'flex',
           flexDirection: 'column',
           gap: '12px',
@@ -83,7 +90,17 @@
           border: '1px solid var(--dsw-alias-state-success-primary)',
         },
         updated: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' },
-        grid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' },
+        // `auto-fit` + `minmax` is what makes the cards MERGE INTO A ROW on a wide
+        // window instead of marching down one per line: columns are packed until the
+        // track would fall below 320px, then they wrap. The old rule was a hardcoded
+        // `1fr 1fr`, which forced exactly two columns at every width — so a narrow
+        // seat squeezed and a wide one wasted (the user's "宽面下卡片没有自动合并行数").
+        grid: {
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+          gap: '10px',
+          alignItems: 'start',
+        },
         card: {
           border: '1px solid var(--dsw-alias-border-l1)',
           background: 'var(--dsw-alias-bg-layer-1)',
@@ -91,11 +108,25 @@
           padding: '12px 14px',
           display: 'flex',
           flexDirection: 'column',
-          gap: '8px',
+          // Was 8px with no line-height discipline, so a card whose rows wrapped got
+          // visibly taller than its neighbour and the grid rows stopped matching.
+          gap: '6px',
+          minWidth: 0,
         },
         cardFull: { gridColumn: '1 / -1' },
         cardTitle: { margin: 0, fontSize: '12px', fontWeight: 600, color: 'var(--dsw-alias-label-secondary)' },
-        row: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', fontSize: '12.5px' },
+        // `minHeight` + a fixed `lineHeight` give every row the SAME height whether its
+        // value wraps or not, so two cards side by side keep matching row rhythm
+        // instead of drifting apart (the "卡片没有最小行距" complaint).
+        row: {
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '10px',
+          fontSize: '12.5px',
+          lineHeight: '18px',
+          minHeight: '18px',
+        },
         key: { color: 'var(--dsw-alias-label-tertiary)' },
         val: { color: 'var(--dsw-alias-label-primary)', wordBreak: 'break-word', textAlign: 'right' },
         // An UNPINNED knob is a fact about what the bridge is NOT doing, so it is
@@ -433,10 +464,10 @@
             setNote('保存失败：' + result.error);
             return;
           }
-          setNote(value === '' ? '已恢复未插手' : '已选 ' + value);
-          // Pull the snapshot now so the control shows its own new effective value
-          // without waiting out the 5s poll: the click and its consequence stay
-          // together on screen.
+          // NO "已选 X" on success. The dropdown itself now shows X — that IS the
+          // confirmation, and printing it again under the control was the last piece
+          // of "每格都挂一句话" the user objected to. Only a FAILURE needs words,
+          // because a failure has nowhere else to show up.
           if (typeof reload === 'function') void reload();
         };
         // Only when the effective value is NOT what this control shows: a pick that
@@ -563,7 +594,11 @@
         return [
           {
             slotName: 'ask',
-            label: '默认档位',
+            // The labels carry the PATH, not just the field: the two namespaces are
+            // the single most confusing thing on this card. The user saw
+            // `atomcode-local` and read it as "a config FILE" — because nothing on
+            // screen said which route it belongs to. Each label now names its tool.
+            label: '默认档位 · ask',
             fallback: '未插手',
             value: ask || '未插手',
             pinned: ask !== '',
@@ -574,13 +609,13 @@
           },
           {
             slotName: 'review',
-            label: '默认 provider',
+            label: '默认 provider · review',
             fallback: '未插手',
             value: review || '未插手',
             pinned: review !== '',
             title:
-              'atomcode_review 走 CLI：这里选的是 config.toml 里的直连条目（[providers.<name>]，' +
-              '形如 atomcode-local）。未插手 = 由 config.toml 的默认或唯一直连条目顶上。' +
+              'atomcode_review 走 CLI：这里选的是 config.toml 里的直连条目名（[providers.<name>]，' +
+              '形如 atomcode-local —— 那是个名字，不是文件路径）。未插手 = 由 config.toml 的默认或唯一直连条目顶上。' +
               '与左边是两套命名空间，不能同一个名字两边用。',
           },
         ];
@@ -970,10 +1005,24 @@
       const QUOTA_READOUT = primitives && reactDom ? QuotaChip : QuotaChipDegraded;
 
       function StatusSection(props) {
-        // Only render on this plugin's detail page.
+        const view = props && props.view;
         const subject = props && props.subject;
-        const name = subject && subject.kind === 'bundle' ? subject.pkg && subject.pkg.name : undefined;
-        if (name !== 'dsh-atomcode-bridge') return null;
+        // Two seats can mount this, and they address the page differently:
+        //  - `plugins.bundle.config` is KEYED by package name, so the host has already
+        //    proved this is our bundle and passes no `subject`; it also asks for
+        //    `view: 'summary'` (the one-liner on the card) as well as `'page'`.
+        //  - `plugins.detail.section` is a LIST seat: it passes the page's `subject`
+        //    and we must claim it by name.
+        // An unknown/absent view means the list seat, which is the older path.
+        const keyed = view === 'summary' || view === 'page';
+        if (!keyed) {
+          const name = subject && subject.kind === 'bundle' ? subject.pkg && subject.pkg.name : undefined;
+          if (name !== 'dsh-atomcode-bridge') return null;
+        }
+        // `summary` is the plugin CARD's one-liner, which already renders the bundle
+        // description right above us. A second paragraph there would be the "four
+        // lines of English" problem again, so the summary view stays a single line.
+        if (view === 'summary') return h('span', { style: S.provLabel }, 'AtomCode 侧边工具台（daemon 5.x）');
 
         const { data, error, updatedAt, reload } = useStats();
 
@@ -1224,24 +1273,51 @@
       }
 
       function apply(ctx) {
-        try {
-          ctx.slots.inject('plugins.detail.section', function () {
-            try {
-              return ctx.slots.register(
-                {
-                  name: 'plugins.detail.section',
-                  id: 'atomcode-bridge-status',
-                  order: 30,
-                },
-                StatusSection
-              );
-            } catch (e) {
-              return function () {};
-            }
-          });
-        } catch (e) {
-          /* slots service unavailable — degrade silently */
-        }
+        // The detail page, at the seat that renders BETWEEN the description and the
+        // shipped rows — where a bundle's own configuration is documented to live
+        // ("rendered on the bundle's page between its description and its rows",
+        // `plugins.bundle.config`, `kind: keyed`, keyed by the bundle's package name).
+        //
+        // This was `plugins.detail.section` first, purely because that seat's NAME read
+        // like "the plugin's detail page". It is a LIST seat appended AFTER the shipped
+        // rows, so the readout landed below `运行统计` / `包含的组件` instead of above
+        // them — a placement the user noticed before I did ("sensenova 是放在已运行插件
+        // 上方的"). Read the contract summary, not the name. AGENTS.md 红线 7 records the
+        // same lesson for the composer dock.
+        //
+        // EXACTLY ONE seat gets the panel. The fallback is for a host that does not
+        // offer `plugins.bundle.config` at all (an older build, or the desktop install
+        // copy): registering on both would render the whole panel TWICE on a modern
+        // host, which is worse than the placement bug this fixes. `inject` invokes the
+        // callback only when the seat exists, so the first branch that mounts wins and
+        // the second stays unclaimed — hence the `mounted` latch, which also keeps this
+        // ordered (preferred seat first).
+        let mounted = false;
+        const mount = (seat, options) => {
+          if (mounted) return;
+          try {
+            ctx.slots.inject(seat, function () {
+              if (mounted) return function () {};
+              try {
+                const dispose = ctx.slots.register(options, StatusSection);
+                mounted = true;
+                return dispose;
+              } catch (e) {
+                return function () {};
+              }
+            });
+          } catch (e) {
+            /* slots service unavailable — try the next seat, then degrade silently */
+          }
+        };
+        // Preferred: the bundle-configuration seat (renders before the shipped rows).
+        mount('plugins.bundle.config', { name: 'plugins.bundle.config', key: REGISTRATION.id });
+        // Fallback: the detail-section list seat (renders after the shipped rows).
+        mount('plugins.detail.section', {
+          name: 'plugins.detail.section',
+          id: 'atomcode-bridge-status',
+          order: 30,
+        });
 
         // Ambient quota readout in the composer DOCK — the strip BELOW the
         // composer card where the host already parks its own readouts
