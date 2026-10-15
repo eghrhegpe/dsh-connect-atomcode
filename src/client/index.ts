@@ -167,11 +167,11 @@ const REGISTRATION = {
         // because a failure has nowhere else to show up.
         if (typeof reload === 'function') void reload();
       };
-      // Only when the effective value is NOT what this control shows: a pick that
-      // lost to a per-call argument or to the config field. Silence otherwise —
+      // `note` is a pre-worded sentence about the effective value (see
+      // providerSelectModel). It is empty when there is nothing to say —
       // narrating "this came from the panel" next to the user's own click was
       // decoration, and it made every row two lines tall.
-      const override = model.note ? '这次调用实际用 ' + model.note + '（不是这里选的）' : '';
+      const override = model.note;
       const trouble = model.disabled ? model.reason : '';
       return h(
         'div',

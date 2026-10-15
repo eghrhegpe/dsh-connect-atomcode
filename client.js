@@ -520,6 +520,13 @@
 			disabled = true;
 			reason = slotName === "ask" ? "daemon 未列出档位" : "config.toml 里没有直连条目";
 		}
+		let note = "";
+		if (!disabled && effective !== "" && effective !== panel) {
+			if (source === "panel") note = "这次调用实际用 " + effective + "（不是这里选的）";
+			else if (source === "config") note = "当前生效 " + effective + "（来自配置）";
+			else if (source === "atomcode") note = "当前生效 " + effective + "（AtomCode 默认）";
+			else if (source === "argument") note = "本次调用指定 " + effective;
+		}
 		return {
 			value: panel,
 			options,
@@ -527,7 +534,7 @@
 			reason,
 			effective,
 			source,
-			note: !disabled && effective !== "" && effective !== panel ? effective : ""
+			note
 		};
 	}
 
@@ -626,7 +633,7 @@
 					}
 					if (typeof reload === "function") reload();
 				};
-				const override = model.note ? "这次调用实际用 " + model.note + "（不是这里选的）" : "";
+				const override = model.note;
 				const trouble = model.disabled ? model.reason : "";
 				return h("div", { style: S.provCell }, h("span", {
 					style: S.provLabel,

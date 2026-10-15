@@ -554,12 +554,29 @@ describe('providerSelectModel — one slot, one dropdown, one namespace', () => 
     assert.equal(m.note, '', 'agreement is silent');
 
     // A pick that LOST to another layer is the only case worth a sentence.
+    // note is now a full sentence worded by source, not a bare value.
     const lost = providerSelectModel(
       { ask: { panel: '', catalog: ['A'], effective: 'A', source: 'config' } },
       'ask',
       ASK_FALLBACK
     );
-    assert.equal(lost.note, 'A', 'an effective value that differs from the control must be surfaced');
+    assert.equal(lost.note, '当前生效 A（来自配置）', 'config-source note is worded by source');
+
+    // A panel pick that lost to a per-call argument says "不是这里选的".
+    const panelLost = providerSelectModel(
+      { ask: { panel: 'B', catalog: ['A'], effective: 'A', source: 'argument' } },
+      'ask',
+      ASK_FALLBACK
+    );
+    assert.equal(panelLost.note, '本次调用指定 A', 'argument-source note names the override');
+
+    // A panel pick that lost to config says "不是这里选的".
+    const configOverride = providerSelectModel(
+      { ask: { panel: 'B', catalog: ['A'], effective: 'A', source: 'config' } },
+      'ask',
+      ASK_FALLBACK
+    );
+    assert.equal(configOverride.note, '当前生效 A（来自配置）', 'config-source note is worded by source');
 
     // Junk in those display fields must not throw or leak "undefined" text.
     const junk = providerSelectModel({ ask: { panel: null, catalog: [], effective: 42, source: [] } }, 'ask', ASK_FALLBACK);

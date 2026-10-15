@@ -196,6 +196,29 @@ export function providerSelectModel(
         ? 'daemon 未列出档位'
         : 'config.toml 里没有直连条目';
   }
+  // `note` is a human-readable sentence about the effective value, worded by
+  // SOURCE. The old shape was a bare `effective` that the caller formatted as
+  // "这次调用实际用 X（不是这里选的）" — which is a lie when the user never
+  // picked anything (panel === '') and the value came from config or AtomCode's
+  // own default. Now:
+  //   - source === 'panel'  → "不是这里选的" (the pick lost to a later layer)
+  //   - source === 'config' → "来自配置" (the config field won)
+  //   - source === 'atomcode' → "AtomCode 默认" (nothing pinned)
+  //   - source === 'argument' → "本次调用指定" (per-call argument overrode)
+  // An empty note means "nothing to say" — the control shows what the user
+  // chose, so narrating that fact is decoration.
+  let note = '';
+  if (!disabled && effective !== '' && effective !== panel) {
+    if (source === 'panel') {
+      note = '这次调用实际用 ' + effective + '（不是这里选的）';
+    } else if (source === 'config') {
+      note = '当前生效 ' + effective + '（来自配置）';
+    } else if (source === 'atomcode') {
+      note = '当前生效 ' + effective + '（AtomCode 默认）';
+    } else if (source === 'argument') {
+      note = '本次调用指定 ' + effective;
+    }
+  }
   return {
     value: panel,
     options,
@@ -203,6 +226,6 @@ export function providerSelectModel(
     reason,
     effective,
     source,
-    note: !disabled && effective !== '' && effective !== panel ? effective : '',
+    note,
   };
 }

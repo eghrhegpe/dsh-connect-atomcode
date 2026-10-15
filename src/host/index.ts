@@ -50,7 +50,7 @@ import { createProviderStore, PROVIDER_SLOTS, normalizeProviderName } from './pr
 import { runReview, checkReviewProvision, selectReviewProvider, isLoopbackBaseUrl, probeLocalEndpoint } from './review.ts';
 import { buildQuotaReport } from './quota.ts';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 /**
  * Host-side status endpoint helpers (read-only, same-origin).
@@ -809,7 +809,12 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
         typeof args.working_dir === 'string' && args.working_dir.trim() !== ''
           ? args.working_dir
           : defaultWorkingDir;
-      const sessionKey = workDir ? workDir.replace(/[/\\]+$/, '') : 'default';
+      // Normalise the working directory so that `C:\Repo`, `c:\repo` and
+      // `C:\repo\` all map to the SAME session key. `resolve` on Windows
+      // uppercases the drive letter and collapses trailing slashes; on
+      // POSIX it makes the path absolute. Without this, Windows users
+      // silently get two session lines for the same repo.
+      const sessionKey = workDir ? resolve(workDir) : 'default';
 
       let sessionId =
         typeof args.session_id === 'string' && args.session_id.trim() !== ''
