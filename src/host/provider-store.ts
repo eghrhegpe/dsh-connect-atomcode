@@ -94,6 +94,15 @@ export function normalizeProviderName(raw: unknown) {
   if (trimmed.length > MAX_NAME_LEN) {
     return { ok: false, value: null, error: `provider name is longer than ${MAX_NAME_LEN} characters` };
   }
+  // The name is forwarded VERBATIM as one CLI argv element (`--provider <name>`).
+  // The write endpoint accepts any string, so a value like `--no-web` would be
+  // handed to the CLI's argv parser, which decides on its own whether it is an
+  // OPTION or this option's VALUE. No real provider name starts with a dash;
+  // refuse HERE (a named write error on the panel) rather than let the CLI
+  // guess, which surfaces as an unrelated flag error three layers away.
+  if (trimmed.startsWith('-')) {
+    return { ok: false, value: null, error: 'provider name must not start with "-" (the CLI argv would read it as an option, not as this option\'s value)' };
+  }
   // A control character here would ride straight into the daemon's JSON body or
   // a CLI argv; no legitimate provider name contains one.
   if (Array.from(trimmed).some((ch) => (ch.codePointAt(0) ?? NaN) < 0x20 || (ch.codePointAt(0) ?? NaN) === 0x7f)) {

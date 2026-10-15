@@ -438,6 +438,27 @@
 		];
 	}
 	/**
+	* Is this base_url a loopback endpoint — i.e. a local sidecar process the
+	* review then DEPENDS on?
+	*
+	* Mirrors `isLoopbackBaseUrl` on the host (which decides whether to probe
+	* before spawning), because the renderer needs the same fact to word the
+	* warning: "this choice bills through a process on your machine, and stops
+	* working the moment it exits". Deliberately returns false for anything
+	* unparseable rather than guessing.
+	*/
+	function isLoopbackEndpoint(url) {
+		if (typeof url !== "string" || url.trim() === "") return false;
+		try {
+			const { hostname } = new URL(url.trim());
+			if (hostname === "localhost") return true;
+			if (/^127\./.test(hostname)) return true;
+			return hostname === "::1" || hostname === "[::1]";
+		} catch {
+			return false;
+		}
+	}
+	/**
 	* The model rows, derived from ONE stats snapshot.
 	*
 	* Two entries, always both, never collapsed into one: they are TWO DIFFERENT
@@ -487,7 +508,8 @@
 			reason: "宿主没有提供档位接口（旧版本，或 /provider 路由未注册）",
 			effective: "",
 			source: "",
-			note: ""
+			note: "",
+			warning: ""
 		};
 		const name = (v) => typeof v === "string" && v.trim() !== "" ? v.trim() : "";
 		const panel = name(src.panel);
@@ -496,16 +518,24 @@
 			if (v && typeof v === "object") return name(v.provider);
 			return "";
 		};
-		const catalog = Array.isArray(src.catalog) ? src.catalog.map(optionValue).filter(Boolean) : null;
-		const pinned = panel ? [panel] : [];
-		const list = catalog === null ? pinned : catalog.indexOf(panel) === -1 ? pinned.concat(catalog) : catalog;
+		const optionEntry = (v) => {
+			const value = optionValue(v);
+			if (value === "") return null;
+			return {
+				value,
+				label: !!(v && typeof v === "object" && v.isDefault === true) ? `${value}（默认）` : value
+			};
+		};
+		const catalog = Array.isArray(src.catalog) ? src.catalog.map(optionEntry).filter((e) => e !== null) : null;
+		const pinned = panel ? [{
+			value: panel,
+			label: panel
+		}] : [];
+		const list = catalog === null ? pinned : catalog.some((e) => e.value === panel) ? catalog : pinned.concat(catalog);
 		const options = [{
 			value: "",
 			label: fallbackLabel
-		}].concat(list.map((n) => ({
-			value: n,
-			label: n
-		})));
+		}].concat(list);
 		const effective = name(src.effective);
 		const source = name(src.source);
 		const branch = provider;
@@ -528,6 +558,11 @@
 			else if (source === "atomcode") note = "当前生效 " + effective + "（AtomCode 默认）";
 			else if (source === "argument") note = "本次调用指定 " + effective;
 		}
+		let warning = "";
+		if (slotName === "review") {
+			const baseUrl = name((branch.endpoints && typeof branch.endpoints === "object" ? branch.endpoints : {})[name(panel) || effective]);
+			if (baseUrl !== "" && isLoopbackEndpoint(baseUrl)) warning = "本地端点 " + baseUrl + "：评审经本机进程转发计费，它一停 review 立刻断（探活会给出具名诊断）";
+		}
 		return {
 			value: panel,
 			options,
@@ -535,7 +570,8 @@
 			reason,
 			effective,
 			source,
-			note
+			note,
+			warning
 		};
 	}
 
@@ -579,7 +615,8 @@
 				quotaView,
 				providerRows,
 				providerSelectModel,
-				turnBoundaryRows
+				turnBoundaryRows,
+				isLoopbackEndpoint
 			};
 			async function postProvider(slotName, value) {
 				try {
@@ -642,6 +679,7 @@
 				};
 				const override = model.note;
 				const trouble = model.disabled ? model.reason : "";
+				const warning = model.warning || "";
 				return h("div", { style: S.provCell }, h("span", {
 					style: S.provLabel,
 					title
@@ -653,7 +691,7 @@
 					value: model.value,
 					disabled: model.disabled || pending,
 					onChange,
-					title: trouble || override || title,
+					title: trouble || override || warning || title,
 					"aria-label": label
 				}, model.options.map((option, index) => h("option", {
 					key: slotName + "-" + index,
@@ -661,7 +699,10 @@
 				}, option.label))), trouble ? h("span", {
 					style: S.valWarn,
 					title: trouble
-				}, trouble) : null, override ? h("span", {
+				}, trouble) : null, warning ? h("span", {
+					style: S.valWarn,
+					title: warning
+				}, warning) : null, override ? h("span", {
 					style: S.valWarn,
 					title: override
 				}, override) : null, note ? h("span", { style: S.valIdle }, note) : null);

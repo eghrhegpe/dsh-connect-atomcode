@@ -35,7 +35,7 @@ import {
   quotaView,
   panelStyle,
 } from './quota.ts';
-import { providerRows, providerSelectModel, turnBoundaryRows } from './rows.ts';
+import { providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint } from './rows.ts';
 
 // The loader hands the factory an untyped `require`; the host resolves
 // `react` from the web boot's seed table.
@@ -115,6 +115,7 @@ const REGISTRATION = {
       providerRows,
       providerSelectModel,
       turnBoundaryRows,
+      isLoopbackEndpoint,
     };
 
     async function postProvider(slotName: ProviderSlotName, value: string) {
@@ -189,6 +190,11 @@ const REGISTRATION = {
       // decoration, and it made every row two lines tall.
       const override = model.note;
       const trouble = model.disabled ? model.reason : '';
+      // The loopback dependency warning renders in the SAME style as trouble
+      // (both are "read this before you rely on this control"), but it is not
+      // a disabled reason: the control still works — until the local process
+      // it bills through exits.
+      const warning = model.warning || '';
       return h(
         'div',
         { style: S.provCell },
@@ -200,7 +206,7 @@ const REGISTRATION = {
             value: model.value,
             disabled: model.disabled || pending,
             onChange,
-            title: trouble || override || title,
+            title: trouble || override || warning || title,
             'aria-label': label,
           },
           model.options.map((option, index) =>
@@ -208,6 +214,7 @@ const REGISTRATION = {
           )
         ),
         trouble ? h('span', { style: S.valWarn, title: trouble }, trouble) : null,
+        warning ? h('span', { style: S.valWarn, title: warning }, warning) : null,
         override ? h('span', { style: S.valWarn, title: override }, override) : null,
         note ? h('span', { style: S.valIdle }, note) : null
       );

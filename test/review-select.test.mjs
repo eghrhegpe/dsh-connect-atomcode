@@ -88,6 +88,14 @@ describe('listUsableProviders — the single "usable" definition', () => {
       const sel = selectReviewProvider('', cfgDir);
       assert.equal(prov.available, true);
       assert.ok(prov.providers.includes(sel.provider), 'the selected provider must be one the probe reported usable');
+      // The endpoint map the panel warns from must describe the SAME entry the
+      // selection pinned — otherwise the panel's loopback warning names a
+      // different provider than the one the review will actually bill through.
+      assert.equal(
+        prov.endpoints[String(sel.provider)],
+        'http://127.0.0.1:8899/v1',
+        'the selected provider must carry its base_url in the endpoint map',
+      );
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -114,6 +122,49 @@ describe('selectReviewProvider', () => {
         assert.equal(s.provider, 'direct');
         assert.equal(s.auto, false);
         assert.equal(s.error, '');
+      },
+    );
+  });
+
+  it('a default_provider in SINGLE quotes is still the default', () => {
+    // Legal TOML; the old double-quote-only regex read it as UNSET, which
+    // dropped the call into auto-selection and let the single direct entry be
+    // picked for the user — a billing decision made by a regex miss.
+    withConfig(
+      [
+        "default_provider = 'direct'",
+        '[providers.direct]',
+        'base_url = "https://x.test/v1"',
+        'api_key = "sk"',
+        '',
+        '[providers.other]',
+        'base_url = "https://y.test/v1"',
+        'api_key = "sk2"',
+      ],
+      (cfgDir) => {
+        const s = selectReviewProvider('', cfgDir);
+        assert.equal(s.provider, 'direct');
+        assert.equal(s.auto, false, 'a readable default must not fall through to auto-selection');
+        assert.equal(s.error, '', 'nor to the several-entries refusal');
+      },
+    );
+  });
+
+  it('a same-named key inside a SECTION is not the review default', () => {
+    withConfig(
+      [
+        '[ui]',
+        'default_provider = "ui-model"',
+        '',
+        '[providers.only]',
+        'base_url = "https://only.test/v1"',
+        'api_key = "sk"',
+      ],
+      (cfgDir) => {
+        const s = selectReviewProvider('', cfgDir);
+        assert.equal(s.auto, true, 'with no root default the single usable entry is auto-pinned');
+        assert.equal(s.provider, 'only');
+        assert.ok(/default_provider/.test(s.reason), 'and the auto-selection says the default was unset');
       },
     );
   });

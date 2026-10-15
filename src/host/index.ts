@@ -168,6 +168,12 @@ function buildStatsBody(stats: Record<string, any>, quota: any) {
         effective: stats.effectiveReview,
         source: stats.effectiveReviewSource,
         catalog: stats.reviewCatalog,
+        // name → base_url, so the panel can say what the pick DEPENDS on. A
+        // loopback entry means a local sidecar process (in the one measured
+        // working setup, the proxy that turns CodingPlan quota into a standard
+        // endpoint on a gateway that does not check signatures) — the user is
+        // told at click time instead of when the review dies.
+        endpoints: stats.reviewEndpoints,
       },
     },
     // Drift/provenance signals: which daemon build we talk to, and whether the
@@ -365,6 +371,13 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
    * it was configured for.
    */
   const DAEMON_PROBE_TIMEOUT_MS = 5_000;
+  /**
+   * Budget for the quota `POST /command status` call — the one daemon call that
+   * runs on the PANEL's schedule (every `quota_refresh_secs`) rather than the
+   * ask path's. Selected under the panel's client deadline so both sides agree
+   * on "the daemon is wedged" at roughly the same moment; see `readQuota`.
+   */
+  const DAEMON_COMMAND_TIMEOUT_MS = 3_500;
   // Cooldown before a FAILED auto-start is retried. Without this the shared
   // start promise is a permanent tombstone: the first failure (binary not yet
   // installed, daemon wedged) would silence auto-start for the whole mount,
@@ -425,6 +438,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
     modelCatalogAt: 0,
     modelCatalogError: '',
     reviewCatalog: reviewProvision.providers || [],
+    reviewEndpoints: reviewProvision.endpoints || {},
     daemonUp: false,
     daemonVersion: '',
     spawnTried: false,
@@ -614,12 +628,27 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
       if (!stats.daemonStarting) quotaCache = { at: now, value };
       return value;
     }
+    // A named budget, and it is DELIBERATELY under the panel's client deadline
+    // (`POLL_MS - 1000` in src/client/index.ts): the client aborts its fetch at
+    // 4s and reports its own timeout string, so a server budget above that
+    // guarantees the host's answer is never read AND leaves a handler running
+    // for the rest of the 15s default. Answer first and the panel gets the
+    // HOST's named reason, which the quota chip and the detail page share.
     const result = await runCommand({
       port,
       command: 'status',
       workingDir: defaultWorkingDir || homedir(),
+      timeoutMs: DAEMON_COMMAND_TIMEOUT_MS,
     });
-    value = buildQuotaReport(result, Date.now());
+    // `runCommand` maps a transport abort to a DOMException string ("The
+    // operation was aborted due to timeout"), which as a panel reason is true
+    // but useless. The only transport shape THIS call can hit on a healthy
+    // socket is our own budget, so say that instead of quoting Node.
+    const outcome =
+      result.ok === true || result.kind !== 'transport' || !/abort|timeout/i.test(result.message || '')
+        ? result
+        : { ...result, kind: 'timeout', message: `daemon 未在 ${DAEMON_COMMAND_TIMEOUT_MS}ms 内应答 /command status（daemon 可能卡住）` };
+    value = buildQuotaReport(outcome, Date.now());
     if (value.drift === true) {
       if (!stats.quotaDriftSeen) {
         stats.quotaDriftSeen = true;
@@ -656,6 +685,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
     stats.effectiveReviewSource = picks.review ? 'panel' : reviewDefaultProvider ? 'config' : 'auto';
     const provision = checkReviewProvision();
     stats.reviewCatalog = provision.providers || [];
+    stats.reviewEndpoints = provision.endpoints || {};
     stats.reviewAvailable = provision.available;
     stats.reviewReason = provision.reason;
   }
@@ -685,11 +715,14 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
       stats.modelCatalog = Array.isArray(list)
         ? list
             .filter((m) => m && typeof m.provider === 'string' && m.provider !== '')
+            // ONLY what the panel consumes: the profile name the dropdown sends,
+            // and whether AtomCode itself treats it as the default (the one fact
+            // that tells a user whether pinning is even necessary). `model` and
+            // `effort_levels` used to be mapped in here and read by NOTHING —
+            // payload shipped on every 30s poll to be dropped at the renderer.
             .map((m) => ({
               provider: m.provider,
-              model: typeof m.model === 'string' ? m.model : '',
               isDefault: m.is_default === true,
-              effortLevels: Array.isArray(m.effort_levels) ? m.effort_levels : [],
             }))
         : [];
       stats.modelCatalogAt = Date.now();
@@ -1265,6 +1298,19 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
               writeJson(response, 400, {
                 ok: false,
                 error: `slot must be one of ${PROVIDER_SLOTS.join(' / ')} (the two paths take different provider names — 红线 8)`,
+              });
+              return;
+            }
+            // A MISSING key is not a CLEAR. `normalizeProviderName(undefined)`
+            // reads null as "clear the pick", which is how the wire spells
+            // 未插手 — but that also made a body without the field silently
+            // erase the user's selection (an older client, a hand-typed curl,
+            // a truncated body). Clearing must be an OBSERVABLE act: the field
+            // has to be present and null/''; absent is a 400 that says so.
+            if (!Object.prototype.hasOwnProperty.call(body.value, 'provider')) {
+              writeJson(response, 400, {
+                ok: false,
+                error: 'provider field is missing: name it, or send null explicitly to clear the pick',
               });
               return;
             }

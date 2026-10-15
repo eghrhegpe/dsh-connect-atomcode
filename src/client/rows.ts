@@ -95,6 +95,28 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
 // ── 运行环境（模型档位） ──────────────────────────────────────────────────
 
 /**
+ * Is this base_url a loopback endpoint — i.e. a local sidecar process the
+ * review then DEPENDS on?
+ *
+ * Mirrors `isLoopbackBaseUrl` on the host (which decides whether to probe
+ * before spawning), because the renderer needs the same fact to word the
+ * warning: "this choice bills through a process on your machine, and stops
+ * working the moment it exits". Deliberately returns false for anything
+ * unparseable rather than guessing.
+ */
+export function isLoopbackEndpoint(url: unknown): boolean {
+  if (typeof url !== 'string' || url.trim() === '') return false;
+  try {
+    const { hostname } = new URL(url.trim());
+    if (hostname === 'localhost') return true;
+    if (/^127\./.test(hostname)) return true;
+    return hostname === '::1' || hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The model rows, derived from ONE stats snapshot.
  *
  * Two entries, always both, never collapsed into one: they are TWO DIFFERENT
@@ -157,16 +179,17 @@ export function providerSelectModel(
       effective: '',
       source: '',
       note: '',
+      warning: '',
     };
   }
   const name = (v: unknown): string => (typeof v === 'string' && v.trim() !== '' ? v.trim() : '');
   const panel = name(src.panel);
   // The two slots do NOT agree on the catalogue element shape, because the two
-  // endpoints do not: /models answers with OBJECTS ({provider, model, isDefault,
-  // effortLevels}) while the review CLI's direct entries are plain STRINGS. Both
-  // go through here, so both are flattened to the option VALUE — and a shape the
-  // host did not send is null (unavailable), never [] (empty), which would read
-  // as "your machine has no models".
+  // endpoints do not: /models answers with OBJECTS ({provider, isDefault})
+  // while the review CLI's direct entries are plain STRINGS. Both go through
+  // here, so both are flattened to the option VALUE — and a shape the host did
+  // not send is null (unavailable), never [] (empty), which would read as
+  // "your machine has no models".
   const optionValue = (v: string | { provider?: string }): string => {
     if (typeof v === 'string') return name(v);
     if (v && typeof v === 'object') {
@@ -174,14 +197,31 @@ export function providerSelectModel(
     }
     return '';
   };
-  const catalog = Array.isArray(src.catalog) ? src.catalog.map(optionValue).filter(Boolean) : null;
+  // `isDefault` is the ONLY reason the ask catalogue is not a bare name list:
+  // it says which profile AtomCode would pick by itself, i.e. whether a pin
+  // changes anything. It ships as a LABEL, never as the value — the value is
+  // what gets sent as `provider`, and "（默认）" is not a provider name.
+  const optionEntry = (v: string | { provider?: string; isDefault?: boolean }): { value: string; label: string } | null => {
+    const value = optionValue(v);
+    if (value === '') return null;
+    const isDefault = !!(v && typeof v === 'object' && v.isDefault === true);
+    return { value, label: isDefault ? `${value}（默认）` : value };
+  };
+  const catalog = Array.isArray(src.catalog)
+    ? src.catalog.map(optionEntry).filter((e): e is { value: string; label: string } => e !== null)
+    : null;
   // A pinned name the catalogue can't vouch for (unfetchable, or a shape the
   // host never sent) still stays VISIBLE — a disabled select whose value has
   // no matching <option> renders as "nothing selected", which reads as a lie
   // when a pick is actually on disk.
-  const pinned = panel ? [panel] : [];
-  const list = catalog === null ? pinned : catalog.indexOf(panel) === -1 ? pinned.concat(catalog) : catalog;
-  const options = [{ value: '', label: fallbackLabel }].concat(list.map((n) => ({ value: n, label: n })));
+  const pinned = panel ? [{ value: panel, label: panel }] : [];
+  const list =
+    catalog === null
+      ? pinned
+      : catalog.some((e) => e.value === panel)
+        ? catalog
+        : pinned.concat(catalog);
+  const options = [{ value: '', label: fallbackLabel }].concat(list);
   const effective = name(src.effective);
   const source = name(src.source);
   const branch: ProviderBranch = provider as ProviderBranch;
@@ -223,6 +263,22 @@ export function providerSelectModel(
       note = '本次调用指定 ' + effective;
     }
   }
+  // The loopback warning is a DIFFERENT kind of sentence from `note`, so it
+  // gets its own field: it is about what the pick DEPENDS ON, not about which
+  // layer won. It fires on the SELECTED entry (loopback endpoint = a local
+  // sidecar process, which in the only measured working setup is the proxy
+  // that converts CodingPlan quota into a standard endpoint on a gateway that
+  // does not check signatures). README's risk table said this; the panel now
+  // says it at the moment of the click.
+  let warning = '';
+  if (slotName === 'review') {
+    const endpoints = branch.endpoints && typeof branch.endpoints === 'object' ? branch.endpoints : {};
+    const target = name(panel) || effective;
+    const baseUrl = name((endpoints as Record<string, unknown>)[target]);
+    if (baseUrl !== '' && isLoopbackEndpoint(baseUrl)) {
+      warning = '本地端点 ' + baseUrl + '：评审经本机进程转发计费，它一停 review 立刻断（探活会给出具名诊断）';
+    }
+  }
   return {
     value: panel,
     options,
@@ -231,5 +287,6 @@ export function providerSelectModel(
     effective,
     source,
     note,
+    warning,
   };
 }

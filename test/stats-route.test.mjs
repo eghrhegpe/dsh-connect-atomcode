@@ -272,6 +272,10 @@ describe('stats route — snapshot shape the panel depends on', () => {
       'provider.review.effective',
       'provider.review.source',
       'provider.review.catalog',
+      // name -> base_url per usable review entry: the panel's loopback warning
+      // reads it, and a snapshot without it shows a local proxy as if it were
+      // any other provider.
+      'provider.review.endpoints',
       'uptimeMs',
       'ask.calls',
       'ask.ok',
@@ -329,6 +333,90 @@ describe('stats route — snapshot shape the panel depends on', () => {
     assert.equal(body.review.calls, 0);
     assert.equal(typeof body.uptimeMs, 'number');
     assert.ok(body.uptimeMs >= 0);
+  });
+});
+
+describe('stats route — review endpoints (what the pick DEPENDS on)', () => {
+  // Hermetic by construction: the probe reads ~/.atomcode/config.toml, so the
+  // config is pinned in a temp HOME. A loopback direct provider is the shape
+  // the panel must be able to NAME — picking it silently would hide that the
+  // review now depends on a local process (红线 3: a dependency must be stated,
+  // not discovered when it dies).
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  const dirs = [];
+
+  after(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function mountWithConfig(lines) {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-endpoints-home-'));
+    dirs.push(fakeHome);
+    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
+    writeFileSync(join(fakeHome, '.atomcode', 'config.toml'), lines.join('\n'), 'utf8');
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-endpoints-')), 'sessions.json');
+    const route = mountRoute({ statePath });
+    return callRoute(route, { headers: { host: '127.0.0.1:3080' } });
+  }
+
+  it('maps every usable review entry to its base_url', async () => {
+    const r = await mountWithConfig([
+      'default_provider = "atomcode-local"',
+      '[providers.atomcode-local]',
+      'provider = "openai"',
+      'base_url = "http://127.0.0.1:8899/v1"  # 本地代理',
+      'api_key = "local-proxy-any-string"',
+      'model = "deepseek-ai/DeepSeek-V4-Flash"',
+      '',
+      '[providers.far-away]',
+      'base_url = "https://openrouter.example/v1"',
+      'api_key = "sk-test"',
+    ]);
+    assert.equal(r.body.config.reviewAvailable, true);
+    assert.deepEqual(
+      r.body.provider.review.endpoints,
+      { 'atomcode-local': 'http://127.0.0.1:8899/v1', 'far-away': 'https://openrouter.example/v1' },
+      'the inline comment must not ride along into the endpoint the panel warns about',
+    );
+  });
+
+  it('reads a direct provider whose config line carries an inline comment', async () => {
+    // The kv regex used to swallow everything to end-of-line, so
+    // `base_url = "http://127.0.0.1:8899/v1"  # 本地代理` parsed as a URL with
+    // the quote and the comment glued on. The CLI parses config.toml correctly
+    // itself, so the two parsers would disagree — and the corrupted value is
+    // what THIS plugin's loopback detection runs on.
+    const r = await mountWithConfig([
+      'default_provider = "atomcode-local"',
+      '[providers.atomcode-local]',
+      'provider = "openai"',
+      'base_url = "http://127.0.0.1:8899/v1"  # 本地代理',
+      'api_key = "local-proxy-any-string"',
+      'model = "deepseek-ai/DeepSeek-V4-Flash"',
+    ]);
+    assert.deepEqual(r.body.provider.review.catalog, ['atomcode-local']);
+    assert.deepEqual(
+      r.body.provider.review.endpoints,
+      { 'atomcode-local': 'http://127.0.0.1:8899/v1' },
+      'the comment must not ride along into the endpoint the panel warns about',
+    );
+  });
+
+  it('lists a remote direct provider too, so the warning is not a blanket warning', async () => {
+    const r = await mountWithConfig([
+      '[providers.far-away]',
+      'base_url = "https://openrouter.example/v1"',
+      'api_key = "sk-test"',
+    ]);
+    assert.equal(r.body.config.reviewAvailable, true);
+    assert.deepEqual(r.body.provider.review.endpoints, { 'far-away': 'https://openrouter.example/v1' });
   });
 });
 
@@ -929,6 +1017,48 @@ describe('stats route — auto-start on observation', () => {
       await new Promise((resolve) => half.close(resolve));
     }
   });
+
+  it('answers the QUOTA call within the panel\'s patience, with the host\'s own reason', async () => {
+    // /health is the daemon's cheapest endpoint; the quota call is the one that
+    // runs on the PANEL's schedule and the one most likely to wedge (it drives
+    // the full status render inside the binary). Its budget is deliberately
+    // UNDER the panel's client deadline (POLL_MS - 1000): answer first and the
+    // panel shows the HOST's named reason, shared by the card and the chip,
+    // instead of a client-side abort string plus a handler that outlives it.
+    const half = createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', service: 'atomcode-daemon', version: '5.2.2-test' }));
+        return;
+      }
+      // /command (and /models): accept, never respond.
+    });
+    const sockets = new Set();
+    half.on('connection', (s) => {
+      sockets.add(s);
+      s.on('close', () => sockets.delete(s));
+    });
+    await new Promise((resolve) => half.listen(0, '127.0.0.1', resolve));
+    try {
+      const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wedged-quota-')), 'sessions.json');
+      const route = mountRoute({ statePath, port: half.address().port, extra: { auto_start: false } });
+      const startedAt = Date.now();
+      const { body } = await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
+      const elapsed = Date.now() - startedAt;
+      assert.equal(body.daemon.up, true, 'the daemon IS up — only the quota command is wedged');
+      assert.equal(body.quota.available, false);
+      assert.match(
+        body.quota.reason,
+        /daemon 未在 .*ms 内应答 \/command status/,
+        'the reason must be the host\'s own wording, not Node\'s "The operation was aborted"',
+      );
+      assert.ok(elapsed < 9000, `the route must answer within the client's patience, took ${elapsed}ms`);
+      rmSync(dirname(statePath), { recursive: true, force: true });
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise((resolve) => half.close(resolve));
+    }
+  });
 });
 
 /**
@@ -1015,6 +1145,11 @@ describe("provider route — the panel's own model choice", () => {
       { slot: 'ask', provider: 42 },
       { slot: 'ask', provider: 'bad\u0000name' },
       { slot: 'ask', provider: 'x'.repeat(300) },
+      // The value is forwarded VERBATIM as one CLI argv element. A leading dash
+      // would be read by the CLI's argv parser as an OPTION, not as this
+      // option's value — refuse it HERE, while the panel can still show why.
+      { slot: 'ask', provider: '--no-web' },
+      { slot: 'ask', provider: '-x' },
     ];
     for (const body of bad) {
       const r = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body });
@@ -1023,6 +1158,26 @@ describe("provider route — the panel's own model choice", () => {
       assert.ok(r.body.error.length > 0, 'a refusal must name itself');
     }
     assert.equal(existsSync(m.state), false, 'no rejection may create the state file');
+  });
+
+  it('a MISSING provider field is not a CLEAR', async () => {
+    // `normalizeProviderName(undefined)` reads null as "clear the pick" — which
+    // is how the wire spells 未插手, but it also made a body WITHOUT the field
+    // silently erase the user's selection (an older client, a hand-typed curl).
+    const m = mountBoth();
+    await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: 'AtomGit-glm5.3-flash' } });
+    const r = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask' } });
+    assert.equal(r.status, 400, `a body without the provider field must be refused (got ${r.status})`);
+    assert.match(r.body.error, /provider field is missing/, 'and say that clearing must be explicit');
+    assert.equal(r.body.ok, false);
+    // The surviving pick is still on disk — read it back through the stats route,
+    // the same way the panel would learn it.
+    const poll = await callRoute(m.stats, { headers: HOME_HDRS });
+    assert.equal(poll.body.provider.ask.panel, 'AtomGit-glm5.3-flash', 'a refused write must not erase the pick');
+    // Clearing stays an OBSERVABLE act: field present, value null.
+    const cleared = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: null } });
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.body.ask.panel, null);
   });
 
   it('refuses a body that is not a JSON object', async () => {

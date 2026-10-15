@@ -70,6 +70,15 @@ export interface ReviewProvision {
   available: boolean;
   reason: string;
   providers: string[];
+  /**
+   * base_url per usable provider name. Shipped so the PANEL can name the thing
+   * the choice depends on: a loopback base_url means a local sidecar process is
+   * a live dependency (and, in the only measured working setup, the provider
+   * that turns CodingPlan quota into a STANDARD endpoint on a gateway that does
+   * not check signatures). The user should learn that when clicking, not when
+   * the review dies.
+   */
+  endpoints: Record<string, string>;
 }
 
 /** A direct provider entry the review CLI can actually be expected to run with. */
@@ -259,6 +268,46 @@ function unquoteTomlValue(raw: string): string {
 }
 
 /**
+ * Read config.toml's top-level `default_provider`, as the review CLI reads it.
+ *
+ * One function for BOTH callers (`checkReviewProvision`, `selectReviewProvider`):
+ * they used to carry the same `/^default_provider\s*=\s*"([^"]+)"/m` regex twice,
+ * and "the same knowledge in two copies" is exactly what this repo forbids
+ * everywhere else. That copy was also wrong in two measurable ways:
+ *
+ *  - double quotes ONLY. `default_provider = 'atomcode-local'` is legal TOML and
+ *    read as UNSET, which silently drops the caller into auto-selection;
+ *  - no section scoping. The `m` flag matched the key anywhere, so a
+ *    `[something] default_provider = "other"` line anywhere in the file won.
+ *
+ * TOML semantics that matter here: the top-level table is everything BEFORE the
+ * first `[section]`, and a duplicate key is illegal — so the first top-level hit
+ * is the value, and a hit inside a section is a DIFFERENT key we must not read.
+ * Bare (unquoted) values are legal TOML strings too, so they are accepted.
+ *
+ * @param {string} raw - config.toml contents
+ * @returns {string} the value, or '' when there is no usable top-level key
+ */
+export function parseDefaultProvider(raw: unknown): string {
+  const lines = String(raw ?? '').split(/\r?\n/);
+  let seenSection = false;
+  for (const lineRaw of lines) {
+    const line = lineRaw.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    if (/^\[[^\]]+\]$/.test(line)) {
+      seenSection = true;
+      continue;
+    }
+    // Past the first section the key belongs to that section, not to the root.
+    if (seenSection) continue;
+    const match = line.match(/^default_provider\s*=\s*(.+)$/);
+    if (!match) continue;
+    return unquoteTomlValue(match[1] ?? '');
+  }
+  return '';
+}
+
+/**
  * Minimal TOML section parser: collect `[providers.<name>]` entries and their
  * keys from a config.toml string. Pure and exported so the quoted-name edge
  * cases can be unit-tested directly.
@@ -328,61 +377,61 @@ export function checkReviewProvision(configDir?: string): ReviewProvision {
   const atomcodeHome = configDir || join(homedir(), '.atomcode');
   const configFile = join(atomcodeHome, 'config.toml');
   if (!existsSync(configFile)) {
-    return { available: false, reason: 'config.toml not found', providers: [] };
+    return { available: false, reason: 'config.toml not found', providers: [], endpoints: {} };
   }
   let raw: string;
   try {
     raw = readFileSync(configFile, 'utf8');
   } catch {
-    return { available: false, reason: 'unreadable config.toml', providers: [] };
+    return { available: false, reason: 'unreadable config.toml', providers: [], endpoints: {} };
   }
   const providers = parseTomlProviders(raw);
+  /** One shape for all five outcomes: names AND where each name points. */
+  const verdict = (available: boolean, reason: string, entries: UsableProvider[] = []): ReviewProvision => ({
+    available,
+    reason,
+    providers: entries.map((e) => e.name),
+    endpoints: Object.fromEntries(entries.map((e) => [e.name, e.baseUrl])),
+  });
 
   // A provider is usable when it carries a non-gateway base_url plus something
   // to run with (an api_key or an explicit model) — the SAME definition the
   // execute-time selection uses (listUsableProviders).
-  const usable = listUsableProviders(raw).map((p) => p.name);
+  const usable = listUsableProviders(raw);
   if (usable.length > 0) {
-    return { available: true, reason: '', providers: usable };
+    return verdict(true, '', usable);
   }
 
   // No usable direct provider: explain the most specific cause we can prove.
   const gatewayOnly = providers.filter((p) => p.base_url && /llm-api\.atomgit\.com/i.test(p.base_url));
   if (gatewayOnly.length > 0) {
-    return {
-      available: false,
-      reason:
-        `only the AtomGit gateway is configured (${gatewayOnly.map((p) => p.name).join(', ')}): ` +
+    return verdict(
+      false,
+      `only the AtomGit gateway is configured (${gatewayOnly.map((p) => p.name).join(', ')}): ` +
         'llm-api.atomgit.com enforces AtomCode\'s proprietary request signature on the inference endpoint, ' +
         `and the review CLI (atomcodex) does not implement it — AtomCode's own error: "signing-enforced gateway … cannot authenticate" ` +
         '(an unsigned call gets ATOMCODE_SIG_MISSING). Fix: add a direct [providers.<name>] with a STANDARD base_url + api_key. ' +
         'atomcode_ask is unaffected (the daemon carries the signing).',
-      providers: [],
-    };
+    );
   }
-  const defaultProviderMatch = raw.match(/^default_provider\s*=\s*"([^"]+)"/m);
-  const defaultProvider = defaultProviderMatch ? defaultProviderMatch[1] : '';
+  const defaultProvider = parseDefaultProvider(raw);
   const acctOnly = providers.filter((p) => !p.base_url && (p.account || p.model));
   if (acctOnly.length > 0 || defaultProvider) {
-    return {
-      available: false,
-      reason:
-        'no direct [providers.<name>] entry with a non-gateway base_url' +
+    return verdict(
+      false,
+      'no direct [providers.<name>] entry with a non-gateway base_url' +
         (defaultProvider ? ` (default_provider is "${defaultProvider}")` : '') +
         ': that is an AtomGit login/account channel with no api_key, and llm-api.atomgit.com requires ' +
         'AtomCode\'s proprietary request signature (unsigned calls get ATOMCODE_SIG_MISSING) which the review CLI does not implement. ' +
         'Fix: add a direct [providers.<name>] with a STANDARD base_url + api_key (OpenRouter / OpenAI / a local server). ' +
         'atomcode_ask is unaffected — the daemon carries the signing.',
-      providers: [],
-    };
+    );
   }
-  return {
-    available: false,
-    reason:
-      'no direct [providers.<name>] entry with base_url and api_key found; the review CLI resolves providers from direct entries only ' +
+  return verdict(
+    false,
+    'no direct [providers.<name>] entry with base_url and api_key found; the review CLI resolves providers from direct entries only ' +
       '(the daemon and the TUI also accept account-resolved ones). atomcode_ask is unaffected.',
-    providers: [],
-  };
+  );
 }
 
 /**
@@ -444,8 +493,7 @@ export function selectReviewProvider(requested?: string, configDir?: string): Re
     return { provider: name, baseUrl: hit ? hit.baseUrl : '', auto: false, error: '' };
   }
 
-  const defaultMatch = raw.match(/^default_provider\s*=\s*"([^"]+)"/m);
-  const defaultProvider = defaultMatch ? (defaultMatch[1] ?? '') : '';
+  const defaultProvider = parseDefaultProvider(raw);
   const defaultHit = usable.find((p) => p.name === defaultProvider);
   if (defaultHit) return { provider: defaultProvider, baseUrl: defaultHit.baseUrl, auto: false, error: '' };
   if (usable.length === 1) {

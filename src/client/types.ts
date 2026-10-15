@@ -33,7 +33,7 @@ export interface ProviderSlot {
   effective?: string | null;
   source?: string | null;
   /** OBJECTS on the ask path (`/models`), STRINGS on the review path. */
-  catalog?: ReadonlyArray<string | { provider?: string }> | null;
+  catalog?: ReadonlyArray<string | { provider?: string; isDefault?: boolean }> | null;
   catalogError?: string | null;
 }
 
@@ -44,6 +44,8 @@ export interface ProviderBranch {
   foreignVersion?: boolean;
   ask?: ProviderSlot | null;
   review?: ProviderSlot | null;
+  /** base_url per usable review provider name, so the pick's dependency is nameable. */
+  endpoints?: Record<string, string> | null;
 }
 
 /** The `quota` branch, as the renderer consumes it. */
@@ -104,6 +106,11 @@ export interface ProviderSelectModel {
   source: string;
   /** Non-empty ONLY when the effective value differs from what this control shows. */
   note: string;
+  /**
+   * Non-empty when the SELECTED entry points at a loopback endpoint — a local
+   * process this pick then depends on. A different sentence kind from `note`.
+   */
+  warning: string;
 }
 
 /** One row of the「回合边界」card. */

@@ -21,7 +21,7 @@ import { describe, it, before, after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { askChat, healthInfo } from '../lib/daemon.js';
 import { parseStatusQuota } from '../lib/quota.js';
-import { parseTomlProviders } from '../lib/review.js';
+import { parseDefaultProvider, parseTomlProviders } from '../lib/review.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const mod = await import(pathToFileURL(join(ROOT, 'lib', 'index.js')).href);
@@ -263,6 +263,29 @@ describe('TOML provider parsing — quoted names must not become false negatives
     assert.deepEqual(parseTomlProviders(''), []);
     assert.deepEqual(parseTomlProviders('# only a comment\n\n   \n'), []);
     assert.doesNotThrow(() => parseTomlProviders('[[[broken\nproviders\n= = =\n'));
+  });
+
+  it('reads default_provider in either quoting style, root table only', () => {
+    // The two callers (provision probe + execute-time selection) each carried
+    // this same regex, and it was wrong in two measurable ways in two places:
+    // double quotes ONLY, and no section scoping.
+    assert.equal(parseDefaultProvider('default_provider = "atomcode-local"'), 'atomcode-local');
+    assert.equal(parseDefaultProvider("default_provider = 'atomcode-local'"), 'atomcode-local');
+    assert.equal(parseDefaultProvider('default_provider = atomcode-local'), 'atomcode-local');
+    assert.equal(parseDefaultProvider('default_provider = "x"  # 本地代理'), 'x');
+    assert.equal(
+      parseDefaultProvider(['[ui]', 'default_provider = "ui-model"'].join('\n')),
+      '',
+      'a section-scoped key is a DIFFERENT key with the same spelling',
+    );
+    assert.equal(
+      parseDefaultProvider(['default_provider = "root-model"', '', '[ui]', 'default_provider = "ui-model"'].join('\n')),
+      'root-model',
+      'the first root-table hit wins (TOML forbids duplicate keys)',
+    );
+    assert.equal(parseDefaultProvider(''), '');
+    assert.equal(parseDefaultProvider(null), '');
+    assert.equal(parseDefaultProvider(42), '');
   });
 
   it('strips INLINE comments and trailing whitespace from values', () => {

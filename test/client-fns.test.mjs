@@ -71,7 +71,7 @@ async function loadClient(fakeRequire) {
 }
 
 const mod = await loadClient();
-const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel, turnBoundaryRows } = mod.__test;
+const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint } = mod.__test;
 
 describe('client __test — the formatters are exposed', () => {
   it('exports every pure helper the panel renders through', () => {
@@ -666,6 +666,93 @@ describe('providerSelectModel — one slot, one dropdown, one namespace', () => 
         assert.ok(row.title.length > 20, 'and the provenance must exist somewhere (title)');
         assert.ok(!/[（(]/.test(row.value), `value must not carry a parenthetical: ${row.value}`);
       }
+    }
+  });
+
+  it('marks the profile AtomCode would pick by itself, as a LABEL only', () => {
+    // `isDefault` used to be mapped into the snapshot and read by NOTHING — a
+    // field shipped on every 30s poll to be dropped at the renderer. Now it is
+    // the only reason the ask catalogue is not a bare name list: it tells the
+    // user whether pinning changes anything at all.
+    const realAsk = [
+      { provider: 'AtomGit-glm5.3-flash', isDefault: false },
+      { provider: 'AtomGit-qwen3.8-27b', isDefault: true },
+    ];
+    const m = providerSelectModel({ ask: { panel: null, catalog: realAsk } }, 'ask', ASK_FALLBACK);
+    assert.deepEqual(
+      m.options.map((o) => o.label),
+      [ASK_FALLBACK, 'AtomGit-glm5.3-flash', 'AtomGit-qwen3.8-27b（默认）'],
+    );
+    // The LABEL never becomes the value: "（默认）" is not a provider name, and
+    // sending it would be a profile the daemon has never heard of (红线 8).
+    assert.deepEqual(m.options.map((o) => o.value), ['', 'AtomGit-glm5.3-flash', 'AtomGit-qwen3.8-27b']);
+    // A pinned default keeps its plain value even when the label carries the tag.
+    const pinned = providerSelectModel(
+      { ask: { panel: 'AtomGit-qwen3.8-27b', catalog: realAsk } },
+      'ask',
+      ASK_FALLBACK,
+    );
+    assert.equal(pinned.value, 'AtomGit-qwen3.8-27b');
+    assert.equal(pinned.disabled, false);
+  });
+
+  it('warns when the picked review entry points at a LOCAL endpoint', () => {
+    // Picking a loopback direct provider makes a process on this machine a live
+    // dependency (and, in the only measured working setup, routes billing
+    // through a gateway that does not check signatures). README's risk table
+    // said that; the control now says it at the moment of the click.
+    const local = providerSelectModel(
+      {
+        endpoints: { 'atomcode-local': 'http://127.0.0.1:8899/v1', remote: 'https://openrouter.example/v1' },
+        review: { panel: 'atomcode-local', catalog: ['atomcode-local', 'remote'] },
+      },
+      'review',
+      REVIEW_FALLBACK,
+    );
+    assert.match(local.warning, /本地端点 http:\/\/127\.0\.0\.1:8899\/v1/);
+    assert.match(local.warning, /一停 review 立刻断/);
+    assert.equal(local.disabled, false, 'the control still works — the warning is about the dependency');
+    // A remote entry gets NO warning: a blanket warning is how a real one gets
+    // trained-out.
+    const remote = providerSelectModel(
+      {
+        endpoints: { 'atomcode-local': 'http://127.0.0.1:8899/v1', remote: 'https://openrouter.example/v1' },
+        review: { panel: 'remote', catalog: ['atomcode-local', 'remote'] },
+      },
+      'review',
+      REVIEW_FALLBACK,
+    );
+    assert.equal(remote.warning, '');
+    // The ask slot never warns: its catalogue is daemon profiles, not endpoints.
+    const ask = providerSelectModel(
+      { endpoints: { x: 'http://127.0.0.1:9/v1' }, ask: { panel: 'x', catalog: ['x'] } },
+      'ask',
+      ASK_FALLBACK,
+    );
+    assert.equal(ask.warning, '');
+  });
+
+  it('has no loopback warning when the host sends no endpoint map', () => {
+    const m = providerSelectModel({ review: { panel: 'atomcode-local', catalog: ['atomcode-local'] } }, 'review', REVIEW_FALLBACK);
+    assert.equal(m.warning, '', 'an older host without endpoints must render as if there were nothing to say');
+  });
+});
+
+/**
+ * isLoopbackEndpoint — the renderer's copy of the host's loopback test.
+ *
+ * It exists because the warning must be worded from the same fact the host
+ * probes on (`isLoopbackBaseUrl`): "this choice bills through a process on your
+ * machine". Anything unparseable is NOT loopback — guessing would produce
+ * warnings about endpoints that are not local.
+ */
+describe('isLoopbackEndpoint', () => {
+  it('recognises the local shapes and nothing else', () => {
+    for (const url of ['http://127.0.0.1:8899/v1', 'http://127.0.0.1', 'http://localhost:8899/v1', 'http://[::1]:8899/v1', 'http://localhost']) {
+      assert.equal(isLoopbackEndpoint(url), true, url);
+    }
+    for (const url of ['https://openrouter.example/v1', 'http://192.168.1.9:8899/v1', 'http://0127.0.0.1/v1', 'not a url', '', null, undefined, 42]) {
+      assert.equal(isLoopbackEndpoint(url), false, String(url));
     }
   });
 });
