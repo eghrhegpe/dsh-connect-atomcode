@@ -34,7 +34,7 @@
    解析不出来时**绝不编数字**，而是原样显示原文。见 [README 额度显示](../README.md#-codingplan-额度显示)。
 
 3. **`npm test` 不消耗额度，`npm run test:live` 默认也不消耗。**
-   175 个离线 test 全部用假 daemon / 假 spawn / 纯函数。
+   离线链全部用假 daemon / 假 spawn / 纯函数（套件名单见 `package.json` 的 `scripts.test`，计数自己量）。
    live 套件里的**真实模型回合**需要显式 `ATOMCODE_LIVE_TURNS=1` 才会跑。
 
 ## 文档索引
@@ -46,7 +46,7 @@
 | [`AtomCode-CLI与daemon接口参考.md`](./AtomCode-CLI与daemon接口参考.md) | **实测速查**：`atomcode` 18 个顶层命令、`review` 28 个选项、21 个斜杠命令（及哪些能走 `/command`）、daemon 全部 HTTP 端点、SSE 词表、`ATOMCODE_SIG_MISSING` 签名门、本插件用到的子集 |
 | [`AtomCode-CodingPlan网页版可用信息.md`](./AtomCode-CodingPlan网页版可用信息.md) | 网页版（ai.atomgit.com）CodingPlan 套餐页面素材：Lite / Pro 的 5 小时调用上限与支持模型 |
 | [`AtomCode-CodingPlan网页版额度卡片.md`](./AtomCode-CodingPlan网页版额度卡片.md) | 网页版额度卡片的原始 HTML 抓取（含已领取套餐、5 小时用量、剩余天数） |
-| [`../test/`](../test) | 8 个测试文件；`quota.test.mjs` 与 `stats-route.test.mjs` 里有大量实测载荷 |
+| [`../test/`](../test) | 13 个测试文件（11 个离线 + 2 个 live）；`quota.test.mjs` 与 `stats-route.test.mjs` 里有大量实测载荷 |
 
 ## 代码地图
 

@@ -709,4 +709,32 @@ describe('stats route — auto-start on observation', () => {
       rmSync(dirname(statePath), { recursive: true, force: true });
     }
   });
+
+  it('exposes which provider each path defaults to (null = the bridge pins nothing)', async () => {
+    // `default_provider` (ask) and `review_default_provider` (review) decide which
+    // MODEL / which BILLING CHANNEL every bridged turn uses, so the route must
+    // tell the two states apart: pinning a name, and pinning nothing. A knob that
+    // silently never applied is exactly the failure this read-only route exists to
+    // make visible (红线 3). They are separate fields because the two paths do not
+    // share a provider namespace (红线 8).
+    const pinned = join(mkdtempSync(join(tmpdir(), 'atomcode-dp-stats-')), 'sessions.json');
+    const unset = join(mkdtempSync(join(tmpdir(), 'atomcode-dp-stats2-')), 'sessions.json');
+    try {
+      const on = mountRoute({
+        statePath: pinned,
+        port: CLOSED_PORT,
+        extra: { default_provider: 'AtomGit-glm5.3-flash', review_default_provider: 'atomcode-local' },
+      });
+      const a = (await callRoute(on, { headers: { host: '127.0.0.1:3080' } })).body;
+      assert.equal(a.config.defaultProvider, 'AtomGit-glm5.3-flash');
+      assert.equal(a.config.reviewDefaultProvider, 'atomcode-local');
+      const off = mountRoute({ statePath: unset, port: CLOSED_PORT });
+      const b = (await callRoute(off, { headers: { host: '127.0.0.1:3080' } })).body;
+      assert.equal(b.config.defaultProvider, null, 'unset must be an explicit null, not a missing key');
+      assert.equal(b.config.reviewDefaultProvider, null, 'unset must be an explicit null, not a missing key');
+    } finally {
+      rmSync(dirname(pinned), { recursive: true, force: true });
+      rmSync(dirname(unset), { recursive: true, force: true });
+    }
+  });
 });

@@ -229,6 +229,33 @@ rate_limited      {reset_at_display, reset_label, secs_until_reset, auto_resumin
 
 > `done.stats` **没有额度字段**（只有 token 明细）；额度只在 `POST /command {command:"status"}` 的 `text` 里。
 
+### `POST /chat` 的请求体字段 `[实测 2026-10-14]`
+
+```json
+{ "message": "...", "approval_mode": "bypass",
+  "provider": "<模型档位名>",        // 可省略；见下
+  "session_id": "<续接>",            // 可省略
+  "working_dir": "<必填性质>" }      // /command 也要求它
+```
+
+**`provider` 收的是"模型档位名"，不是厂商名，也不是模型 id。** 三个命名空间别混：
+
+| 名字 | 出自 | 形状 | 本机实例 |
+|---|---|---|---|
+| **档位名** | daemon `GET /models` 的 `provider` 字段 = `config.toml` 里 `[models."<名>"]` 的键 = `default_provider` 的值 | `Account-modelish` | `AtomGit-qwen3.8-27b` / `AtomGit-glm5.3-flash` |
+| 模型 id | 档位名对应的真实模型 | 裸名 | `qwen3.8-27b` / `glm5.3-flash` |
+| 直连条目名 | `config.toml` 的 `[providers.<名>]`，**只有 review CLI 认这个** | 任意 | `atomcode-local` |
+
+实测：`default_provider` 是 `AtomGit-qwen3.8-27b` 时，发 `{"provider":"AtomGit-glm5.3-flash"}` 后 SSE 第一帧就是
+
+```
+data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-flash"}
+```
+
+→ **换模型不需要改 `config.toml`，一个请求参数就够**；`runtime_info` 报的是**真实生效值**（不是回显请求），所以档位名打错会当场露馅。整个回合 2.2s / 20278 token（`cached_tokens` 17472）。
+
+`GET /models` 还带 `effort_applicable` / `reasoning_effort` / `effort_levels`（本机：qwen3.8-27b = `low|medium|xhigh`，glm5.3-flash = `low|high`）。**思考档位有没有 `/chat` 的入口——未实测**；已知 IDE 实时通道有 `/live/reasoning_effort`，本插件没用。
+
 ---
 
 ## 5. 网关侧：AtomGit 签名门 `[实测]`
@@ -292,8 +319,8 @@ AtomCode error: missing base URL: pass --base-url, set $ATOMCODE_BASE_URL, or ad
 | AtomCode 面 | 插件里的位置 |
 |---|---|
 | `GET /health` | `lib/daemon.js: health()` —— 存活探测与拉起轮询 |
-| `GET /models` | `lib/daemon.js: listModels()`（live 测试用；插件本体未调用） |
-| `POST /chat` (SSE) | `lib/daemon.js: streamChat()/askChat()` —— `atomcode_ask` |
+| `GET /models` | `lib/daemon.js: listModels()`（live 测试用；插件本体未调用——**插件面板上没有模型选择器**，档位名靠 `default_provider` 配置或调用参数） |
+| `POST /chat` (SSE) | `lib/daemon.js: streamChat()/askChat()` —— `atomcode_ask`（`provider` 字段由插件的 `default_provider` 配置或调用参数填入；**留空时连字段都不发**） |
 | `POST /command` `{command:"status"}` | `lib/daemon.js: runCommand()` + `lib/quota.js` —— 额度显示 |
 | `atomcode daemon --port … --no-telemetry` | `lib/daemon.js: spawnDaemon()` —— 自动拉起 |
 | `atomcode review …` | `lib/review.js` —— `atomcode_review`（含 `--base/--staged/--pr/--diff-file/--task/--provider/--max-rounds/--max-duration/--json/--no-web/--no-telemetry`） |

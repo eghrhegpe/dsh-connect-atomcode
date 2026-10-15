@@ -49,6 +49,33 @@
         # independent of DSH's permission presets — review the trade-off
         # before leaving it on in a shared repo.)
         approval_mode: bypass
+        # Which AtomCode MODEL bridged turns ask for when the call does not name
+        # one. Value = the model PROFILE name, i.e. the `provider` field of
+        # `daemon GET /models` ("AtomGit-glm5.3-flash"), which is also the kind of
+        # name ~/.atomcode/config.toml keeps in its own default_provider. NOT a
+        # bare model id ("glm5.3-flash"). Measured on atomcode 5.2.x: sending it in
+        # POST /chat switches the model (SSE runtime_info reports the one that ran).
+        # Precedence: per-call `provider` argument > this field > AtomCode's own
+        # default. Empty = send nothing at all, so AtomCode's default stays
+        # authoritative. The bridge NEVER writes config.toml: changing the default
+        # for every AtomCode client is an AtomCode-side edit
+        # (default_provider + default_model, then POST /config/reload).
+        # ASK path only (daemon POST /chat): maps to that request's `provider`.
+        # REVIEW has its own knob below — the two paths do NOT share a namespace.
+        default_provider: ''
+        # REVIEW path only (CLI `atomcode review --provider`). A DIFFERENT
+        # namespace from `default_provider` above: this must be a direct
+        # `[providers.<name>]` entry in config.toml (e.g. "atomcode-local"),
+        # because the review CLI resolves providers from those entries only.
+        # Handing it a daemon profile name ("AtomGit-...") would point the CLI at
+        # a provider it cannot bill against.
+        # It fills selectReviewProvider()'s explicit-request slot, so it wins over
+        # the CLI's own default_provider auto-selection; a name this plugin does
+        # not recognize is still passed through for the CLI to judge (we never
+        # block here). Empty = today's behavior: config.toml's default_provider if
+        # usable, else the single usable direct entry, else refuse and ask the
+        # caller to name one (never a guess about which channel gets billed).
+        review_default_provider: ''
         # Default review working directory (atomcode_review only). Empty = the
         # HOST PROCESS's cwd, which is usually NOT the user's repository — set
         # this if you rely on review without passing working_dir per call.

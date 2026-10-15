@@ -171,6 +171,8 @@ bundle 形式（与本机 `dsh-connect-*` 同品类）：
 | `auto_start` | `true` | 探测不到 daemon 时 detached 拉起。**面板或额度标签一被轮询就会触发**（ask 路径也会），不再是"等第一次调工具才拉" |
 | `binary` | `''` | 二进制名/路径（空 = PATH；`ATOMCODE_BIN` 亦可） |
 | `approval_mode` | `bypass` | ask 回合内 AtomCode 侧工具审批；共享仓库慎用无人值守 |
+| `default_provider` | `''` | **ask 路径**缺省的**模型档位名**（如 `AtomGit-glm5.3-flash`）。优先级：调用参数 `provider` > 本字段 > AtomCode 自己在 `config.toml` 里的默认。**空 = 连 `provider` 字段都不发**，模型选择不被插件插手。详见「怎么换模型」 |
+| `review_default_provider` | `''` | **review 路径**缺省的**直连条目名**（`[providers.<name>]`，如 `atomcode-local`）。⚠️ 与上一行**不是同一个命名空间**：把 `AtomGit-*` 填这里等于给 CLI 一个它认不出的计费通道。空 = 沿用自动选择（config.toml 的 `default_provider` 可用则用 → 唯一直连条目顶上 → 多个则要求点名，不猜） |
 | `working_dir` | `''` | ask 回合的缺省工作目录（同时是侧边对话的会话键） |
 | `review_working_dir` | `''` | **review 的缺省仓库根**。空 = review **不猜**，必须由调用传 `working_dir`（见「治理记录」） |
 | `state_path` | `''` | 会话映射文件（缺省 `~/.dsh/state/dsh-atomcode-bridge/sessions.json`） |
@@ -182,6 +184,38 @@ bundle 形式（与本机 `dsh-connect-*` 同品类）：
 | `review_max_duration_secs` | `900` | 评审墙钟保险丝 |
 | `quota_refresh_secs` | `60` | CodingPlan 额度刷新间隔（秒）；`0` = 关闭额度显示（连带不发那条额外 `/command` 调用）。缓存是为了让面板 5s 轮询不变成 5s 一次 daemon 调用 |
 | `daemon_start_timeout_secs` | `30` | 拉起 daemon 后等 `/health` 应答的上限（秒），每 1.5s 探一次；`0` = 只 spawn 不等 |
+
+## 怎么换 AtomCode 用的模型（2026-10-14 实测）
+
+AtomCode 5.x 在这条路上的 "provider" **就是模型档位名**，不是厂商名。daemon `GET /models` 的真实形状：
+
+```json
+[{ "provider": "AtomGit-glm5.3-flash", "model": "glm5.3-flash", "is_default": false,
+   "effort_levels": ["low", "high"] },
+ { "provider": "AtomGit-qwen3.8-27b",  "model": "qwen3.8-27b",  "is_default": true,
+   "effort_levels": ["low", "medium", "xhigh"] }]
+```
+
+那个 `provider` 字段就是 `~/.atomcode/config.toml` 里 `[models."<档位名>"]` 的键名，也正是它 `default_provider` 存的东西——所以三档粒度各归各位：
+
+| 粒度 | 怎么做 | 谁的地盘 |
+|---|---|---|
+| **单次调用** | 给工具传 `provider="AtomGit-glm5.3-flash"`（用户说一句"用 glm5.3-flash 问 AtomCode"即可） | ✅ 插件本来就支持，无需改动 |
+| **本插件的缺省** | ask 配 `default_provider`（档位名），review 配 `review_default_provider`（直连条目名）——**两个字段，别填串** | ✅ 插件侧（本次新增） |
+| **整机 AtomCode 的缺省** | 编辑 `~/.atomcode/config.toml` 的 `default_provider` + `default_model`，再 `POST /config/reload`（或等 daemon 空闲 30 分钟自杀后自然重启）；TUI 里是 `/model` | ⚠️ **AtomCode 侧**——本插件对那个文件**只读不写** |
+
+实测证据（一个 3 字母的回合，2.2s / 20k token，其中 17k 命中缓存）：当时默认明明是 `qwen3.8-27b`，发 `POST /chat {"provider":"AtomGit-glm5.3-flash"}` 之后 SSE 回来的是
+
+```
+data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-flash"}
+```
+
+工具返回里那个 `provider=` 取的就是 daemon 报的 `runtime_info`（不是回显插件自己传的参），所以**档位名打错不会假装"换成功了"**：要嘛回合直接带错模型跑完（`provider=` 当场露馅），要嘛 daemon 报错。
+
+> **两个坑**
+> 1. 裸模型 id（`glm5.3-flash`）**不是**档位名。按 `/models` 里 `provider` 字段的整名传；传半截名会原样透传给 daemon/CLI（插件不拦，`selectReviewProvider` 对"没见过的名字"也是透传让 CLI 自己判），所以错了就是错在远端。
+> 2. **review 那条路是另一个命名空间**：CLI 的 `--provider` 收 `config.toml` 里 `[providers.<name>]` 的**直连条目名**（那条路上模型由该条目的 `model` 决定），与 daemon `/models` 的档位名互不相通。所以插件侧也是**两个字段**：`default_provider`（ask）与 `review_default_provider`（review），填串了等于让 CLI 去认一个它没有的通道。
+> 3. **思考档位没接**：`/models` 带 `effort_levels`、daemon 有 `/live/reasoning_effort` 通道，本插件都没用——`reasoning_effort` 目前只能在 AtomCode 侧调。
 
 ## v0.4 治理记录
 
@@ -196,7 +230,10 @@ bundle 形式（与本机 `dsh-connect-*` 同品类）：
 | **review 探针假阴性 + 陈旧**（引号 provider 名被误判不可用；只在 mount 跑一次） | 解析器抽成 `parseTomlProviders()` 并正确处理 `[providers."my provider"]` / 引号键 / 全引号段名；**execute 每次调用重读 config**，不可用时直接拒绝（不再 spawn 一个注定失败的进程）；描述警示保留为"第一次就看到"的那层 |
 | **review 缺省落到宿主 cwd**（评错仓库却报成功） | 新增 `review_working_dir`；两者都没给时**拒绝**并说明原因，不猜 |
 | **200KB 静默截断** | `reply` / `report` 截断时**打标记 + 置 `truncated` 字段**，`render()` 额外提示 |
-| **`provider` 参数文档与契约打架**（举例给模型名、契约是 provider 名） | 描述改为按 `[providers.<name>]` / `/providers` 命名，并明确"不要传模型名" |
+| **`provider` 参数文档与契约打架**（举例给模型名、契约是 provider 名） | v0.4 先改成"按 `[providers.<name>]` / `/providers` 命名，不要传模型名"；**这句对 ask 路径仍然是错的**，见下一行 |
+| **`provider` 到底是什么名**（2026-10-14 实测才搞清） | ask（daemon `/chat`）收的是**模型档位名** = `GET /models` 的 `provider` 字段 = `config.toml` 里 `[models."<名>"]` 的键 / `default_provider` 的值（`AtomGit-glm5.3-flash`）；review（CLI）收的才是 `[providers.<name>]` 直连条目名。**两条路命名空间不同**。两个工具描述现各说各的，并写明"传裸模型 id 是错的" |
+| **模型选择没有插件侧旋钮** | 新增**两个**配置字段（不是一个）：`default_provider`（ask）与 `review_default_provider`（review），各自路径里"调用参数 > 该字段 > 原有默认"；留空**连字段都不发**。生效值进 `/stats` 快照的 `config.defaultProvider` / `config.reviewDefaultProvider`，未配 = `null`。**插件依旧不写 `~/.atomcode/config.toml`** |
+| **一版曾用同一个字段喂两条路（自查发现）** | 第一版把 `default_provider` 同时喂给 `/chat.provider` 和 `selectReviewProvider()`，而这两处收的**是两个命名空间**：ask 收档位名 `AtomGit-glm5.3-flash`，review 收直连条目名 `atomcode-local`。配了档位名的机器上，review 会被指到一个 CLI 认不出的通道上。故拆成两字段，并由 `wiring.test.mjs` 双向钉住**互不渗漏**（`default_provider` 不得消解 review 的"多直连条目须点名"，`review_default_provider` 不得出现在 `/chat` 载荷里），红线 8 记账 |
 | **review 过度宣称"结构化 findings"** | 描述改为"`--json` 原始文本，findings 可能夹带日志行"，让模型自己解析 |
 | **`sessions.count()` 跨 prefix** | 按本 store 的 prefix 统计 |
 | **`drop()` 死代码**（陈旧 session 无处可清） | 接到新的 `atomcode_ask reset_session` 参数上，并处理"显式 session_id + reset"的优先级 |
@@ -382,7 +419,7 @@ tick 只在面板打开时跑（否则每个会话的 composer 每秒都会重�
 
 | 命令 | 消耗 CodingPlan 额度？ |
 |---|---|
-| `npm test` | ❌ **零消耗**。175 个 test 全部走假 daemon / 假 spawn / 纯函数，不碰真模型 |
+| `npm test` | ❌ **零消耗**。链里每个 test 都走假 daemon / 假 spawn / 纯函数，不碰真模型（**test 数不写死在这**：`npm test 2>&1 \| Select-String '^ℹ tests'` 自己量，理由见 `AGENTS.md`「验证」） |
 | `npm run test:live` | ❌ **默认也零消耗**。只跑只读检查（health / token / 模型目录），真实回合被跳过 |
 | `ATOMCODE_LIVE_TURNS=1 npm run test:live` | ✅ **消耗**。`daemon-live` 会打 **7 个真实模型回合**（2× `streamChat` + 5× `askChat`），`review-live` 再花 1 个评审回合 |
 
@@ -406,7 +443,8 @@ ATOMCODE_LIVE_TURNS=1 npm run test:live
 自洽（不需要 daemon、不需要网络、不烧 token）：
 
 ```bash
-npm test           # daemon-parse + daemon-stream + review + wiring + client-id + client-fns + ask-glue + stats-route + quota + protocol，共 175 个 test
+npm test           # 链的名单就是 package.json 的 scripts.test：daemon-parse + daemon-stream + review + review-select + wiring + client-id + client-fns + ask-glue + stats-route + quota + protocol
+                   # 计数自己量：npm test 2>&1 | Select-String '^ℹ tests'（写死数字上次 13 分钟就过期了，见 AGENTS.md）
 ```
 
 各套件用本机 `node:http` 起**假 daemon**（或纯函数），所以把过去只有 live 套件覆盖（而没有 daemon 就直接跳过）的路径全部变成离线可测：

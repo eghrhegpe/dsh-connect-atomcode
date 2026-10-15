@@ -5,11 +5,12 @@
  * (`atomcode_ask`, `atomcode_review`) and nothing on the `llm` service.
  */
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BRIDGE = join(__dirname, '..', 'lib', 'index.js');
@@ -468,5 +469,241 @@ describe('lib/review.js — checkReviewProvision', () => {
     assert.equal(r.available, true, `expected available=true, got reason=${r.reason}`);
     const { rmSync } = await import('node:fs');
     rmSync(f, { recursive: true, force: true });
+  });
+});
+
+describe('lib/index.js — default_provider / review_default_provider (two namespaces)', () => {
+  // What this suite pins is the PRECEDENCE reaching the wire, not the string in
+  // the config: a configured default that silently never gets sent is the worst
+  // outcome, and a configured default that ALWAYS gets sent would override
+  // AtomCode's own `default_provider` on every bridged turn. Both directions
+  // need a guard, so the fake daemon below records the real /chat payload.
+  /** @type {Array<import('node:http').Server>} */
+  const openServers = [];
+  const stateDirs = [];
+  after(() => {
+    for (const server of openServers) server.close();
+    for (const dir of stateDirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Fake daemon: answers /health so the ask path proceeds, and records the
+   * POST /chat body it was actually handed.
+   * @returns {Promise<{port:number, chats:Array<object>, port_server:import('node:http').Server}>}
+   */
+  async function startChatProbe() {
+    /** @type {Array<object>} */
+    const chats = [];
+    const server = createServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => { raw += chunk; });
+      req.on('end', () => {
+        if (req.url === '/health') {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ status: 'ok', service: 'atomcode-daemon', version: '5.2.2-test' }));
+          return;
+        }
+        let body = {};
+        try {
+          body = JSON.parse(raw || '{}');
+        } catch {
+          body = { __unparsable: raw };
+        }
+        chats.push(body);
+        const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.end(
+          sse([
+            // Echo the provider the client asked for, the way the real daemon's
+            // runtime_info does — so `result.provider` is checked against intent.
+            { type: 'runtime_info', provider: body.provider || 'AtomGit-qwen3.8-27b', model: 'probe-model' },
+            { type: 'text', content: 'OK' },
+            { type: 'done', tokens: 12, tool_calls: 0, session_id: 'sid-probe', stop_reason: 'stopped' },
+          ]),
+        );
+      });
+    });
+    openServers.push(server);
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return { port: server.address().port, chats };
+  }
+
+  /** Mount the plugin against the probe daemon and hand back the ask tool. */
+  async function mountAsk(extraConfig) {
+    const probe = await startChatProbe();
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-dp-'));
+    stateDirs.push(dir);
+    const { ctx, calls } = fakeCtx();
+    const mod = await import(fileUrl(BRIDGE));
+    mod.apply(ctx, {
+      state_path: join(dir, 'sessions.json'),
+      auto_start: false,
+      port: probe.port,
+      ...extraConfig,
+    });
+    const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
+    return { ask, chats: probe.chats, calls };
+  }
+
+  it('a configured default_provider reaches POST /chat', async () => {
+    const { ask, chats } = await mountAsk({ default_provider: 'AtomGit-glm5.3-flash' });
+    const r = await ask.execute({ message: 'hi' }, {});
+    assert.equal(r.ok, true, r.error);
+    assert.equal(chats.length, 1, 'exactly one /chat was made');
+    assert.equal(chats[0].provider, 'AtomGit-glm5.3-flash', 'the configured profile must go on the wire');
+    assert.equal(r.provider, 'AtomGit-glm5.3-flash', 'the turn must report the profile it ran with');
+  });
+
+  it('a per-call provider argument beats the configured default', async () => {
+    const { ask, chats } = await mountAsk({ default_provider: 'AtomGit-glm5.3-flash' });
+    await ask.execute({ message: 'hi', provider: 'AtomGit-qwen3.8-27b' }, {});
+    assert.equal(chats[0].provider, 'AtomGit-qwen3.8-27b', 'the caller names the model for this turn');
+  });
+
+  it('an UNSET default_provider sends no provider field at all', async () => {
+    // The other half of the contract: with the knob left empty the bridge must
+    // stay out of model selection. Always pinning a provider would silently
+    // re-point every bridged turn the moment the user changes AtomCode's own
+    // default (and would leak a stale profile name across hosts).
+    const { ask, chats } = await mountAsk({});
+    const r = await ask.execute({ message: 'hi' }, {});
+    assert.equal(r.ok, true, r.error);
+    assert.ok(!('provider' in chats[0]), `no provider key expected, got ${JSON.stringify(chats[0].provider)}`);
+    assert.equal(r.provider, 'AtomGit-qwen3.8-27b', 'falls back to whatever the daemon reports');
+  });
+
+  it('an empty/whitespace default_provider behaves exactly like an unset one', async () => {
+    const { ask, chats } = await mountAsk({ default_provider: '   ' });
+    await ask.execute({ message: 'hi' }, {});
+    assert.ok(!('provider' in chats[0]), 'a blank profile must not become provider=""');
+  });
+
+  it('a non-string default_provider is dropped, never stringified (config is unvalidated)', async () => {
+    const { ask, chats, calls } = await mountAsk({ default_provider: 42 });
+    assert.equal(calls.tools.length, 2, 'the mount survives garbage config');
+    await ask.execute({ message: 'hi' }, {});
+    assert.ok(!('provider' in chats[0]), 'a number must not be coerced into a provider name');
+  });
+
+  it('a real provider name is trimmed before it goes on the wire', async () => {
+    const { ask, chats } = await mountAsk({ default_provider: ' AtomGit-glm5.3-flash ' });
+    await ask.execute({ message: 'hi' }, {});
+    assert.equal(chats[0].provider, 'AtomGit-glm5.3-flash');
+  });
+
+  it('review_default_provider does not leak onto the ask wire', async () => {
+    // The other direction of the namespace split: "atomcode-local" is a direct
+    // [providers.<name>] entry the CLI understands, and nothing else. Sending it
+    // to /chat would ask the daemon for a profile it does not have.
+    const { ask, chats } = await mountAsk({ review_default_provider: 'atomcode-local' });
+    const r = await ask.execute({ message: 'hi' }, {});
+    assert.equal(r.ok, true, r.error);
+    assert.ok(!('provider' in chats[0]), `review knob must not reach /chat, got ${JSON.stringify(chats[0].provider)}`);
+  });
+
+  it('both tool descriptions teach that `provider` takes a model PROFILE name', async () => {
+    // 红线 1 discipline applied to model selection: the model is told BEFORE the
+    // call. AtomCode 5.x has no "provider == vendor" notion on this path; passing
+    // "glm5.3-flash" instead of "AtomGit-glm5.3-flash" is the obvious wrong move.
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-dp-desc-'));
+    stateDirs.push(dir);
+    const { ctx, calls } = fakeCtx();
+    const mod = await import(fileUrl(BRIDGE));
+    mod.apply(ctx, { state_path: join(dir, 'sessions.json'), auto_start: false, default_provider: 'AtomGit-glm5.3-flash' });
+    const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
+    assert.match(ask.description, /档位名/, 'the ask description must name the kind of value expected');
+    assert.match(ask.description, /default_provider="AtomGit-glm5.3-flash"/, 'the ACTIVE default is echoed');
+    assert.match(ask.parameters.properties.provider.description, /GET \/models/);
+    assert.match(ask.parameters.properties.provider.description, /不要传裸模型 id/);
+    const review = calls.tools.find((t) => t.name === 'atomcode_review');
+    // The ask profile must NOT show up in the review tool's text: handing
+    // "AtomGit-..." to the CLI would name a provider it cannot bill against.
+    assert.doesNotMatch(
+      review.description,
+      /AtomGit-glm5\.3-flash/,
+      'the ask-side profile must not leak into the review namespace',
+    );
+    assert.match(review.parameters.properties.provider.description, /providers\.<name>/);
+    assert.match(
+      review.parameters.properties.provider.description,
+      /review_default_provider/,
+      'the review knob must be named as its own field, not the ask one',
+    );
+  });
+
+  it('review: a configured review_default_provider fills the selection slot instead of refusing to guess', async () => {
+    // A config with TWO usable direct providers and an unusable config.toml
+    // default: with no plugin default, selection must refuse rather than pick a
+    // billing channel. Naming one in the plugin config resolves that refusal —
+    // proven by getting past selection all the way to the (missing) binary.
+    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-dp-rev-'));
+    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
+    writeFileSync(
+      join(fakeHome, '.atomcode', 'config.toml'),
+      [
+        'default_provider = "AtomGit-qwen3.8-27b"',
+        '[providers.first]',
+        'provider = "openai"',
+        'base_url = "https://first.test/v1"',
+        'api_key = "sk-1"',
+        '[providers.second]',
+        'provider = "openai"',
+        'base_url = "https://second.test/v1"',
+        'api_key = "sk-2"',
+      ].join('\n'),
+      'utf8',
+    );
+    const repo = mkdtempSync(join(tmpdir(), 'atomcode-dp-repo-'));
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    const mountReview = async (extra) => {
+      const dir = mkdtempSync(join(tmpdir(), 'atomcode-dp-revs-'));
+      stateDirs.push(dir);
+      const { ctx, calls } = fakeCtx();
+      const bridge = await import(fileUrl(BRIDGE));
+      // A binary that cannot exist: the run must die at spawn, which is the
+      // signal that provider selection was PASSED (never spawn the real CLI).
+      bridge.apply(ctx, {
+        state_path: join(dir, 'sessions.json'),
+        auto_start: false,
+        binary: join(fakeHome, 'definitely-not-atomcode.exe'),
+        ...extra,
+      });
+      return calls.tools.find((t) => t.name === 'atomcode_review');
+    };
+    try {
+      const withoutDefault = await mountReview({});
+      const r1 = await withoutDefault.execute({ working_dir: repo, task: 'noop' }, {});
+      assert.equal(r1.ok, false);
+      assert.match(r1.error, /several direct providers/, 'precondition: ambiguity is a refusal, not a guess');
+
+      const withDefault = await mountReview({ review_default_provider: 'second' });
+      const r2 = await withDefault.execute({ working_dir: repo, task: 'noop' }, {});
+      assert.equal(r2.ok, false, 'the run still fails, but at the fake binary, not at selection');
+      assert.doesNotMatch(r2.error, /several direct providers/);
+      assert.doesNotMatch(r2.error, /needs a repository/);
+
+      // A per-call argument still outranks the configured default.
+      const withArg = await mountReview({ review_default_provider: 'second' });
+      const r3 = await withArg.execute({ working_dir: repo, task: 'noop', provider: 'first' }, {});
+      assert.doesNotMatch(r3.error, /several direct providers/);
+
+      // The namespaces stay apart: the ASK-side profile must not resolve the
+      // review ambiguity, because "AtomGit-qwen3.8-27b" is not a billable direct
+      // entry — silently using it would point the CLI at a provider it cannot
+      // authenticate against.
+      const withAskProfile = await mountReview({ default_provider: 'AtomGit-qwen3.8-27b' });
+      const r4 = await withAskProfile.execute({ working_dir: repo, task: 'noop' }, {});
+      assert.match(r4.error, /several direct providers/, 'ask config must not leak into review selection');
+    } finally {
+      if (savedHome !== undefined) process.env.HOME = savedHome;
+      else delete process.env.HOME;
+      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
+      else delete process.env.USERPROFILE;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

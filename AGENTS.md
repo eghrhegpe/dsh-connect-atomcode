@@ -17,6 +17,7 @@
 | daemon 起不来 / 端口被占 | `lib/daemon.js` 的 `ensureDaemonStarted` | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
 | `atomcode_review` 报不可用 | 本文件红线 1 | `lib/review.js` 的 `checkReviewProvision` | 这是**本机配置事实**，不是临时故障 |
 | 加/改 client 槽位 | 本文件「宿主 ABI 面」 | `test/client-id.test.mjs`（注册契约门禁） | 改 seat 名必须同步改那条测试的断言 |
+| **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」；`docs/AtomCode-CLI与daemon接口参考.md` §4「`POST /chat` 的请求体字段」 | `lib/index.js` 的 `defaultProvider` / `reviewDefaultProvider` + `pickAskProvider()` / `pickReviewProvider()` | 本文件**红线 8**（两条命名空间 + 只读边界）。单次换模型传调用参数 `provider` 就够，不用改插件 |
 
 ## 项目一句话
 
@@ -131,6 +132,15 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
    与宿主的 `7 轮 / 21.4M tok / 上下文圆环` 同排，`order: 1`（宿主 stats 占 0，装饰模板占 5），
    样式刻意做弱（无 pill 无边框、三级色），因为那是读数条不是工具栏。
    **挑座位前先读契约摘要，不读名字。**
+8. **模型档位的两条命名空间不许混，且插件对 `~/.atomcode/config.toml` 永远只读。** ask 走 daemon `/chat`，
+   `provider` 收的是**档位名**（= `GET /models` 的 `provider` 字段 = config 里 `[models."<名>"]` 的键
+   = `default_provider` 的值，形如 `AtomGit-glm5.3-flash`）；review 走 CLI，`--provider` 收的才是
+   `[providers.<name>]` 直连条目名（形如 `atomcode-local`）。裸模型 id（`glm5.3-flash`）两边都不认。
+   插件侧旋钮是**两个字段、各管一条路**：`default_provider`（ask）与 `review_default_provider`（review），
+   各自"调用参数 > 该字段 > 原有默认"，**留空连字段都不发**。曾经一版用同一个字段喂两条路——那正是
+   这条红线要防的错，现在由 `wiring.test.mjs` 双向钉住互不渗漏。
+   "面板上放个按钮直接改默认模型"看着像顺手的事，实际要写的是**别人应用的配置文件**——那是 AtomCode 侧的
+   `default_provider`/`default_model` + `POST /config/reload`。**别把这条只读边界改成读写。**
 
 ## 并行会话纪律
 
