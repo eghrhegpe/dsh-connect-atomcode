@@ -113,7 +113,6 @@
           gap: '6px',
           minWidth: 0,
         },
-        cardFull: { gridColumn: '1 / -1' },
         cardTitle: { margin: 0, fontSize: '12px', fontWeight: 600, color: 'var(--dsw-alias-label-secondary)' },
         // `minHeight` + a fixed `lineHeight` give every row the SAME height whether its
         // value wraps or not, so two cards side by side keep matching row rhythm
@@ -169,20 +168,27 @@
         metricLabel: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' },
         // Two labelled groups with a hairline between them: `成功/失败` are ask's
         // OUTCOME and must not read as siblings of review's call count.
-        callGroups: { display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start' },
+        //
+        // `alignItems: 'baseline'` on the row keeps the group label on the SAME line as
+        // the big numbers — with `flex-start` the 11px label floated at the top while
+        // each Metric stacked its own number over its own caption, so the captions
+        // landed at the bottom and the row read as scattered text.
+        callGroups: { display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'baseline' },
         callGroup: {
           display: 'flex',
           gap: '12px',
-          alignItems: 'flex-start',
+          alignItems: 'baseline',
           paddingRight: '16px',
           borderRight: '1px solid var(--dsw-alias-border-l1)',
         },
         callGroupLabel: {
           fontSize: '11px',
           color: 'var(--dsw-alias-label-tertiary)',
-          paddingTop: '4px',
           whiteSpace: 'nowrap',
         },
+        // An inline counter: number, then its caption a step quieter on the SAME line.
+        callStat: { fontSize: '13px', fontWeight: 600, whiteSpace: 'nowrap' },
+        callStatLabel: { marginLeft: '3px', fontSize: '11px', fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' },
         notice: {
           border: '1px solid var(--dsw-alias-border-l1)',
           background: 'var(--dsw-alias-bg-layer-1)',
@@ -424,6 +430,23 @@
           { style: S.metric },
           h('span', { style: { ...S.metricNum, color: color || 'var(--dsw-alias-label-primary)' } }, String(num)),
           h('span', { style: S.metricLabel }, label)
+        );
+      }
+
+      /**
+       * One call counter, laid out INLINE: `12 调用`.
+       *
+       * Deliberately not `Metric` — that one stacks the caption under the number, which
+       * is right for a card's headline figures but wrong inside a labelled group, where
+       * the group label sits on a baseline and the stacked captions drift below it.
+       * Two stacking conventions in one row is what made this read as scattered text.
+       */
+      function CallStat({ num, label, color }) {
+        return h(
+          'span',
+          { style: { ...S.callStat, color: color || 'var(--dsw-alias-label-primary)' } },
+          String(num),
+          h('span', { style: S.callStatLabel }, label)
         );
       }
 
@@ -1141,10 +1164,13 @@
             h(
               'div',
               { style: S.grid },
-              // CodingPlan 额度（跨两列）
+              // CodingPlan 额度. NOT `cardFull` any more: spanning every column made
+              // the 6px progress bar 1180px wide — a bar whose whole job is to show a
+              // PROPORTION, drawn so long that the filled part is a hairline. It now
+              // takes one ordinary track (~380px), where 0% and 100% are both legible.
               h(
                 'div',
-                { style: { ...S.card, ...S.cardFull } },
+                { style: S.card },
                 h('p', { style: S.cardTitle }, 'CodingPlan 额度'),
                 !quota.available
                   ? h('p', { style: S.error }, quota.reason || '额度不可用（daemon 未运行或命令不可用）')
@@ -1162,19 +1188,39 @@
                       )
                     : h(
                         'div',
-                        { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
-                        h(
-                          'div',
-                          { style: S.metrics },
-                          h(Metric, {
-                            num: pctLabel(quotaPct),
-                            label: '当前时间窗口用量',
-                            color: quotaColor(quotaPct, quota.limited),
-                          }),
-                          liveResetSecs == null
-                            ? null
-                            : h(Metric, { num: fmtCountdown(liveResetSecs), label: '距重置' })
-                        ),
+                        // No extra inner wrapper: the card itself is already a
+                        // `flex-direction: column` with `gap: 6px`. Nesting another
+                        // `gap: 8px` column made THIS card's rhythm differ from every
+                        // neighbour, so its rows sat further apart and the card grew
+                        // taller than the ones beside it.
+                        null,
+                        // ONE headline number plus one clarifying clause — not two peer
+                        // gauges. `0%` is a RATIO and `1h26m` is a DURATION; rendering
+                        // both at 18px/700 side by side asked the reader to compare two
+                        // different quantities as if they were the same kind of fact.
+                        // The countdown is supporting detail, so it follows the number
+                        // in the label line at normal weight.
+                        quotaPct == null
+                          ? h(
+                              'div',
+                              { style: S.metric },
+                              h('span', { style: S.metricLabel }, quota.reason || '额度读数不可用')
+                            )
+                          : h(
+                              'div',
+                              { style: S.metric },
+                              h(
+                                'span',
+                                { style: { ...S.metricNum, color: quotaColor(quotaPct, quota.limited) } },
+                                pctLabel(quotaPct)
+                              ),
+                              h(
+                                'span',
+                                { style: S.metricLabel },
+                                '当前时间窗口用量' +
+                                  (liveResetSecs == null ? '' : ' · ' + fmtCountdown(liveResetSecs) + ' 后重置')
+                              )
+                            ),
                         quotaPct == null
                           ? null
                           : h(
@@ -1295,11 +1341,12 @@
                 'div',
                 { style: S.card },
                 h('p', { style: S.cardTitle }, '工具调用统计'),
-                // Two GROUPS, not four parallel metrics. The old layout flattened
-                // `atomcode_ask 调用 / 成功 / 失败 / atomcode_review 调用` into one row,
-                // which read as four peers — but 成功/失败 are ask's OUTCOME, not
-                // siblings of review's total. At rest that printed four zeros in a row
-                // with no indication of which number belonged to which tool.
+                // Two GROUPS on one line, each rendered as `label  数字 数字 数字`
+                // rather than as stacked metrics. The stacked form put each caption
+                // UNDER its own number while the group label sat on the baseline, so
+                // the row mixed two alignment conventions and read as scattered text.
+                // Inline (number followed by its caption) keeps everything on one
+                // baseline, which is how the host's own dock readouts do it.
                 h(
                   'div',
                   { style: S.callGroups },
@@ -1307,15 +1354,15 @@
                     'div',
                     { style: S.callGroup },
                     h('span', { style: S.callGroupLabel }, 'atomcode_ask'),
-                    h(Metric, { num: ask.calls, label: '调用' }),
-                    h(Metric, { num: ask.ok, label: '成功', color: ask.ok ? 'var(--dsw-alias-state-success-primary)' : undefined }),
-                    h(Metric, { num: ask.err, label: '失败', color: ask.err ? 'var(--dsw-alias-state-error-primary)' : undefined })
+                    h(CallStat, { num: ask.calls, label: '调用' }),
+                    h(CallStat, { num: ask.ok, label: '成功', color: ask.ok ? 'var(--dsw-alias-state-success-primary)' : undefined }),
+                    h(CallStat, { num: ask.err, label: '失败', color: ask.err ? 'var(--dsw-alias-state-error-primary)' : undefined })
                   ),
                   h(
                     'div',
                     { style: { ...S.callGroup, borderRight: 'none', paddingRight: 0 } },
                     h('span', { style: S.callGroupLabel }, 'atomcode_review'),
-                    h(Metric, { num: review.calls, label: '调用' })
+                    h(CallStat, { num: review.calls, label: '调用' })
                   )
                 ),
                 h(Row, { label: 'ask 累计 tokens' }, String(ask.tokens)),
