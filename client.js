@@ -167,6 +167,22 @@
         metric: { display: 'flex', flexDirection: 'column', gap: '2px' },
         metricNum: { fontSize: '18px', fontWeight: 700, lineHeight: '22px' },
         metricLabel: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' },
+        // Two labelled groups with a hairline between them: `成功/失败` are ask's
+        // OUTCOME and must not read as siblings of review's call count.
+        callGroups: { display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start' },
+        callGroup: {
+          display: 'flex',
+          gap: '12px',
+          alignItems: 'flex-start',
+          paddingRight: '16px',
+          borderRight: '1px solid var(--dsw-alias-border-l1)',
+        },
+        callGroupLabel: {
+          fontSize: '11px',
+          color: 'var(--dsw-alias-label-tertiary)',
+          paddingTop: '4px',
+          whiteSpace: 'nowrap',
+        },
         notice: {
           border: '1px solid var(--dsw-alias-border-l1)',
           background: 'var(--dsw-alias-bg-layer-1)',
@@ -1005,6 +1021,27 @@
        */
       const QUOTA_READOUT = primitives && reactDom ? QuotaChip : QuotaChipDegraded;
 
+      /**
+       * The bundle card's one-liner (`view: 'summary'`).
+       *
+       * Reports LIVE state only. The card already prints the localized description
+       * from `locale/*.json` directly above this line, so any prose here would both
+       * duplicate it and create a second place to keep the same words in sync.
+       * One line, and it says something the description cannot: is the bridge up.
+       */
+      function SummaryLine() {
+        const { data, error } = useStats();
+        if (error || !data) return h('span', { style: S.provLabel }, '状态未知');
+        const d = data.daemon || {};
+        const cfg = data.config || {};
+        const parts = [
+          d.up ? 'daemon 运行中' + (data.protocol && data.protocol.daemonVersion ? ' ' + data.protocol.daemonVersion : '') : d.autoStart ? 'daemon 未运行（可自动拉起）' : 'daemon 未运行',
+          '端口 ' + (d.port == null ? '—' : d.port),
+        ];
+        if (cfg.reviewAvailable === false) parts.push('评审不可用');
+        return h('span', { style: S.provLabel, title: parts.join(' · ') }, parts.join(' · '));
+      }
+
       function StatusSection(props) {
         const view = props && props.view;
         const subject = props && props.subject;
@@ -1021,9 +1058,13 @@
           if (name !== 'dsh-atomcode-bridge') return null;
         }
         // `summary` is the plugin CARD's one-liner, which already renders the bundle
-        // description right above us. A second paragraph there would be the "four
-        // lines of English" problem again, so the summary view stays a single line.
-        if (view === 'summary') return h('span', { style: S.provLabel }, 'AtomCode 侧边工具台（daemon 5.x）');
+        // description (from locale/*.json) right above us. Repeating the blurb there
+        // would be the "four lines of English" problem again AND a second source of
+        // truth for the same string — so the summary reports the one thing the
+        // description cannot: whether the bridge is actually live right now.
+        if (view === 'summary') {
+          return h(SummaryLine, null);
+        }
 
         const { data, error, updatedAt, reload } = useStats();
 
@@ -1254,13 +1295,28 @@
                 'div',
                 { style: S.card },
                 h('p', { style: S.cardTitle }, '工具调用统计'),
+                // Two GROUPS, not four parallel metrics. The old layout flattened
+                // `atomcode_ask 调用 / 成功 / 失败 / atomcode_review 调用` into one row,
+                // which read as four peers — but 成功/失败 are ask's OUTCOME, not
+                // siblings of review's total. At rest that printed four zeros in a row
+                // with no indication of which number belonged to which tool.
                 h(
                   'div',
-                  { style: S.metrics },
-                  h(Metric, { num: ask.calls, label: 'atomcode_ask 调用' }),
-                  h(Metric, { num: ask.ok, label: '成功', color: 'var(--dsw-alias-state-success-primary)' }),
-                  h(Metric, { num: ask.err, label: '失败', color: ask.err ? 'var(--dsw-alias-state-error-primary)' : undefined }),
-                  h(Metric, { num: review.calls, label: 'atomcode_review 调用' })
+                  { style: S.callGroups },
+                  h(
+                    'div',
+                    { style: S.callGroup },
+                    h('span', { style: S.callGroupLabel }, 'atomcode_ask'),
+                    h(Metric, { num: ask.calls, label: '调用' }),
+                    h(Metric, { num: ask.ok, label: '成功', color: ask.ok ? 'var(--dsw-alias-state-success-primary)' : undefined }),
+                    h(Metric, { num: ask.err, label: '失败', color: ask.err ? 'var(--dsw-alias-state-error-primary)' : undefined })
+                  ),
+                  h(
+                    'div',
+                    { style: { ...S.callGroup, borderRight: 'none', paddingRight: 0 } },
+                    h('span', { style: S.callGroupLabel }, 'atomcode_review'),
+                    h(Metric, { num: review.calls, label: '调用' })
+                  )
                 ),
                 h(Row, { label: 'ask 累计 tokens' }, String(ask.tokens)),
                 h(Row, { label: 'ask 平均耗时' }, fmtDuration(askAvg)),

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "AtomCode Bridge",
+    "description": "Bridges your locally signed-in AtomCode into DeepSeek Harness as two side tools: `atomcode_ask` and `atomcode_review`. Tools only — no API key, no model takeover."
+  }
+}

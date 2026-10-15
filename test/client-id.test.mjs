@@ -14,7 +14,7 @@
  * `package.json`'s `name` verbatim.
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
@@ -62,6 +62,47 @@ describe('client half — registration contract', () => {
     assert.equal(pkg.dsh?.client?.platform, 'web');
     assert.ok(pkg.exports?.['./client'], 'package.json exports must expose "./client"');
     assert.ok(pkg.files?.includes('client.js'), 'client.js must ship in files[]');
+  });
+
+  /**
+   * Display metadata (title / description) resolution.
+   *
+   * The Host's `readPluginMeta` (dsh-app-boot) does NOT read a locale map out of
+   * package.json. It resolves `<pkg>/locale/en.json` as the SCAN ANCHOR, loads every
+   * sibling `*.json` as a language dictionary (`{ meta: { title, description } }`),
+   * and uses `manifest.description` as the ENGLISH FALLBACK — passed through
+   * `fallbackText()`, which returns a value ONLY when it is a non-empty STRING.
+   *
+   * So an object in `manifest.description` yields `undefined`: the description
+   * silently disappears and the page falls back to showing the bare package name.
+   * That is a shipped bug this test now pins (it was in the tree for one round).
+   */
+  it('keeps the description a STRING and ships locale dictionaries beside it', () => {
+    const pkg = JSON.parse(readFileSync(MANIFEST, 'utf8'));
+    assert.equal(
+      typeof pkg.description,
+      'string',
+      'manifest.description must stay a plain string — the Host ignores an object, blanking the page',
+    );
+    assert.ok(pkg.description.trim().length > 0);
+    assert.ok(
+      pkg.files?.includes('locale'),
+      'locale/ must ship in files[], or an installed copy loses every dictionary',
+    );
+
+    // The English file is the anchor: without it the Host scans nothing at all.
+    const localeDir = join(ROOT, 'locale');
+    for (const name of ['en.json', 'zh.json']) {
+      const file = join(localeDir, name);
+      assert.ok(existsSync(file), `locale/${name} must exist`);
+      const parsed = JSON.parse(readFileSync(file, 'utf8'));
+      assert.equal(typeof parsed.meta, 'object', `locale/${name} needs a meta object`);
+      assert.equal(typeof parsed.meta.title, 'string', `locale/${name}: meta.title must be a string`);
+      assert.equal(typeof parsed.meta.description, 'string', `locale/${name}: meta.description must be a string`);
+      assert.ok(parsed.meta.description.trim().length > 0, `locale/${name}: an empty description is not a translation`);
+    }
+    const en = JSON.parse(readFileSync(join(localeDir, 'en.json'), 'utf8'));
+    assert.equal(en.meta.description, pkg.description, 'en.json mirrors the manifest fallback');
   });
 
   it('factory returns the slots/locale inject the panel needs', async () => {

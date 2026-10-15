@@ -111,10 +111,16 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
   between its description and its rows"），所以在上方。**座位名像什么不代表它渲染在哪**——
   这是红线 7 的同一条教训第二次发生（第一次是 `conversation.input.right`）。
   该 seat 还带 `view: 'summary' | 'page'`：`summary` 是插件卡片的一行摘要，**只许一行**。
-- **`package.json` 的 `description` 支持 locale map。** 面板读的是 `pkg.meta.description` 并经
-  `resolveText()`：**字符串原样输出**，**对象则按 `{ en, "zh": ... }` 查当前语言**（键一律小写，
-  `en` 是必需兜底）。实测本机注册的语言 id 是 **`["zh", "en"]`**——写 `zh-cn` 不报错、但**永远匹配不上**，
-  面板会继续显示英文。改文案时两个键都要给。
+- **`manifest.description` 必须是字符串，多语言靠 `locale/` 目录——不是 package.json 里塞对象。** 面板的
+  title/description 由 `dsh-app-boot` 的 `readPluginMeta()` 解析，真实机制是：
+  ①`<pkg>/locale/en.json` 是**扫描锚点**（没有它一个字典都不加载）；
+  ②同目录每个 `*.json` 按**文件名**当语言 id（本项目是 `en` / `zh`，与宿主 `LOCALE_IDS = ["zh","en"]` 一致）；
+  ③文件形状是 `{ "meta": { "title", "description" } }`；
+  ④`manifest.description` 只当**英文兜底**，且经 `fallbackText()`——**只认非空字符串，对象一律返回 undefined**。
+  所以把 `description` 写成 `{ en, zh }` 对象会**静默清空描述**，页面只剩包名（踩过，一轮后才发现）。
+  另外 `files[]` 必须含 `locale`，否则安装副本里没有字典。`test/client-id.test.mjs` 钉住全部四条。
+  同一个字符串不要两头写：卡片的 `summary` 视图已由宿主渲染描述，**别再硬编码一句简介**（那是第二份真源，
+  而且正是"英文墙"的来源）；`summary` 现在只报描述说不了的东西——daemon 活没活。
 - **布局：不要把整个面板钉死宽度。** `wrap.maxWidth` 曾是 `760px`，于是宽窗口下留大片空白、
   且两列卡片永远用不上多余空间；`grid` 还写成硬编码 `1fr 1fr`，**任何宽度都是两列**。
   现在是 `maxWidth: 1180px` + `repeat(auto-fit, minmax(320px, 1fr))`：窄屏 1 列、宽屏 3 列。

@@ -2,10 +2,7 @@
   "name": "dsh-atomcode-bridge",
   "displayName": "DSH AtomCode Bridge",
   "version": "0.4.0",
-  "description": {
-    "en": "Bridges your locally signed-in AtomCode into DeepSeek Harness as two side tools: `atomcode_ask` and `atomcode_review`. Tools only — no API key, no model takeover.",
-    "zh": "把本机已登录的 AtomCode 接入 DeepSeek Harness，提供 `atomcode_ask`（侧边咨询）与 `atomcode_review`（代码评审）两个工具。不接管模型、不需要 API key。"
-  },
+  "description": "Bridges your locally signed-in AtomCode into DeepSeek Harness as two side tools: `atomcode_ask` and `atomcode_review`. Tools only — no API key, no model takeover.",
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
@@ -27,6 +24,7 @@
     "lib",
     "client.js",
     "cordis.patch.yml",
+    "locale",
     "README.md",
     "LICENSE"
   ],
