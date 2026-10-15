@@ -94,7 +94,7 @@ function buildStatsBody(stats: Record<string, any>, quota: any) {
     ok: true,
     name: 'dsh-atomcode-bridge',
     displayName: 'DSH AtomCode Bridge',
-    version: '0.4.0',
+    version: '0.4.1',
     uptimeMs: Date.now() - stats.startedAt,
     daemon: {
       up: stats.daemonUp,

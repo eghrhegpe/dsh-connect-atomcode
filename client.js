@@ -289,16 +289,7 @@
 	};
 
 //#endregion
-//#region src/client/format.ts
-/**
-	* Pure formatters, hoisted OUT of the factory closure and attached to the
-	* returned module as `__test`. They were untestable while nested inside
-	* `factory(require)` (the only way in was the module loader, which needs
-	* a browser), and they are exactly the kind of edge-case code that needs
-	* tests: 0ms, negative countdowns, null quota, 100% state.
-	*
-	* The production code below calls these same functions.
-	*/
+//#region src/client/quota.ts
 	function fmtDuration(ms) {
 		if (!Number.isFinite(ms) || ms <= 0) return "—";
 		const n = ms;
@@ -343,15 +334,10 @@
 	/**
 	* Merge the panel's surface style with the measured anchor position.
 	*
-	* Extracted because the merge ORDER is the whole bug surface here, and no
-	* test renders a portal: `Object.assign({}, surface, anchored, {left:0,
-	* top:0})` looks harmless but clobbers the measured coordinates and pins
-	* the dialog to the viewport's top-left corner. The off-screen fallback
-	* may apply ONLY while the anchoring hook has not measured yet (it returns
-	* null), which is what this encodes.
-	*
-	* @param {object} surface  the static panel surface
-	* @param {object|null} anchored  the hook's measured position, or null
+	* The merge ORDER is the whole bug surface here: `Object.assign({}, surface,
+	* anchored, {left:0, top:0})` looks harmless but clobbers the measured
+	* coordinates. The off-screen fallback may apply ONLY while the anchoring
+	* hook has not measured yet (it returns null).
 	*/
 	function panelStyle(surface, anchored) {
 		return Object.assign({}, surface, anchored ?? {
@@ -360,25 +346,12 @@
 			top: 0
 		});
 	}
-
-//#endregion
-//#region src/client/quota-view.ts
-/**
-	* The quota readout model.
-	*
-	* Moved verbatim from the pre-TypeScript `client.js`; the only edits are the de-indent,
-	* the `export` keyword, and parameter type annotations.
-	*
-	* `quotaFacts` feeds the chip tooltip; `quotaView` is the single decision layer both chip
-	* variants share, which is why it must stay pure.
-	*/
 	/**
 	* The chip's tooltip text, as a LIST of facts.
 	*
 	* Split rather than pre-joined so the panel can lay each row out on its
-	* own line; the panel joins them itself. `null` entries are dropped, which
-	* is what lets a partially-known quota (plan known, expiry not) show the
-	* rows it has instead of a ragged sentence with holes in it.
+	* own line; `null` entries are dropped, which is what lets a partially-known
+	* quota show the rows it has instead of a ragged sentence with holes.
 	*/
 	function quotaFacts(quota, pct, liveSecs) {
 		return [
@@ -397,9 +370,6 @@
 	* null is what printed `atom · 5小时 null%` for the frame before the first
 	* stats response landed. Here `label` simply does not exist unless the
 	* quota is known, so the bug cannot be reintroduced by a caller.
-	*
-	* @param {object|undefined} quota  the snapshot's quota branch
-	* @param {number} nowMs            clock for the locally advanced countdown
 	*/
 	function quotaView(quota, nowMs) {
 		if (!(!!quota && quota.available === true && typeof quota.usagePercent === "number")) return { known: false };
@@ -418,26 +388,62 @@
 	}
 
 //#endregion
-//#region src/client/provider-model.ts
+//#region src/client/rows.ts
 /**
+	* The "回合边界" card's rows — a pure function so the honesty rule below is
+	* testable without a browser.
+	*
+	* The rule: a patch-only knob is labelled by WHAT THE HOST SAYS ABOUT IT, not by
+	* whether it happens to look default-ish. `cfg.authored` means "this value
+	* DEPARTS from the plugin's shipped default" — the host decides that, because a
+	* renderer only sees the resolved value and could not tell a deliberate
+	* `approval_mode: bypass` from our own fallback. Comparing `askMaxRounds === 25`
+	* here would also be a SECOND copy of a number `lib/index.js` owns.
+	*
+	* Rows are KEPT (not hidden) when at their defaults, because this is the card
+	* that carries the `bypass` safety posture — silently dropping it would remove
+	* the one place a user can see that AtomCode's own tools run unattended.
+	*/
+	function turnBoundaryRows(cfg) {
+		const src = cfg && typeof cfg === "object" ? cfg : {};
+		const authored = src.authored && typeof src.authored === "object" ? src.authored : {};
+		const defaults = src.defaults && typeof src.defaults === "object" ? src.defaults : {};
+		const askDefault = Number.isInteger(defaults.askMaxRounds) ? defaults.askMaxRounds : null;
+		const approvalDefault = typeof defaults.approvalMode === "string" ? defaults.approvalMode : "";
+		const mode = typeof src.approvalMode === "string" ? src.approvalMode : "";
+		const dir = typeof src.defaultWorkingDir === "string" ? src.defaultWorkingDir : "";
+		const rounds = Number.isInteger(src.askMaxRounds) ? src.askMaxRounds : null;
+		const verdict = (key, value, fallback) => {
+			if (authored && key in authored) return authored[key] === true ? "changed" : "default";
+			if (fallback === null || fallback === void 0 || fallback === "") return "unknown";
+			return value === fallback ? "default" : "changed";
+		};
+		const tag = (v) => v === "changed" ? "（已改）" : v === "default" ? "（插件默认）" : "";
+		return [
+			{
+				label: "审批模式",
+				text: mode === "" ? "—" : mode + tag(verdict("approvalMode", mode, approvalDefault)),
+				title: "patch 字段 approval_mode；面板上没有输入框，改它要动 cordis.patch.yml。bypass = AtomCode 自己的工具在回合内无人值守执行（AtomCode 侧自主，与 DSH 的权限预设无关）。"
+			},
+			{
+				label: "工作目录",
+				text: dir === "" ? "（会话工作目录）" : dir + tag(verdict("workingDir", dir, null)),
+				title: dir === "" ? "patch 字段 working_dir 留空 = 靠调用参数或会话工作目录" : "patch 字段 working_dir"
+			},
+			{
+				label: "ask 轮数上限",
+				text: rounds === null ? "—" : rounds > 0 ? String(rounds) + tag(verdict("askMaxRounds", rounds, askDefault)) : "不限",
+				title: "patch 字段 ask_max_rounds。超出即停止等待（不是远端 kill：daemon 侧的回合可能仍在后台跑完）。"
+			}
+		];
+	}
+	/**
 	* The model rows, derived from ONE stats snapshot.
 	*
 	* Two entries, always both, never collapsed into one: they are TWO DIFFERENT
 	* namespaces (ask = daemon model profile, review = CLI direct entry), and one
 	* merged row would read as "same knob, two names" — the exact confusion
-	* 红线 8 exists to prevent. The renderer may lay them out side by side
-	* (one line, two cells); it may NOT merge them into one control.
-	*
-	* The fallbacks name the BEHAVIOR, not the absence: "未插手" tells the user
-	* AtomCode's own default is authoritative, which is what they would otherwise
-	* have to infer from an empty field. They stay short on purpose — the long
-	* provenance ("ask takes daemon /models, review takes config.toml entries")
-	* lives in the hover `title`, because it is an explanation of the control,
-	* not a state of the system, and printing it in the card body was noise.
-	*
-	* @param {object|undefined} cfg  the snapshot's config branch (may predate
-	*   these fields entirely — an older host build, or the desktop install copy)
-	* @returns {Array<{slotName:string,label:string,value:string,fallback:string,pinned:boolean,title:string}>}
+	* 红线 8 exists to prevent.
 	*/
 	function providerRows(cfg) {
 		const src = cfg && typeof cfg === "object" ? cfg : {};
@@ -465,24 +471,9 @@
 	* without a browser or a daemon.
 	*
 	* Three things it owns:
-	*  - the selected value is the PANEL pick, NOT the effective one: the control
-	*    shows what the user chose, while `effective`/`source` are compared against
-	*    it to answer "did my click actually take?" (`note`, below);
-	*  - a panel pick missing from the catalogue is APPENDED, never dropped — a
-	*    daemon that restarted with a different config would otherwise render a
-	*    real setting as "nothing chosen", which is a lie by omission;
-	*  - an unusable slot renders a REASON, never a bare empty dropdown
-	*    (红线 3: nothing here may fail silently).
-	*
-	* `note` exists only when the effective value DIFFERS from what this control
-	* shows — a panel pick that lost to a per-call argument or to the config field.
-	* When they agree there is nothing to say: every value on this panel came from
-	* the panel, so narrating that fact was pure decoration (and it printed next to
-	* a dropdown the user had just used themselves).
-	*
-	* @param {object|undefined} provider  the snapshot's `provider` branch
-	* @param {'ask'|'review'} slotName    which namespace (they are NOT one knob)
-	* @param {string} fallbackLabel       what "no pick" means for this slot
+	*  - the selected value is the PANEL pick, NOT the effective one
+	*  - a panel pick missing from the catalogue is APPENDED, never dropped
+	*  - an unusable slot renders a REASON, never a bare empty dropdown (红线 3)
 	*/
 	function providerSelectModel(provider, slotName, fallbackLabel) {
 		const src = provider && typeof provider === "object" ? provider[slotName] : null;
@@ -541,102 +532,12 @@
 	}
 
 //#endregion
-//#region src/client/turn-boundary.ts
-/**
-	* The "回合边界" card's rows — a pure function so the honesty rule below is
-	* testable without a browser.
-	*
-	* The rule: a patch-only knob is labelled by WHAT THE HOST SAYS ABOUT IT, not by
-	* whether it happens to look default-ish. `cfg.authored` means "this value
-	* DEPARTS from the plugin's shipped default" — the host decides that, because a
-	* renderer only sees the resolved value and could not tell a deliberate
-	* `approval_mode: bypass` from our own fallback. Comparing `askMaxRounds === 25`
-	* here would also be a SECOND copy of a number `lib/index.js` owns.
-	*
-	* Rows are KEPT (not hidden) when at their defaults, because this is the card
-	* that carries the `bypass` safety posture — silently dropping it would remove
-	* the one place a user can see that AtomCode's own tools run unattended.
-	*
-	* @param {object|undefined} cfg the snapshot's config branch (may predate
-	*   `authored` entirely — an older host, or the desktop install copy)
-	*/
-	function turnBoundaryRows(cfg) {
-		const src = cfg && typeof cfg === "object" ? cfg : {};
-		const authored = src.authored && typeof src.authored === "object" ? src.authored : {};
-		const defaults = src.defaults && typeof src.defaults === "object" ? src.defaults : {};
-		const askDefault = Number.isInteger(defaults.askMaxRounds) ? defaults.askMaxRounds : null;
-		const approvalDefault = typeof defaults.approvalMode === "string" ? defaults.approvalMode : "";
-		const mode = typeof src.approvalMode === "string" ? src.approvalMode : "";
-		const dir = typeof src.defaultWorkingDir === "string" ? src.defaultWorkingDir : "";
-		const rounds = Number.isInteger(src.askMaxRounds) ? src.askMaxRounds : null;
-		const verdict = (key, value, fallback) => {
-			if (authored && key in authored) return authored[key] === true ? "changed" : "default";
-			if (fallback === null || fallback === void 0 || fallback === "") return "unknown";
-			return value === fallback ? "default" : "changed";
-		};
-		const tag = (v) => v === "changed" ? "（已改）" : v === "default" ? "（插件默认）" : "";
-		return [
-			{
-				label: "审批模式",
-				text: mode === "" ? "—" : mode + tag(verdict("approvalMode", mode, approvalDefault)),
-				title: "patch 字段 approval_mode；面板上没有输入框，改它要动 cordis.patch.yml。bypass = AtomCode 自己的工具在回合内无人值守执行（AtomCode 侧自主，与 DSH 的权限预设无关）。"
-			},
-			{
-				label: "工作目录",
-				text: dir === "" ? "（会话工作目录）" : dir + tag(verdict("workingDir", dir, null)),
-				title: dir === "" ? "patch 字段 working_dir 留空 = 靠调用参数或会话工作目录" : "patch 字段 working_dir"
-			},
-			{
-				label: "ask 轮数上限",
-				text: rounds === null ? "—" : rounds > 0 ? String(rounds) + tag(verdict("askMaxRounds", rounds, askDefault)) : "不限",
-				title: "patch 字段 ask_max_rounds。超出即停止等待（不是远端 kill：daemon 侧的回合可能仍在后台跑完）。"
-			}
-		];
-	}
-
-//#endregion
-//#region src/client/primitives.ts
-/** Bound once by the module factory; every component below closes over it. */
-	let h = () => {
-		throw new Error("react was not bound: setH() must run before rendering");
-	};
-	/** Bind the host's `createElement`. Called once, at factory time. */
-	function setH(fn) {
-		h = fn;
-	}
-	function StatusPill({ up }) {
-		const color = up ? "var(--dsw-alias-state-success-primary)" : "var(--dsw-alias-state-error-primary)";
-		return h("span", { style: {
-			...S.pill,
-			color,
-			background: "transparent",
-			border: "1px solid " + color
-		} }, up ? "运行中" : "未运行");
-	}
-	function Row({ label, children }) {
-		return h("div", { style: S.row }, h("span", { style: S.key }, label), h("span", { style: S.val }, children));
-	}
-	function Metric({ num, label, color }) {
-		return h("div", { style: S.metric }, h("span", { style: {
-			...S.metricNum,
-			color: color || "var(--dsw-alias-label-primary)"
-		} }, String(num)), h("span", { style: S.metricLabel }, label));
-	}
-	function CallStat({ num, label, color }) {
-		return h("span", { style: {
-			...S.callStat,
-			color: color || "var(--dsw-alias-label-primary)"
-		} }, String(num), h("span", { style: S.callStatLabel }, label));
-	}
-
-//#endregion
 //#region src/client/index.ts
 	const REGISTRATION = {
 		id: "dsh-atomcode-bridge",
 		factory: function(require) {
 			const react = require("react");
 			const h = react.createElement;
-			setH(h);
 			const useState = react.useState;
 			const useEffect = react.useEffect;
 			const useRef = react.useRef;
@@ -808,6 +709,30 @@
 					updatedAt,
 					reload: load
 				};
+			}
+			function StatusPill({ up }) {
+				const color = up ? "var(--dsw-alias-state-success-primary)" : "var(--dsw-alias-state-error-primary)";
+				return h("span", { style: {
+					...S.pill,
+					color,
+					background: "transparent",
+					border: "1px solid " + color
+				} }, up ? "运行中" : "未运行");
+			}
+			function Row({ label, children }) {
+				return h("div", { style: S.row }, h("span", { style: S.key }, label), h("span", { style: S.val }, children));
+			}
+			function Metric({ num, label, color }) {
+				return h("div", { style: S.metric }, h("span", { style: {
+					...S.metricNum,
+					color: color || "var(--dsw-alias-label-primary)"
+				} }, String(num)), h("span", { style: S.metricLabel }, label));
+			}
+			function CallStat({ num, label, color }) {
+				return h("span", { style: {
+					...S.callStat,
+					color: color || "var(--dsw-alias-label-primary)"
+				} }, String(num), h("span", { style: S.callStatLabel }, label));
 			}
 			/**
 			* Compact quota readout: `atom · 5小时 19%` — a click-opens panel.
@@ -1029,7 +954,7 @@
 					} }, h("span", { style: S.callGroupLabel }, "atomcode_review"), h(CallStat, {
 						num: review.calls,
 						label: "调用"
-					}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)), h(Row, { label: "review 平均耗时" }, fmtDuration(reviewAvg)))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "CodingPlan 额度"), !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", null, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", null, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
+					}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)), h(Row, { label: "review 平均耗时" }, fmtDuration(reviewAvg))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "CodingPlan 额度"), !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", null, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", null, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
 						...S.metricNum,
 						color: quotaColor(quotaPct, quota.limited)
 					} }, pctLabel(quotaPct)), h("span", { style: S.metricLabel }, "当前时间窗口用量" + (liveResetSecs == null ? "" : " · " + fmtCountdown(liveResetSecs) + " 后重置"))), quotaPct == null ? null : h("div", { style: {
@@ -1041,7 +966,7 @@
 						height: "100%",
 						width: barWidth(quotaPct) + "%",
 						background: quotaColor(quotaPct, quota.limited)
-					} })), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 5 小时窗口已用尽，回合会被限流") : null)));
+					} })), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 5 小时窗口已用尽，回合会被限流") : null))));
 				}
 				return body;
 			}

@@ -1,7 +1,7 @@
 /**
  * dsh-atomcode-bridge — Client half (renderer).
  *
- * Registers a `plugins.detail.section` slot on this plugin's detail page that
+ * Registers a `plugins.bundle.config` slot on this plugin's detail page that
  * surfaces live startup/usage statistics, polled over the host's read-only
  * same-origin route `/api/atomcode-bridge/stats` (see src/host/index.ts).
  *
@@ -14,15 +14,10 @@
  *
  * @module dsh-atomcode-bridge/client
  */
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactElement } from 'react';
 import type {
-  BoundaryRow,
   ProviderBranch,
-  ProviderRow,
-  ProviderSelectModel,
   ProviderSlotName,
-  QuotaBranch,
-  QuotaView,
 } from './types.ts';
 import {
   S,
@@ -34,14 +29,13 @@ import {
   fmtCountdown,
   fmtDuration,
   liveRemaining,
-  panelStyle,
   pctLabel,
   quotaColor,
-} from './format.ts';
-import { quotaFacts, quotaView } from './quota-view.ts';
-import { providerRows, providerSelectModel } from './provider-model.ts';
-import { turnBoundaryRows } from './turn-boundary.ts';
-import { CallStat, Metric, Row, StatusPill, setH } from './primitives.ts';
+  quotaFacts,
+  quotaView,
+  panelStyle,
+} from './quota.ts';
+import { providerRows, providerSelectModel, turnBoundaryRows } from './rows.ts';
 
 // The loader hands the factory an untyped `require`; the host resolves
 // `react` from the web boot's seed table.
@@ -55,7 +49,6 @@ const REGISTRATION = {
   factory: function (require: LoaderRequire) {
     const react = require('react');
     const h = react.createElement;
-    setH(h);
     const useState = react.useState;
     const useEffect = react.useEffect;
     const useRef = react.useRef;
@@ -281,10 +274,68 @@ const REGISTRATION = {
       return { data, error, updatedAt, reload: load };
     }
 
+    // ── primitives (inlined from primitives.ts) ──────────────────────────
 
+    function StatusPill({ up }: { up: boolean }): ReactElement {
+      const color = up ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-error-primary)';
+      return h(
+        'span',
+        {
+          style: {
+            ...S.pill,
+            color,
+            background: 'transparent',
+            border: '1px solid ' + color,
+          },
+        },
+        up ? '运行中' : '未运行',
+      );
+    }
 
+    function Row({ label, children }: { label: string; children?: unknown }): ReactElement {
+      return h(
+        'div',
+        { style: S.row },
+        h('span', { style: S.key }, label),
+        h('span', { style: S.val }, children),
+      );
+    }
 
+    function Metric({
+      num,
+      label,
+      color,
+    }: {
+      num: unknown;
+      label: string;
+      color?: string;
+    }): ReactElement {
+      return h(
+        'div',
+        { style: S.metric },
+        h('span', { style: { ...S.metricNum, color: color || 'var(--dsw-alias-label-primary)' } }, String(num)),
+        h('span', { style: S.metricLabel }, label),
+      );
+    }
 
+    function CallStat({
+      num,
+      label,
+      color,
+    }: {
+      num: unknown;
+      label: string;
+      color?: string;
+    }): ReactElement {
+      return h(
+        'span',
+        { style: { ...S.callStat, color: color || 'var(--dsw-alias-label-primary)' } },
+        String(num),
+        h('span', { style: S.callStatLabel }, label),
+      );
+    }
+
+    // ── quota chip ────────────────────────────────────────────────────────
 
     /**
      * Compact quota readout: `atom · 5小时 19%` — a click-opens panel.
@@ -738,8 +789,7 @@ const REGISTRATION = {
               h(Row, { label: 'ask 累计 tokens' }, String(ask.tokens)),
               h(Row, { label: 'ask 平均耗时' }, fmtDuration(askAvg)),
               h(Row, { label: 'review 平均耗时' }, fmtDuration(reviewAvg))
-            )
-          ),
+            ),
             h(
               'div',
               { style: S.card },
@@ -820,6 +870,7 @@ const REGISTRATION = {
                         ? h('p', { style: S.error }, '当前 5 小时窗口已用尽，回合会被限流')
                         : null
                     )
+            )
           )
         );
       }
@@ -924,4 +975,3 @@ const REGISTRATION = {
 if (typeof window !== 'undefined' && (window as any).__ModuleLoader__) {
   (window as any).__ModuleLoader__.load(REGISTRATION);
 }
-

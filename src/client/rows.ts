@@ -1,0 +1,208 @@
+/**
+ * Card rows — pure functions that compute what each card displays.
+ *
+ * `turnBoundaryRows`: patch-only knobs and their provenance verdict.
+ * `providerRows` / `providerSelectModel`: the model dropdown rows and model.
+ *
+ * All are pure so they can be unit-tested without a browser.
+ */
+
+import type {
+  BoundaryRow,
+  ConfigBranch,
+  ProviderBranch,
+  ProviderRow,
+  ProviderSelectModel,
+  ProviderSlotName,
+} from './types.ts';
+
+// ── 回合边界 ──────────────────────────────────────────────────────────────
+
+/**
+ * The "回合边界" card's rows — a pure function so the honesty rule below is
+ * testable without a browser.
+ *
+ * The rule: a patch-only knob is labelled by WHAT THE HOST SAYS ABOUT IT, not by
+ * whether it happens to look default-ish. `cfg.authored` means "this value
+ * DEPARTS from the plugin's shipped default" — the host decides that, because a
+ * renderer only sees the resolved value and could not tell a deliberate
+ * `approval_mode: bypass` from our own fallback. Comparing `askMaxRounds === 25`
+ * here would also be a SECOND copy of a number `lib/index.js` owns.
+ *
+ * Rows are KEPT (not hidden) when at their defaults, because this is the card
+ * that carries the `bypass` safety posture — silently dropping it would remove
+ * the one place a user can see that AtomCode's own tools run unattended.
+ */
+export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): BoundaryRow[] {
+  const src: ConfigBranch = cfg && typeof cfg === 'object' ? cfg : {};
+  const authored: NonNullable<ConfigBranch['authored']> =
+    src.authored && typeof src.authored === 'object' ? src.authored : {};
+  const defaults: NonNullable<ConfigBranch['defaults']> =
+    src.defaults && typeof src.defaults === 'object' ? src.defaults : {};
+  const askDefault = Number.isInteger(defaults.askMaxRounds) ? (defaults.askMaxRounds as number) : null;
+  const approvalDefault = typeof defaults.approvalMode === 'string' ? defaults.approvalMode : '';
+  const mode = typeof src.approvalMode === 'string' ? src.approvalMode : '';
+  const dir = typeof src.defaultWorkingDir === 'string' ? src.defaultWorkingDir : '';
+  const rounds = Number.isInteger(src.askMaxRounds) ? (src.askMaxRounds as number) : null;
+  // Verdict: 'changed' | 'default' | 'unknown'.
+  //
+  // 'unknown' is NOT decoration — it is the only honest answer when the host
+  // reports no `authored` branch AND sent no default to compare against. An
+  // older host (or the desktop install copy) hands us only the RESOLVED value,
+  // and `approvalMode: 'ask'` from it is either the user's choice or a build
+  // whose default is 'ask' — we cannot tell. Tagging that "（插件默认）" would
+  // assert what we do not know, the same class of lie as printing a guessed
+  // quota number (红线 2). So when we cannot tell, we do not tag at all.
+  type Verdict = 'changed' | 'default' | 'unknown';
+  const verdict = (
+    key: 'approvalMode' | 'workingDir' | 'askMaxRounds',
+    value: unknown,
+    fallback: unknown,
+  ): Verdict => {
+    if (authored && key in authored) return authored[key] === true ? 'changed' : 'default';
+    if (fallback === null || fallback === undefined || fallback === '') return 'unknown';
+    return value === fallback ? 'default' : 'changed';
+  };
+  const tag = (v: Verdict): string =>
+    v === 'changed' ? '（已改）' : v === 'default' ? '（插件默认）' : '';
+  return [
+    {
+      label: '审批模式',
+      text: mode === '' ? '—' : mode + tag(verdict('approvalMode', mode, approvalDefault)),
+      title:
+        'patch 字段 approval_mode；面板上没有输入框，改它要动 cordis.patch.yml。' +
+        'bypass = AtomCode 自己的工具在回合内无人值守执行（AtomCode 侧自主，与 DSH 的权限预设无关）。',
+    },
+    {
+      label: '工作目录',
+      text: dir === '' ? '（会话工作目录）' : dir + tag(verdict('workingDir', dir, null)),
+      title: dir === '' ? 'patch 字段 working_dir 留空 = 靠调用参数或会话工作目录' : 'patch 字段 working_dir',
+    },
+    {
+      label: 'ask 轮数上限',
+      text:
+        rounds === null
+          ? '—'
+          : rounds > 0
+            ? String(rounds) + tag(verdict('askMaxRounds', rounds, askDefault))
+            : '不限',
+      title:
+        'patch 字段 ask_max_rounds。超出即停止等待（不是远端 kill：daemon 侧的回合可能仍在后台跑完）。',
+    },
+  ];
+}
+
+// ── 运行环境（模型档位） ──────────────────────────────────────────────────
+
+/**
+ * The model rows, derived from ONE stats snapshot.
+ *
+ * Two entries, always both, never collapsed into one: they are TWO DIFFERENT
+ * namespaces (ask = daemon model profile, review = CLI direct entry), and one
+ * merged row would read as "same knob, two names" — the exact confusion
+ * 红线 8 exists to prevent.
+ */
+export function providerRows(cfg: ConfigBranch | null | undefined): ProviderRow[] {
+  const src: ConfigBranch = cfg && typeof cfg === 'object' ? cfg : {};
+  const name = (v: unknown): string => (typeof v === 'string' && v.trim() !== '' ? v.trim() : '');
+  const ask = name(src.defaultProvider);
+  const review = name(src.reviewDefaultProvider);
+  return [
+    {
+      slotName: 'ask',
+      label: '默认档位 · ask',
+      fallback: '未插手',
+      value: ask || '未插手',
+      pinned: ask !== '',
+      title:
+        'atomcode_ask 走 daemon：这里选的是模型档位（GET /models 的 provider 字段，' +
+        '形如 AtomGit-glm5.3-flash）。未插手 = 连 provider 字段都不发，由 AtomCode 自己的默认决定。' +
+        '只影响不显式传 provider 的调用。',
+    },
+    {
+      slotName: 'review',
+      label: '默认 provider · review',
+      fallback: '未插手',
+      value: review || '未插手',
+      pinned: review !== '',
+      title:
+        'atomcode_review 走 CLI：这里选的是 config.toml 里的直连条目名（[providers.<name>]，' +
+        '形如 atomcode-local —— 那是个名字，不是文件路径）。未插手 = 由 config.toml 的默认或唯一直连条目顶上。' +
+        '与左边是两套命名空间，不能同一个名字两边用。',
+    },
+  ];
+}
+
+/**
+ * The dropdown model for one provider slot — pure, so every edge is testable
+ * without a browser or a daemon.
+ *
+ * Three things it owns:
+ *  - the selected value is the PANEL pick, NOT the effective one
+ *  - a panel pick missing from the catalogue is APPENDED, never dropped
+ *  - an unusable slot renders a REASON, never a bare empty dropdown (红线 3)
+ */
+export function providerSelectModel(
+  provider: ProviderBranch | null | undefined,
+  slotName: ProviderSlotName,
+  fallbackLabel: string,
+): ProviderSelectModel {
+  const src = provider && typeof provider === 'object' ? provider[slotName] : null;
+  if (!src || typeof src !== 'object') {
+    return {
+      value: '',
+      options: [{ value: '', label: fallbackLabel }],
+      disabled: true,
+      reason: '宿主没有提供档位接口（旧版本，或 /provider 路由未注册）',
+      effective: '',
+      source: '',
+      note: '',
+    };
+  }
+  const name = (v: unknown): string => (typeof v === 'string' && v.trim() !== '' ? v.trim() : '');
+  const panel = name(src.panel);
+  // The two slots do NOT agree on the catalogue element shape, because the two
+  // endpoints do not: /models answers with OBJECTS ({provider, model, isDefault,
+  // effortLevels}) while the review CLI's direct entries are plain STRINGS. Both
+  // go through here, so both are flattened to the option VALUE — and a shape the
+  // host did not send is null (unavailable), never [] (empty), which would read
+  // as "your machine has no models".
+  const optionValue = (v: string | { provider?: string }): string => {
+    if (typeof v === 'string') return name(v);
+    if (v && typeof v === 'object') {
+      return name(v.provider);
+    }
+    return '';
+  };
+  const catalog = Array.isArray(src.catalog) ? src.catalog.map(optionValue).filter(Boolean) : null;
+  // A pinned name the catalogue no longer offers stays visible.
+  const list = catalog === null ? [] : catalog.indexOf(panel) === -1 && panel ? [panel].concat(catalog) : catalog;
+  const options = [{ value: '', label: fallbackLabel }].concat(list.map((n) => ({ value: n, label: n })));
+  const effective = name(src.effective);
+  const source = name(src.source);
+  const branch: ProviderBranch = provider as ProviderBranch;
+  let disabled = false;
+  let reason = '';
+  if (branch.foreignVersion === true) {
+    disabled = true;
+    reason = name(branch.storeError) || '状态文件由更新版本的插件写入，本版本不覆盖它';
+  } else if (catalog === null) {
+    disabled = true;
+    reason = name(src.catalogError) || name(branch.storeError) || '档位列表暂不可用（daemon 未在线？）';
+  } else if (list.length === 0) {
+    disabled = true;
+    reason =
+      slotName === 'ask'
+        ? 'daemon 未列出档位'
+        : 'config.toml 里没有直连条目';
+  }
+  return {
+    value: panel,
+    options,
+    disabled,
+    reason,
+    effective,
+    source,
+    note: !disabled && effective !== '' && effective !== panel ? effective : '',
+  };
+}

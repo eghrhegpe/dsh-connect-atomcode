@@ -13,7 +13,7 @@
 
 | 你的任务 | 第一站（先读） | 第二站（再读） | 动手前确认 |
 |---|---|---|---|
-| **额度读数改了不显示 / 位置不对** | 本文件红线 7（座位怎么挑） | `dsh-cordis-client-runner/lib/client.js` 里 `key: "conversation.composer.dock"` 的契约（`kind`/`scope`/`occupants`） | 座位的**摘要**是不是"ambient entries"这一类，而不是按名字挑 |
+| **额度读数改了不显示 / 位置不对** | 本文件红线 7 | `dsh-cordis-client-runner/lib/client.js` 里 `key: "conversation.composer.dock"` 的契约（`kind`/`scope`/`occupants`） | 见红线 7 |
 | **chip 弹窗 / portal / Tooltip 行为** | `README.md` §「为什么是弹窗而不是原生 tooltip」 | `dsh-client-ui-conversation` 的 `ContextMeter`（宿主同款交互的抄写对象） | 两个 seed 模块（`react-dom` / `dsh-client-ui-primitives`）是否还在 seed 表里 |
 | 改 host 逻辑 / 加配置字段 / 加路由 | 本文件「三条事实」「红线」 | `lib/index.js`（`apply` 是唯一装配点）→ `cordis.patch.yml` 对照字段注释 | `npm test` 里的 `wiring` / `stats-route` |
 | 改额度解析 / 面板渲染 | `lib/quota.js`（纯函数，无宿主依赖） | `test/quota.test.mjs` + `test/protocol.test.mjs` | 解析不出来时**必须**回落到原文，不得编数字 |
@@ -21,8 +21,8 @@
 | daemon 起不来 / 端口被占 | `lib/index.js` 的 `ensureDaemonStarted`（拉起/重试/单飞在那；`lib/daemon.js` 是它调用的传输与探测层，没有这个符号） | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
 | `atomcode_review` 报不可用 | 本文件红线 1 | `lib/review.js` 的 `checkReviewProvision` | 这是**本机配置事实**，不是临时故障 |
 | 加/改 client 槽位 | 本文件「宿主 ABI 面」 | `test/client-id.test.mjs`（注册契约门禁） | 改 seat 名必须同步改那条测试的断言 |
-| **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」；`docs/AtomCode-CLI与daemon接口参考.md` §4「`POST /chat` 的请求体字段」 | host 侧 `lib/index.js` 的 `resolveProvider()`（顺序：调用参数 > 面板选择 > `default_provider` / `review_default_provider`）+ `lib/provider-store.js`（`provider.json`）；渲染侧 `src/client/index.ts` 的 `ProviderSelectRow` + `src/client/provider-model.ts` 的 `providerSelectModel()`（详情页「运行环境」卡里两个下拉，一行两格） | 本文件**红线 8**（两条命名空间 + `config.toml` 只读）。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点**，不用碰任何配置文件 |
-| **详情页那张卡该显示什么 / 放哪儿** | `src/client/turn-boundary.ts` 的 `turnBoundaryRows()`（「回合边界」卡）与 `src/client/provider-model.ts` 的 `providerRows()`（「运行环境」卡）；座位在 `src/client/index.ts` 的 `apply()` 里（**改完必须 `npm run build`**） | 上面「面板的显示纪律」一段 | ①**恒定值不是信息**，patch-only 旋钮要标"你改过/插件默认"，判断来自 host 的 `config.authored`/`config.defaults`；②**座位读契约摘要不读名字**——面板属于 `plugins.bundle.config`（描述与 rows **之间**），不是 `plugins.detail.section`（rows **之后**） |
+| **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」 | host 侧 `lib/index.js` 的 `resolveProvider()` + `lib/provider-store.js`；渲染侧 `src/client/index.ts` 的 `ProviderSelectRow` + `src/client/rows.ts` 的 `providerSelectModel()` | 见**红线 8**。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点** |
+| **详情页那张卡该显示什么 / 放哪儿** | `src/client/rows.ts` 的 `turnBoundaryRows()` + `providerRows()`；`src/client/quota.ts` 的 `quotaView()`；座位在 `src/client/index.ts` 的 `apply()` 里（**改完必须 `npm run build`**） | 上面「面板的显示纪律」一段 | ①**恒定值不是信息**，patch-only 旋钮要标"你改过/插件默认"，判断来自 host 的 `config.authored`/`config.defaults`；②座位见红线 7 |
 
 ## 项目一句话
 
@@ -89,7 +89,7 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 | `ctx.webServer.register({kind:'exact', path})` | **两条路由**：`/api/atomcode-bridge/stats`（只读快照）与 `/api/atomcode-bridge/provider`（面板的模型选择写入点，写插件自己的 `provider.json`）。两条都同源门禁 | 面板与 chip 永久 `null`（客户端渲染 `—`）；provider 路由没了则两个下拉**禁用并写出原因**（不是空下拉） |
 | `ctx.effect(fn)` | 卸载时注销工具与路由 | **注意语义**：它执行 `fn` 当 setup，把返回值当 cleanup |
 | `ctx.logger?.warn` | 可选，全部日志都带 `[atomcode-bridge]` 前缀 | — |
-| `client` 侧 `ctx.slots.inject/register` | 两个 seat：详情页 `plugins.bundle.config`（**keyed，`key` = 包名**；有 `view: 'summary'\|'page'`，渲染在**描述与 rows 之间**；缺它时回落到 `plugins.detail.section`，那个是 list seat、渲染在 rows **之后**）+ 输入框下方 `conversation.composer.dock`（额度读数，`order: 1`） | 有 try/catch 兜底，缺 seat 只降级。**只允许一个 seat 拿走面板**——两个都注册会在新宿主上渲染两遍 |
+| `client` 侧 `ctx.slots.inject/register` | 两个 seat：详情页 `plugins.bundle.config`（首选，keyed）+ `plugins.detail.section`（回落）；输入框 `conversation.composer.dock`（额度读数，`order: 1`）。座位选择见红线 7 | 有 try/catch 兜底，缺 seat 只降级。**只允许一个 seat 拿走面板**——两个都注册会渲染两遍 |
 | `client` 侧 `require('react')` | 工厂期取 React，**必须**是 app 同一个实例 | 取错实例 → hooks 报错 |
 | `client` 侧 `require('react-dom')`、`require('@deepseek-ai/dsh-client-ui-primitives')` | chip 弹窗的 `createPortal` / `Tooltip` / `useAnchoredPosition` / `useDismissOnOutsidePointer` | **不需要加 `dsh.client.inject`**：两者都在 web boot 的 seed 表里，`require()` 先查 seed 表。仍要 try/catch——工厂抛错会连带拖垮消费者，缺 seed 时降级回原生 `title`（`test/client-fns.test.mjs` 守着这条） |
 
@@ -98,17 +98,8 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 
 ## 面板的显示纪律（2026-10 那张卡被用户嫌弃"又丑又多字"之后写的）
 
-**先说一条元纪律（下面所有教训都是它的实例）：注释也是契约，而注释没有测试。**
-（**契约注释现在都住在 `src/`**：client 的产物 `client.js` 会被打包器抹掉函数体注释，见
-「工作目录与装载方式」。改注释改 `src/client/*.ts` / `src/host/*.ts`。）
-本仓库一个回合内放出过三条**过期注释**：`cordis.patch.yml` 里 `default_provider` 同时挂着
-两段互相矛盾的 `Precedence:`（加面板时漏删了旧那段）、`review_working_dir` 描述了一个
-**代码刻意拒绝**的回退（"空 = 用 host 进程 cwd"，而 `lib/index.js` 是明说不猜仓库并拒绝调用）、
-README 与治理记录写的"6 个纯函数"实际是 12 个。三条都没被任何测试抓到——因为它们都在注释里。
-`wiring.test.mjs` 现在有一条**注释一致性测试**：`default_provider` / `review_default_provider`
-各只许出现**一次** `Precedence:`且必须含面板；`review_working_dir` 必须写明"拒绝"而非"回落"。
-**改了这些字段的行为，就顺手改注释，否则那条测试会红**——这是刻意的。
-数字同理：**别把会变的计数写进文档**（写过"6 个纯函数""175 条 test"，都过期了）。
+**元纪律：注释也是契约，而注释没有测试。** 契约注释住在 `src/`（产物 `client.js` 会被打包器抹掉函数体注释，见「工作目录与装载方式」）。`wiring.test.mjs` 有一条注释一致性测试：`default_provider` / `review_default_provider` 各只许出现一次 `Precedence:`且必须含面板；`review_working_dir` 必须写明"拒绝"而非"回落"。**改了字段行为就顺手改注释，否则那条测试会红。**
+数字同理：**别把会变的计数写进文档**。
 
 详情页那张卡曾经有 **6 行恒定值**（`来源`、`路径`、`审批模式`、`默认工作目录`、`ask 轮数上限`、
 `评审可用性`），用户的原话是「感觉插件又丑又多字呢」。教训不是"排版要好看"，是三条：
@@ -140,13 +131,7 @@ README 与治理记录写的"6 个纯函数"实际是 12 个。三条都没被�
   曾经一起走 `map(name)`（只认字符串）→ **ask 下拉整个是空的**，而 review 正常。
   这条 bug 被上面第 3 点那句共用文案**掩盖**成了"像是文案问题"，隔了一轮才被实机快照抓出来。
   取下拉值只取 `provider`（档位名）；`model`（裸 id）两条路都不认（红线 8）。
-- **面板要占"描述与 rows 之间"那个座位，不是"详情页随便哪个座位"。** 面板原先注册在
-  `plugins.detail.section`——只因为那个名字读着像"插件详情页"。它其实是 **list seat、渲染在
-  shipped rows 之后**，于是读数落在 `运行统计`/`包含的组件` 下面；而兄弟插件 sensenova 用
-  `plugins.bundle.config`（`kind: keyed`，`key` = 包名，契约原文 "rendered on the bundle's page
-  between its description and its rows"），所以在上方。**座位名像什么不代表它渲染在哪**——
-  这是红线 7 的同一条教训第二次发生（第一次是 `conversation.input.right`）。
-  该 seat 还带 `view: 'summary' | 'page'`：`summary` 是插件卡片的一行摘要，**只许一行**。
+- **面板要占"描述与 rows 之间"那个座位。** 首选 `plugins.bundle.config`（keyed，渲染在描述与 rows 之间），回落 `plugins.detail.section`（list seat，渲染在 rows 之后）。座位选择见红线 7。该 seat 还带 `view: 'summary' | 'page'`：`summary` 是插件卡片的一行摘要，**只许一行**。
 - **`manifest.description` 必须是字符串，多语言靠 `locale/` 目录——不是 package.json 里塞对象。** 面板的
   title/description 由 `dsh-app-boot` 的 `readPluginMeta()` 解析，真实机制是：
   ①`<pkg>/locale/en.json` 是**扫描锚点**（没有它一个字典都不加载）；
@@ -193,10 +178,8 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
   链的名单看 `package.json` 的 `scripts.test`。**只看自己域的增减**，别去对总数。
 - `npm test` **不消耗额度**、不联网：全部用假 daemon / 假 spawn / 纯函数。
 - `test:live` 默认也**不消耗额度**——只有 `ATOMCODE_LIVE_TURNS=1` 才会跑真实回合。
-- **动了契约/接缝文件，跑全量**：`src/**`（含它构建出的 `client.js` 与 `lib/*.js`）、`cordis.patch.yml`、`package.json`。
-  消费者不可枚举——按域裁剪会漏掉跨域契约。判断标准：这个文件的消费者我数得清吗？数不清就全量。
-- **改了 `src/` 就跑 `npm run typecheck` + `npm run build` + `npm test`**：`typecheck` 是
-  `tsc --noEmit`（strict），`build-gate` 那条会替你确认产物没落后于源码。
+- **动了契约/接缝文件，跑全量**：`src/**`、`cordis.patch.yml`、`package.json`。消费者不可枚举——按域裁剪会漏掉跨域契约。
+- **改了 `src/` 就跑 `npm run typecheck` + `npm run build` + `npm test`**（构建纪律见「工作目录与装载方式」）。
 - **改了 `package.json` 的 `scripts.test` 链要连带核对磁盘**：仓库里有过"新套件写好了但没挂进链里"，
   于是 `npm test` 全绿而它一次没跑。挂链时顺手确认 `test/` 下每个 `*.test.mjs` 都在链里。
 
@@ -273,11 +256,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 
 - **没有 `docs/PITFALLS.md`、`docs/ARCHITECTURE.md`、`docs/RELEASING.md`**——本插件没有兄弟插件那套
   事故史账本；三条事实 + 红线就是全部的判断依据。别照抄一份空的出来占位。
-- **版本号目前不一致，别再新增第四处**：`package.json` 与 `lib/index.js` 的 stats body 都写
-  `0.4.0`，而 `README.md` 已按 **v0.4.1** 记录了两项**已落地**的能力（`selectReviewProvider()`
-  在 `lib/review.js`、`probeLocalEndpoint()` 在 `lib/index.js`，外加 `review-select.test.mjs` 的
-  16 条测试）。`cordis.patch.yml` **没有 version 字段**，所以版本只有上面两处真源。
-  发版前把 `package.json` + stats body 一起对齐到实际发布号，**只改一处就是撒谎**。
+- **版本号只有两处真源**：`package.json` 与 `lib/index.js` 的 stats body。`cordis.patch.yml` 没有 version 字段。发版前把两处一起对齐，**只改一处就是撒谎**。
 - **`upstream/atomcode-open-api`** 是参照件（第三方 AtomCode OpenAPI 实现，自带 `.git`），
   已被 `.gitignore` 排除、**故意不在仓库历史里**（见「工作目录与装载方式」那条）。
   它不是构建输入、不参与测试，只作接口形态的对照；出处与许可写在 `README.md` 的

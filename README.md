@@ -236,35 +236,21 @@ data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-f
 
 ## v0.4 治理记录
 
-这一版是针对一轮外部设计评审的修复。评审给出的问题与本版的处理，逐条对应：
+> 完整的逐条修复表（20+ 项）已归档到 git history。以下是**仍然有效**的决策摘要。
 
-### 已修
+### 仍然有效的决策
 
-| 问题 | 处理 |
-|---|---|
-| **协议零版本钉扎**（三条腿都绑在未文档化内部面上，升级后静默降级且零报错） | 承认无法握手（官方没给），改为**让降级可观测**：`/health` 版本进快照与面板；SSE 词汇整体不识时抛**点名事件类型**的错（不再含糊的 "ended before done"）；额度文本失配置 `protocol.quotaTextDrift` 并在面板说明。新增 `protocol.test.mjs` 钉住这三处。**残余风险仍在**：版本数字只是线索，没有能力协商 |
-| **默认不安全**（`bypass` + `ask_max_rounds: 0` = 无人值守且无上限） | `ask_max_rounds` 默认改为 **25**（有界），`0` 仍可显式交回 daemon。工具描述同步更正 |
-| **review 探针假阴性 + 陈旧**（引号 provider 名被误判不可用；只在 mount 跑一次） | 解析器抽成 `parseTomlProviders()` 并正确处理 `[providers."my provider"]` / 引号键 / 全引号段名；**execute 每次调用重读 config**，不可用时直接拒绝（不再 spawn 一个注定失败的进程）；描述警示保留为"第一次就看到"的那层 |
-| **review 缺省落到宿主 cwd**（评错仓库却报成功） | 新增 `review_working_dir`；两者都没给时**拒绝**并说明原因，不猜 |
-| **200KB 静默截断** | `reply` / `report` 截断时**打标记 + 置 `truncated` 字段**，`render()` 额外提示 |
-| **`provider` 参数文档与契约打架**（举例给模型名、契约是 provider 名） | v0.4 先改成"按 `[providers.<name>]` / `/providers` 命名，不要传模型名"；**这句对 ask 路径仍然是错的**，见下一行 |
-| **`provider` 到底是什么名**（2026-10-14 实测才搞清） | ask（daemon `/chat`）收的是**模型档位名** = `GET /models` 的 `provider` 字段 = `config.toml` 里 `[models."<名>"]` 的键 / `default_provider` 的值（`AtomGit-glm5.3-flash`）；review（CLI）收的才是 `[providers.<name>]` 直连条目名。**两条路命名空间不同**。两个工具描述现各说各的，并写明"传裸模型 id 是错的" |
-| **模型选择没有插件侧旋钮** | 新增**两个**配置字段（不是一个）：`default_provider`（ask）与 `review_default_provider`（review），各自路径里"调用参数 > 该字段 > 原有默认"。**留空的行为两条路不同**：ask 留空**连 `provider` 字段都不发**，review 留空是回落到自动选择（而自动选择几乎总会显式交出 `--provider`）。生效值进 `/stats` 快照的 `config.defaultProvider` / `config.reviewDefaultProvider`，未配 = `null`。**插件依旧不写 `~/.atomcode/config.toml`** |
-| **一版曾用同一个字段喂两条路（自查发现）** | 第一版把 `default_provider` 同时喂给 `/chat.provider` 和 `selectReviewProvider()`，而这两处收的**是两个命名空间**：ask 收档位名 `AtomGit-glm5.3-flash`，review 收直连条目名 `atomcode-local`。配了档位名的机器上，review 会被指到一个 CLI 认不出的通道上。故拆成两字段，并由 `wiring.test.mjs` 双向钉住**互不渗漏**（`default_provider` 不得消解 review 的"多直连条目须点名"，`review_default_provider` 不得出现在 `/chat` 载荷里），红线 8 记账 |
-| **拆分后的三处残留（由 AtomCode 自己评审出来）** | 走 daemon 侧 `atomcode_ask` 让 AtomCode 用其**原生 `code_review` 工具**（`scope:{kind:"range",base:"HEAD~2",head:"HEAD"}`）审这两个提交，查出三条，全部成立并已修：① `reviewProviderNote` 在配了旋钮时仍无条件拼接"留空时自动选择…多个条目会要求你点名"，与同段的"留空即点名它"对同一输入给出两个结果（工具描述是给模型读的，谎报一个不会发生的拒绝会让它扣下合法调用）→ 两个分支改为互斥；② "调用参数压过配置默认"那条测试**空转**——假 binary 对 `first`/`second` 报同一个 spawn 失败，argv 不可观测，回归成忽略参数也照样绿 → 两半各补：把两个假直连条目指向**死掉的回环端口**，让 selection 的选择由探活失败的具名诊断暴露（错误里带 `provider "first"` 与其 base_url），并用 `review.js` 自带的测试缝 `setSpawnOverride` 接住 argv 直接断言 `--provider` 收到的就是选中的条目（外加"selection 拒绝时不该走到 spawner"）；③ `AGENTS.md` 与 README 的汇总句把 ask 的"留空连字段都不发"泛化到了 review 路径（review 留空=自动选择，而它几乎总会显式交出 `--provider`）→ 分路径各说各的。附带把描述测试的 `HOME` 钉住（原先隐式依赖开发机的真实 config.toml）。①由"两分支互斥"的正反断言守住（已配必须说`留空**不会**被拒绝`、且不得再出现`会要求你点名`；未配必须反过来）；②的两条新断言都做了**变异实验**：把 `pickReviewProvider` 改成忽略入参后，回环诊断断言与 argv 断言**同时**失败——而原写法一次都抓不到。**结论：Blocker 0，两个提交可留** |
-| **review 过度宣称"结构化 findings"** | 描述改为"`--json` 原始文本，findings 可能夹带日志行"，让模型自己解析 |
-| **`sessions.count()` 跨 prefix** | 按本 store 的 prefix 统计 |
-| **`drop()` 死代码**（陈旧 session 无处可清） | 接到新的 `atomcode_ask reset_session` 参数上，并处理"显式 session_id + reset"的优先级 |
-| **daemon 拉起失败永久粘住** | `spawnTried` 不再当墓碑；`daemon_retry_secs`（默认 60s）冷却后重试，`spawnAttempts`/`spawnFailures` 可观测。已成功的旧启动在 daemon 不在时也会失效重估 |
-| **额度正则过宽**（`window` 会误匹配无关行） | 标签收紧为 `用量|usage|quota`，兜底锚定 `重置于`/`resets at` 而非"含重置" |
-| **渲染端零测试** | 纯函数提到闭包外并经 `__test` 暴露，`client-fns.test.mjs` 覆盖。**数量不写死在这里**（写死过"6 个"，很快就不对了）：要数就 `node -e "…"` 读 `client.js` 的 `TESTABLE`，或直接看 `__test` 对象 |
-| **文档用词不实**（"118 条断言"实为 118 个 test） | 改为 test 数并加说明 |
-| **模型选择只能改配置文件**（改一行要开文件、且只在挂载时读一次） | 详情页加两个下拉（ask / review 各一，各自命名空间），持久化到**插件自己的** `provider.json`，**每次调用重读**所以选完即生效、不用重启 host。优先级定为：调用参数 > 面板选择 > 配置字段 > AtomCode 自己（面板赢在"那是用户刚做的动作"——控件输给配置文件就是死控件）。写入点单一路由 `POST /api/atomcode-bridge/provider`（同源 + 方法门禁 + 4KB 上限 + 槽位/名字校验），**从不写 `~/.atomcode/config.toml`**；测试里有一条"写一次 pick 后 config.toml 必须逐字节不变 + `~/.atomcode` 下不得出现任何 provider 文件"钉这条边界。两个工具的描述同步改成**只讲顺序、不讲结果**——描述挂载时注册一次而面板选择每次调用才读，任何"留空即 X"的固定句式都是掷硬币 |
-| **那张卡"又丑又多字"**（用户原话） | 详情页那张卡曾有 **6 行恒定值**：`来源`/`路径` 是同一件事说两遍，`审批模式`/`默认工作目录`/`ask 轮数上限` 报告的是**用户从没拨过的旋钮**，`评审可用性` 则永远显示「可用」。收敛为：① 拆成「运行环境」（`AtomCode` 一行含来源 + 两个下拉并排一行两格；`评审可用性`**只在不可用时出现**）与「回合边界」（`审批模式`/`工作目录`/`ask 轮数上限`，各标"（插件默认）"或"（已改）"）；② "改过没有"由 host 的 `config.authored`/`config.defaults` 判定，**不在渲染侧比缺省值**——显式写 `bypass` 与兜底 `bypass` 在值上分不开，且 `askMaxRounds === 25` 是第二份 25，`lib/index.js` 一改就撒谎；③ 空态文案**按槽位分家**（原先共用一句，于是 ask 的空态用 review 的来源解释自己）；④「生效 X（来自面板）」只在**实际生效值与所选不同**时出现，一致时不说话。`turnBoundaryRows()` 与 `providerRows()` 都是纯函数，由 `client-fns.test.mjs` 覆盖（含变异实验） |
-| **两个下拉的目录形状不同（实机才抓到）** | `GET /models` 给的是**对象数组** `{provider, model, isDefault, effortLevels}`，review 的直连条目是**字符串数组**，而两者都进同一个 `providerSelectModel()`。原先一起走 `map(name)`（只认字符串）→ **ask 下拉整个是空的**，review 正常。这条 bug 被上一条的**共用空态文案掩盖**成"像是文案问题"，隔了一轮才用真 daemon 快照（5.2.3）抓出来。现在按元素类型展平、只取 `provider`（档位名），`model`（裸 id）两条路都不认（红线 8）；并有一条测试直接喂**实机原样的两种载荷**，回退到 `map(name)` 时该测试失败。教训记进 `AGENTS.md`「面板的显示纪律」 |
-| **面板放错座位 + 宽度钉死 + 英文墙**（用户第二轮反馈） | 三条都成立：①**座位**——面板原注册在 `plugins.detail.section`，只因那个名字读着像"插件详情页"，它其实是 **list seat、渲染在 shipped rows 之后**；而兄弟插件用的 `plugins.bundle.config` 契约原文是 "rendered on the bundle's page **between its description and its rows**"，所以在**上方**。现改为优先 `plugins.bundle.config`（`kind: keyed`，`key` = 包名）、缺它时回落旧 seat，**且只允许一个 seat 拿走面板**（两个都注册会渲染两遍）；该 seat 还带 `view: 'summary'/'page'`，`summary` 压成一行，避免重蹈英文墙。②**布局**——`wrap.maxWidth` 曾是 `760px`（宽窗口留大片空白）+ `grid` 硬编码 `1fr 1fr`（**任何宽度都是两列**），故"宽面下卡片没有自动合并行数"；现为 `1180px` + `repeat(auto-fit, minmax(320px, 1fr))`（窄 1 列、宽 3 列），并给 row 钉 `lineHeight`/`minHeight` 修"没有最小行距"。③**i18n**——第一版把 `package.json` 的 `description` 改成了 `{ en, zh }` 对象，**这是错的**：面板的 title/description 由 `dsh-app-boot` 的 `readPluginMeta()` 解析，机制是 **`locale/en.json` 作扫描锚点 + 同目录 `*.json` 按文件名当语言 id + `manifest.description` 只当英文兜底**，而兜底经 `fallbackText()`——**只认非空字符串，对象一律返回 undefined**，于是描述被**静默清空**、页面只剩包名（截图里那行 `dsh-atomcode-bridge` 就是它）。现改为 `locale/{en,zh}.json`（`{ meta: { title, description } }`），并把 `locale` 加进 `files[]`（否则安装副本没有字典）。文案 474 → 108 字。另把两个下拉标签改成 `默认档位 · ask` / `默认 provider · review`——用户把 `atomcode-local` 读成了"配置文件"，因为屏幕上没有任何字说明它属于哪条路 |
-| **`authored` 的判据一开始就是错的**（实机才暴露） | "用户改过没有"的第一版实现是**看配置里有没有这个键**。但随插件发布的 `cordis.patch.yml` **每个键都显式写**（它本身就是字段注释真源），于是 stock 安装上 `authored` 全是 `true`，面板每行都挂「已改」——实机截图里 `bypass（已改）`、`25（已改）` 就是这么来的，而用户一个都没动过。判据改为 **值 != 出厂缺省**。这条与"渲染侧硬编码 `=== 25`"是同一枚硬币的两面：都源于**用"存在/字面相等"代替"语义是否偏离"**。测试相应改成三态（无变化 / 偏离 / 旧宿主无从判断），并把"写了一个等于缺省的值"从「已改」改判为「插件默认」 |
-| **描述被静默清空 + 工具统计四数并列**（用户第三轮反馈） | ①上一条的 i18n 改法本身是错的（`description` 写对象 → `fallbackText()` 返回 undefined → 页面只剩包名），已改成 `locale/*.json` 并加 `files[]`，见上。②**面板布局**：实测（无头 Edge 量真实版面）在 1284px 窗口下 `wrap` = 1180px、**就是 3 列**，`启动情况 / 运行环境 / 回合边界` 同排——断点是 `<660px` 1 列、`660–979px` 2 列、`≥980px` 3 列；用户截图里的 2 列是**旧 bundle 尚未刷新**。③**「工具调用统计」格式**：原来把 `atomcode_ask 调用 / 成功 / 失败 / atomcode_review 调用` 摊平成一排，读起来像四个并列事实，但 `成功/失败` 是 **ask 的结果**、不是 review 调用数的兄弟；静止时就是四个 0 排一排。改成两组带标签（`atomcode_ask: 调用/成功/失败` ｜ `atomcode_review: 调用`），中间一条细分割线。④卡片 `summary` 视图原本硬编码一句简介，与 locale 字典构成**第二份真源**，改为只报描述说不了的事——daemon 活没活 |
+- **ask_max_rounds 默认 25（有界）**，`0` 显式交回 daemon
+- **review 每次调用重读 config.toml**，不可用时直接拒绝
+- **review 缺省不猜仓库**：两者都没给时拒绝并说明原因
+- **reply/report 截断时打标记 + 置 `truncated` 字段**
+- **两个工具描述各说各的命名空间**，写明"传裸模型 id 是错的"
+- **sessions.count() 按 prefix 统计**
+- **daemon_retry_secs（默认 60s）冷却后重试**
+- **额度正则标签收紧为 `用量|usage|quota`**
+- **面板布局**：`1180px` + `repeat(auto-fit, minmax(320px, 1fr))`
+- **i18n**：`locale/{en,zh}.json` + `files[]` 含 `locale`
+- **工具统计格式**：两组带标签，不摊平成一排
 
 ### 未修 / 明确不做
 
