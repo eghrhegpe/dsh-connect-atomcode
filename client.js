@@ -54,6 +54,10 @@
       }
 
       const STATS_PATH = '/api/atomcode-bridge/stats';
+      // The plugin's OWN write endpoint for the model dropdowns. It persists to
+      // `$DSH_HOME/state/dsh-atomcode-bridge/provider.json` — never to
+      // ~/.atomcode/config.toml, which stays read-only for us (AGENTS.md 红线 8).
+      const PROVIDER_PATH = '/api/atomcode-bridge/provider';
       const POLL_MS = 5000;
 
       const S = {
@@ -98,6 +102,19 @@
         // deliberately quieter than a pinned name (which is a live setting the user
         // chose). Same row shape, one step down the label ladder.
         valIdle: { color: 'var(--dsw-alias-label-secondary)', wordBreak: 'break-word', textAlign: 'right' },
+        // The dropdown lives in a readout row, so it borrows the row's type scale
+        // and stays visually quiet — this is a setting, not a button.
+        select: {
+          font: 'inherit',
+          fontSize: '12.5px',
+          color: 'var(--dsw-alias-label-primary)',
+          background: 'transparent',
+          border: '1px solid rgba(128, 128, 128, 0.35)',
+          borderRadius: '5px',
+          padding: '2px 6px',
+          maxWidth: '320px',
+        },
+        selectOff: { opacity: 0.55 },
         pill: {
           fontSize: '12px',
           fontWeight: 600,
@@ -314,6 +331,7 @@
         panelStyle,
         quotaView,
         providerRows,
+        providerSelectModel,
       };
 
       function StatusPill({ up }) {
@@ -347,6 +365,95 @@
           { style: S.metric },
           h('span', { style: { ...S.metricNum, color: color || 'var(--dsw-alias-label-primary)' } }, String(num)),
           h('span', { style: S.metricLabel }, label)
+        );
+      }
+
+      /**
+       * POST one provider pick to the plugin's own state endpoint.
+       *
+       * Returns a result rather than throwing: every caller is a UI handler, and a
+       * rejected promise there becomes an unhandled rejection with nothing on
+       * screen. The caller renders `error` instead (红线 3).
+       */
+      async function postProvider(slotName, value) {
+        try {
+          const response = await fetch(PROVIDER_PATH, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ slot: slotName, provider: value === '' ? null : value }),
+          });
+          let parsed = null;
+          try {
+            parsed = await response.json();
+          } catch {
+            parsed = null;
+          }
+          if (parsed && parsed.ok === true) return { ok: true, provider: parsed };
+          return { ok: false, error: (parsed && parsed.error) || 'HTTP ' + response.status };
+        } catch (reason) {
+          return { ok: false, error: reason && reason.message ? reason.message : String(reason) };
+        }
+      }
+
+      /**
+       * One interactive provider row: a dropdown scoped to ONE namespace.
+       *
+       * Two per slot, never merged: ask lists daemon model profiles, review lists
+       * config.toml direct entries (红线 8). Pending/error state is local, and the
+       * row is never swapped back to static text — a failed write must stay visible
+       * with its reason, or the user cannot tell "the plugin refused" from "my click
+       * did nothing".
+       */
+      function ProviderSelectRow({ label, slotName, provider, fallbackLabel, reload }) {
+        const model = providerSelectModel(provider, slotName, fallbackLabel);
+        const [note, setNote] = useState('');
+        const [pending, setPending] = useState(false);
+        const SOURCE = { panel: '面板', config: '配置', atomcode: 'AtomCode', auto: '自动选择' };
+        const onChange = async (event) => {
+          const value = event && event.target ? event.target.value : '';
+          setPending(true);
+          setNote('');
+          const result = await postProvider(slotName, value);
+          setPending(false);
+          if (!result.ok) {
+            setNote('保存失败：' + result.error);
+            return;
+          }
+          setNote(value === '' ? '已恢复未插手' : '已选 ' + value);
+          // Pull the snapshot now so the row shows its own new effective value
+          // without waiting out the 5s poll: the click and its consequence stay
+          // together on screen.
+          if (typeof reload === 'function') void reload();
+        };
+        const sourceText = model.source ? SOURCE[model.source] || model.source : '';
+        return h(
+          'div',
+          { style: S.row },
+          h('span', { style: S.key }, label),
+          h(
+            'span',
+            { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px', flexWrap: 'wrap' } },
+            h(
+              'select',
+              {
+                style: model.disabled || pending ? { ...S.select, ...S.selectOff } : S.select,
+                value: model.value,
+                disabled: model.disabled || pending,
+                onChange,
+              },
+              model.options.map((option, index) =>
+                h('option', { key: slotName + '-' + index, value: option.value }, option.label)
+              )
+            ),
+            // The answer to "did my click take?": what the NEXT call will actually
+            // use, and which layer decided. Without it a pick that lost to another
+            // layer reads as a dead control.
+            model.effective
+              ? h('span', { style: S.valIdle }, '生效 ' + model.effective + (sourceText ? '（来自' + sourceText + '）' : ''))
+              : null,
+            model.disabled ? h('span', { style: S.valIdle }, model.reason) : null,
+            note ? h('span', { style: S.valIdle }, note) : null
+          )
         );
       }
 
@@ -396,7 +503,7 @@
           };
         }, [load]);
 
-        return { data, error, updatedAt };
+        return { data, error, updatedAt, reload: load };
       }
 
       /**
@@ -443,16 +550,78 @@
         const review = name(src.reviewDefaultProvider);
         return [
           {
+            slotName: 'ask',
             label: '默认档位（ask）',
+            fallback: '未插手（AtomCode 自己的默认）',
             value: ask || '未插手（AtomCode 自己的默认）',
             pinned: ask !== '',
           },
           {
+            slotName: 'review',
             label: '默认 provider（review）',
+            fallback: '未插手（按 config.toml 自动选择）',
             value: review || '未插手（按 config.toml 自动选择）',
             pinned: review !== '',
           },
         ];
+      }
+
+      /**
+       * The dropdown model for one provider slot — pure, so every edge is testable
+       * without a browser or a daemon.
+       *
+       * Three things it owns:
+       *  - the selected value is the PANEL pick, NOT the effective one: the control
+       *    shows what the user chose, while `effective`/`source` are rendered beside
+       *    it as the answer to "did my click actually take?";
+       *  - a panel pick missing from the catalogue is APPENDED, never dropped — a
+       *    daemon that restarted with a different config would otherwise render a
+       *    real setting as "nothing chosen", which is a lie by omission;
+       *  - an unusable slot renders a REASON, never a bare empty dropdown
+       *    (红线 3: nothing here may fail silently).
+       *
+       * @param {object|undefined} provider  the snapshot's `provider` branch
+       * @param {'ask'|'review'} slotName    which namespace (they are NOT one knob)
+       * @param {string} fallbackLabel       what "no pick" means for this slot
+       */
+      function providerSelectModel(provider, slotName, fallbackLabel) {
+        const src = provider && typeof provider === 'object' ? provider[slotName] : null;
+        if (!src || typeof src !== 'object') {
+          return {
+            value: '',
+            options: [{ value: '', label: fallbackLabel }],
+            disabled: true,
+            reason: '宿主没有提供档位接口（旧版本，或 /provider 路由未注册）',
+            effective: '',
+            source: '',
+          };
+        }
+        const name = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : '');
+        const panel = name(src.panel);
+        const catalog = Array.isArray(src.catalog) ? src.catalog.map(name).filter(Boolean) : null;
+        // A pinned name the catalogue no longer offers stays visible.
+        const list = catalog === null ? [] : catalog.indexOf(panel) === -1 && panel ? [panel].concat(catalog) : catalog;
+        const options = [{ value: '', label: fallbackLabel }].concat(list.map((n) => ({ value: n, label: n })));
+        let disabled = false;
+        let reason = '';
+        if (provider.foreignVersion === true) {
+          disabled = true;
+          reason = name(provider.storeError) || '状态文件由更新版本的插件写入，本版本不覆盖它';
+        } else if (catalog === null) {
+          disabled = true;
+          reason = name(src.catalogError) || name(provider.storeError) || '档位列表暂不可用（daemon 未在线？）';
+        } else if (list.length === 0) {
+          disabled = true;
+          reason = '本机没有可选项（ask 取 daemon /models，review 取 config.toml 的直连条目）';
+        }
+        return {
+          value: panel,
+          options,
+          disabled,
+          reason,
+          effective: name(src.effective),
+          source: name(src.source),
+        };
       }
 
       /**
@@ -687,7 +856,7 @@
         const name = subject && subject.kind === 'bundle' ? subject.pkg && subject.pkg.name : undefined;
         if (name !== 'dsh-atomcode-bridge') return null;
 
-        const { data, error, updatedAt } = useStats();
+        const { data, error, updatedAt, reload } = useStats();
 
         let body;
         if (error) {
@@ -702,6 +871,10 @@
           const ask = data.ask || { calls: 0, ok: 0, err: 0, msTotal: 0, tokens: 0 };
           const review = data.review || { calls: 0, ok: 0, err: 0, msTotal: 0 };
           const proto = data.protocol || {};
+          // The model knobs. `null` = an older host that has no provider branch;
+          // the rows still render, disabled and WITH a reason, so the panel never
+          // shows an empty dropdown (红线 3).
+          const prov = data.provider || null;
           const retryNote = cfg.daemonRetrySecs > 0 ? cfg.daemonRetrySecs + 's' : '每次轮询';
           // Countdown is derived locally from the snapshot's fetch time, so it
           // keeps ticking between polls instead of showing a frozen server string.
@@ -850,14 +1023,19 @@
                 h(Row, { label: '审批模式' }, String(cfg.approvalMode)),
                 h(Row, { label: '默认工作目录' }, cfg.defaultWorkingDir || '（会话工作目录）'),
                 // Two rows, never one merged: these are two DIFFERENT namespaces
-                // (see providerRows). Row already wraps children in a primary-color
-                // span, so an unpinned value gets one quieter span inside it.
-                ...providerRows(cfg).map((r, i) =>
-                  h(
-                    Row,
-                    { key: 'provider-' + i, label: r.label },
-                    h('span', { style: r.pinned ? undefined : S.valIdle }, r.value)
-                  )
+                // (红线 8). providerRows() owns the wording, the snapshot's `provider`
+                // branch owns what is selectable right now — so an older host without
+                // the branch renders the same two rows disabled, with a reason, rather
+                // than an empty dropdown.
+                ...providerRows(cfg).map((row) =>
+                  h(ProviderSelectRow, {
+                    key: 'provider-' + row.slotName,
+                    label: row.label,
+                    slotName: row.slotName,
+                    provider: prov,
+                    fallbackLabel: row.fallback,
+                    reload,
+                  })
                 ),
                 h(
                   Row,

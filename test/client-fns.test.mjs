@@ -71,7 +71,7 @@ async function loadClient(fakeRequire) {
 }
 
 const mod = await loadClient();
-const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows } = mod.__test;
+const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel } = mod.__test;
 
 describe('client __test — the formatters are exposed', () => {
   it('exports every pure helper the panel renders through', () => {
@@ -86,6 +86,7 @@ describe('client __test — the formatters are exposed', () => {
       panelStyle,
       quotaView,
       providerRows,
+      providerSelectModel,
     })) {
       assert.equal(typeof fn, 'function', `${name} must be callable from tests`);
     }
@@ -460,5 +461,86 @@ describe('providerRows — the two provider knobs, never merged, never dropped',
       assert.equal(rows.length, 2, 'a malformed branch still renders both rows');
       assert.deepEqual(rows.map((r) => r.pinned), [false, false]);
     }
+  });
+});
+
+/**
+ * providerSelectModel — the dropdown the panel renders.
+ *
+ * The interesting cases are the ones a render test cannot reach: a catalogue that
+ * never arrived (daemon down), a pick the catalogue no longer offers, a state file
+ * a newer build wrote, and the empty-string option that means "未插手". Each must
+ * still produce a usable CONTROL or a stated REASON — an empty dropdown with no
+ * explanation is the silent failure this repo forbids.
+ */
+describe('providerSelectModel — one slot, one dropdown, one namespace', () => {
+  const ASK_FALLBACK = '未插手（AtomCode 自己的默认）';
+  const REVIEW_FALLBACK = '未插手（按 config.toml 自动选择）';
+
+  it('leads with the "no pick" option and then the catalogue', () => {
+    const m = providerSelectModel({ ask: { panel: null, catalog: ['A', 'B'] } }, 'ask', ASK_FALLBACK);
+    assert.deepEqual(m.options.map((o) => o.value), ['', 'A', 'B']);
+    assert.equal(m.options[0].label, ASK_FALLBACK, 'clearing must be reachable and named');
+    assert.equal(m.value, '', 'nothing pinned selects the empty option');
+    assert.equal(m.disabled, false);
+  });
+
+  it('shows the PINNED value even when the catalogue no longer offers it', () => {
+    // A daemon that restarted with a different config would otherwise render a real
+    // setting as "nothing chosen" — a lie by omission about what the bridge sends.
+    const m = providerSelectModel({ ask: { panel: 'Gone-Profile', catalog: ['A'] } }, 'ask', ASK_FALLBACK);
+    assert.deepEqual(m.options.map((o) => o.value), ['', 'Gone-Profile', 'A']);
+    assert.equal(m.value, 'Gone-Profile');
+  });
+
+  it('states WHY it is unusable instead of rendering an empty dropdown', () => {
+    const down = providerSelectModel({ ask: { panel: null, catalog: null, catalogError: 'fetch failed' } }, 'ask', ASK_FALLBACK);
+    assert.equal(down.disabled, true);
+    assert.match(down.reason, /fetch failed/);
+
+    const none = providerSelectModel({ review: { panel: null, catalog: [] } }, 'review', REVIEW_FALLBACK);
+    assert.equal(none.disabled, true);
+    assert.match(none.reason, /没有可选项/, 'an empty catalogue explains itself');
+
+    const foreign = providerSelectModel(
+      { foreignVersion: true, storeError: 'written by a newer build', ask: { panel: 'X', catalog: ['X'] } },
+      'ask',
+      ASK_FALLBACK
+    );
+    assert.equal(foreign.disabled, true, 'a state file from a newer build must not be silently overwritten by a click');
+    assert.match(foreign.reason, /newer build/);
+    assert.equal(foreign.value, 'X', 'and the pick it holds is still shown');
+  });
+
+  it('reports an old host without the provider branch', () => {
+    for (const missing of [undefined, null, {}, 'nope']) {
+      const m = providerSelectModel(missing, 'ask', ASK_FALLBACK);
+      assert.equal(m.disabled, true, `must disable for ${JSON.stringify(missing)}`);
+      assert.match(m.reason, /宿主没有提供档位接口/);
+      assert.deepEqual(m.options.map((o) => o.value), ['']);
+    }
+  });
+
+  it('never lets one slot read the other slot or another namespace', () => {
+    const provider = {
+      ask: { panel: 'AtomGit-glm5.3-flash', catalog: ['AtomGit-glm5.3-flash', 'AtomGit-qwen3.8-27b'] },
+      review: { panel: 'atomcode-local', catalog: ['atomcode-local'] },
+    };
+    const ask = providerSelectModel(provider, 'ask', ASK_FALLBACK);
+    const review = providerSelectModel(provider, 'review', REVIEW_FALLBACK);
+    assert.equal(ask.value, 'AtomGit-glm5.3-flash');
+    assert.equal(review.value, 'atomcode-local');
+    assert.ok(!ask.options.some((o) => o.value === 'atomcode-local'), 'a direct entry is not a model profile');
+    assert.ok(!review.options.some((o) => o.value.startsWith('AtomGit-')), 'and a profile is not a direct entry');
+  });
+
+  it('carries the effective value and its source through for display', () => {
+    const m = providerSelectModel({ ask: { panel: 'A', catalog: ['A'], effective: 'A', source: 'panel' } }, 'ask', ASK_FALLBACK);
+    assert.equal(m.effective, 'A');
+    assert.equal(m.source, 'panel');
+    // Junk in those display fields must not throw or leak "undefined" text.
+    const junk = providerSelectModel({ ask: { panel: null, catalog: [], effective: 42, source: [] } }, 'ask', ASK_FALLBACK);
+    assert.equal(junk.effective, '');
+    assert.equal(junk.source, '');
   });
 });

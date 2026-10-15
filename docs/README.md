@@ -51,12 +51,13 @@
 ## 代码地图
 
 ```
-lib/index.js     Cordis 插件本体：注册两个工具 + /api/atomcode-bridge/stats 统计路由 + 额度缓存 + daemon 拉起策略
+lib/index.js     Cordis 插件本体：注册两个工具 + /api/atomcode-bridge/stats 统计路由 + /provider 面板偏好路由 + 额度缓存 + daemon 拉起策略
 lib/daemon.js    纯 daemon HTTP 客户端（/health /models /command /chat SSE），零宿主依赖
 lib/review.js    `atomcode review` CLI 包装（argv 构造 + 有界熔断 + 可用性静态探针）
 lib/quota.js     CodingPlan 额度文本解析（纯函数，按结构而非措辞）
 lib/sessions.js  侧边会话映射（read-modify-write，跨 profile 键前缀隔离）
-client.js        渲染端半身：详情页统计卡片 + 输入框下方 dock 行的紧凑额度读数（点击弹面板）
+lib/provider-store.js  面板选的模型档位/直连条目（provider.json：版本化、损坏保留旁路、拒覆盖更新版本）
+client.js        渲染端半身：详情页统计卡片 + 模型下拉 + 输入框下方 dock 行的紧凑额度读数（点击弹面板）
 ```
 
 ## 许可

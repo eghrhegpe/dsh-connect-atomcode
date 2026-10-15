@@ -62,6 +62,11 @@
         # (default_provider + default_model, then POST /config/reload).
         # ASK path only (daemon POST /chat): maps to that request's `provider`.
         # REVIEW has its own knob below — the two paths do NOT share a namespace.
+        # Precedence: per-call `provider` argument > the pick made in the plugin
+        # detail page (persisted to <state_path dir>/provider.json) > this field >
+        # AtomCode's own default. Empty = send nothing at all, so AtomCode's
+        # default stays authoritative. Set this to give the plugin a default that
+        # does not depend on anyone opening the panel.
         default_provider: ''
         # REVIEW path only (CLI `atomcode review --provider`). A DIFFERENT
         # namespace from `default_provider` above: this must be a direct
@@ -69,12 +74,12 @@
         # because the review CLI resolves providers from those entries only.
         # Handing it a daemon profile name ("AtomGit-...") would point the CLI at
         # a provider it cannot bill against.
-        # It fills selectReviewProvider()'s explicit-request slot, so it wins over
-        # the CLI's own default_provider auto-selection; a name this plugin does
-        # not recognize is still passed through for the CLI to judge (we never
-        # block here). Empty = today's behavior: config.toml's default_provider if
+        # Precedence: per-call `provider` argument > the panel pick (provider.json,
+        # its own separate slot) > this field > config.toml's default_provider if
         # usable, else the single usable direct entry, else refuse and ask the
         # caller to name one (never a guess about which channel gets billed).
+        # A name this plugin does not recognize is passed through for the CLI to
+        # judge — we never block here.
         review_default_provider: ''
         # Default review working directory (atomcode_review only). Empty = the
         # HOST PROCESS's cwd, which is usually NOT the user's repository — set
@@ -85,6 +90,9 @@
         working_dir: ''
         # Where the side-conversation session map lives. Empty = the DSH home
         # convention (~/.dsh/state/dsh-atomcode-bridge/sessions.json).
+        # The panel's model picks live in provider.json IN THE SAME DIRECTORY, so
+        # this one knob relocates both. That file is the PLUGIN's own state — the
+        # plugin never writes ~/.atomcode/config.toml.
         state_path: ''
         # Ask-path agent round fuse. DEFAULT IS NOW BOUNDED (25) rather than
         # unlimited: the bridge counts `tool_start` SSE events and stops

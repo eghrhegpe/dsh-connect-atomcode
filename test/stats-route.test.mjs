@@ -11,7 +11,7 @@
  */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it, before, after } from 'node:test';
@@ -27,8 +27,10 @@ const { createSessionStore } = await import(pathToFileURL(SESSIONS).href);
 const CLOSED_PORT = 45991;
 const STATS_PATH = '/api/atomcode-bridge/stats';
 
-/** Mount the plugin and return the captured stats route. */
-function mountRoute({ statePath, port = CLOSED_PORT, extra = {} }) {
+const PROVIDER_PATH = '/api/atomcode-bridge/provider';
+
+/** Mount the plugin and capture EVERY route it registers. */
+function captureRoutes({ statePath, port = CLOSED_PORT, extra = {} }) {
   const routes = [];
   const ctx = {
     get: (name) => {
@@ -43,30 +45,63 @@ function mountRoute({ statePath, port = CLOSED_PORT, extra = {} }) {
     on() {},
   };
   mod.apply(ctx, { auto_start: false, port, state_path: statePath, ...extra });
-  assert.equal(routes.length, 1, 'exactly one route must be registered');
-  return routes[0];
+  assert.deepEqual(
+    routes.map((r) => r.path).sort(),
+    [PROVIDER_PATH, STATS_PATH].sort(),
+    'both the stats route and the provider write route must be registered',
+  );
+  return routes;
 }
 
-/** Drive the handler the way the panel polls it. */
-async function callRoute(route, { method = 'GET', headers = {} } = {}) {
+/**
+ * Mount the plugin and return ONE captured route.
+ *
+ * Two routes are registered now — the read-only snapshot and the panel's own
+ * provider write — so the harness selects by path instead of assuming there is
+ * only one. Asserting the exact set stays here on purpose: a route silently
+ * dropped by a mount change is otherwise invisible until a user clicks a button
+ * that does nothing.
+ */
+function mountRoute({ statePath, port = CLOSED_PORT, extra = {}, path = STATS_PATH }) {
+  const found = captureRoutes({ statePath, port, extra }).find((r) => r.path === path);
+  assert.ok(found, `route ${path} must be registered`);
+  return found;
+}
+
+/**
+ * Drive a handler the way the panel does.
+ *
+ * `body` is delivered as an async-iterable request because the provider route
+ * reads it with `for await` — the same contract the real Node IncomingMessage
+ * gives it. A plain object there would silently take the "could not read the
+ * request body" branch and the write path would never be exercised.
+ */
+async function callRoute(route, { method = 'GET', headers = {}, body } = {}) {
   const captured = { status: 0, headers: {}, body: null, raw: undefined, ended: false };
   const response = {
     writeHead(status, hdrs) {
       captured.status = status;
       captured.headers = hdrs || {};
     },
-    end(body) {
+    end(payload) {
       captured.ended = true;
-      if (body === undefined) return;
-      captured.raw = body;
+      if (payload === undefined) return;
+      captured.raw = payload;
       try {
-        captured.body = JSON.parse(body);
+        captured.body = JSON.parse(payload);
       } catch {
         captured.body = null;
       }
     },
   };
-  await route.handler({ method, headers }, response);
+  const request = { method, headers };
+  if (body !== undefined) {
+    const payload = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body), 'utf8');
+    request[Symbol.asyncIterator] = async function* () {
+      yield payload;
+    };
+  }
+  await route.handler(request, response);
   assert.equal(captured.ended, true, 'the handler must end the response');
   return captured;
 }
@@ -220,6 +255,23 @@ describe('stats route — snapshot shape the panel depends on', () => {
       'config.reviewAvailable',
       'config.reviewReason',
       'sessions.tracked',
+      // The provider dropdowns dereference every one of these. They are listed per
+      // slot on purpose: a snapshot that grew the branch for `ask` but not `review`
+      // would render one live control and one that silently never works.
+      'provider.storePath',
+      'provider.storeError',
+      'provider.foreignVersion',
+      'provider.ask.panel',
+      'provider.ask.config',
+      'provider.ask.effective',
+      'provider.ask.source',
+      'provider.ask.catalog',
+      'provider.ask.catalogError',
+      'provider.review.panel',
+      'provider.review.config',
+      'provider.review.effective',
+      'provider.review.source',
+      'provider.review.catalog',
       'uptimeMs',
       'ask.calls',
       'ask.ok',
@@ -742,6 +794,198 @@ describe('stats route — auto-start on observation', () => {
     } finally {
       rmSync(dirname(pinned), { recursive: true, force: true });
       rmSync(dirname(unset), { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * The provider write route — the panel's own model choice.
+ *
+ * What this pins down, beyond "the endpoint works":
+ *  - the value lands in the PLUGIN's state file and is reported back as the
+ *    effective choice with `source: 'panel'`, so a click is verifiable on screen;
+ *  - every refusal is loud (400/403/405/409 with a reason), never a silent no-op;
+ *  - 红线 8's boundary: writing a pick must NOT touch ~/.atomcode/config.toml.
+ *    That assertion is the whole reason this feature is allowed to exist — the
+ *    moment a future change starts writing another application's configuration,
+ *    this test is what fails first.
+ */
+describe("provider route — the panel's own model choice", () => {
+  const HOME_HDRS = { host: '127.0.0.1:3080' };
+  const dirs = [];
+
+  function mountBoth(extra = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-prov-'));
+    dirs.push(dir);
+    const routes = captureRoutes({ statePath: join(dir, 'sessions.json'), port: CLOSED_PORT, extra });
+    return {
+      dir,
+      state: join(dir, 'provider.json'),
+      stats: routes.find((r) => r.path === STATS_PATH),
+      provider: routes.find((r) => r.path === PROVIDER_PATH),
+    };
+  }
+
+  after(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a saved pick is reported as the effective choice, sourced from the panel', async () => {
+    const m = mountBoth();
+    const w = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: 'AtomGit-glm5.3-flash' } });
+    assert.equal(w.status, 200);
+    assert.equal(w.body.ok, true);
+    assert.equal(w.body.ask.panel, 'AtomGit-glm5.3-flash');
+    assert.equal(w.body.ask.effective, 'AtomGit-glm5.3-flash');
+    assert.equal(w.body.ask.source, 'panel');
+    // And it is on disk where the plugin reads it — next to sessions.json.
+    assert.ok(existsSync(m.state), 'the plugin state file must exist after a write');
+    const poll = await callRoute(m.stats, { headers: HOME_HDRS });
+    assert.equal(poll.body.provider.ask.source, 'panel', 'the next poll must agree with the write');
+  });
+
+  it('GET reads the same state without writing it', async () => {
+    const m = mountBoth({ default_provider: 'AtomGit-qwen3.8-27b' });
+    const g = await callRoute(m.provider, { headers: HOME_HDRS });
+    assert.equal(g.status, 200);
+    assert.equal(g.body.ok, true);
+    assert.equal(g.body.ask.panel, null);
+    assert.equal(g.body.ask.effective, 'AtomGit-qwen3.8-27b');
+    assert.equal(g.body.ask.source, 'config');
+    assert.equal(existsSync(m.state), false, 'a read must not create the state file');
+  });
+
+  it('a null clears the pick and the ladder falls back', async () => {
+    const m = mountBoth({ default_provider: 'AtomGit-qwen3.8-27b' });
+    await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: 'X' } });
+    const cleared = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: null } });
+    assert.equal(cleared.body.ask.panel, null);
+    assert.equal(cleared.body.ask.effective, 'AtomGit-qwen3.8-27b', 'clearing returns to the configured default');
+    assert.equal(cleared.body.ask.source, 'config');
+  });
+
+  it('the two slots stay separate namespaces on disk', async () => {
+    const m = mountBoth();
+    await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: 'AtomGit-glm5.3-flash' } });
+    const r = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'review', provider: 'atomcode-local' } });
+    assert.equal(r.body.ask.panel, 'AtomGit-glm5.3-flash', 'writing review must not clobber ask');
+    assert.equal(r.body.review.panel, 'atomcode-local');
+    // The review slot never pretends to be a model profile, and vice versa.
+    assert.equal(r.body.review.source, 'panel');
+    assert.equal(r.body.ask.source, 'panel');
+  });
+
+  it('refuses an unknown slot, a non-string name, and control characters — all 400, all unwritten', async () => {
+    const m = mountBoth();
+    const bad = [
+      { slot: 'model', provider: 'x' },
+      { slot: 'ask', provider: 42 },
+      { slot: 'ask', provider: 'bad\u0000name' },
+      { slot: 'ask', provider: 'x'.repeat(300) },
+    ];
+    for (const body of bad) {
+      const r = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body });
+      assert.equal(r.status, 400, `must refuse ${JSON.stringify(body).slice(0, 40)} (got ${r.status}: ${r.body && r.body.error})`);
+      assert.equal(r.body.ok, false);
+      assert.ok(r.body.error.length > 0, 'a refusal must name itself');
+    }
+    assert.equal(existsSync(m.state), false, 'no rejection may create the state file');
+  });
+
+  it('refuses a body that is not a JSON object', async () => {
+    const m = mountBoth();
+    const cases = ['not json at all', '[]', 'null', ''];
+    for (const raw of cases) {
+      const r = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: raw });
+      assert.equal(r.status, 400, `must refuse ${JSON.stringify(raw)} (got ${r.status})`);
+      assert.equal(r.body.ok, false);
+    }
+  });
+
+  it('refuses an oversized body instead of buffering it', async () => {
+    const m = mountBoth();
+    const r = await callRoute(m.provider, {
+      method: 'POST',
+      headers: HOME_HDRS,
+      body: '{"slot":"ask","provider":"' + 'y'.repeat(9000) + '"}',
+    });
+    assert.equal(r.status, 400);
+    assert.match(r.body.error, /larger than \d+ bytes/, 'the refusal must name the limit it enforced');
+  });
+
+  it('a disallowed method is refused with 405 and an Allow header', async () => {
+    const m = mountBoth();
+    const r = await callRoute(m.provider, { method: 'DELETE', headers: HOME_HDRS });
+    assert.equal(r.status, 405);
+    assert.match(String(r.headers.allow || ''), /GET/);
+    assert.match(String(r.headers.allow || ''), /POST/);
+  });
+
+  it('a cross-origin write is refused with 403', async () => {
+    const m = mountBoth();
+    const r = await callRoute(m.provider, {
+      method: 'POST',
+      headers: { host: '127.0.0.1:3080', origin: 'http://evil.example' },
+      body: { slot: 'ask', provider: 'AtomGit-glm5.3-flash' },
+    });
+    assert.equal(r.status, 403);
+    assert.equal(existsSync(m.state), false, 'a refused origin must not write anything');
+  });
+
+  it('a state file from a NEWER build is read as no-pick and refused for write (409)', async () => {
+    // Write-side version guard: a downgraded plugin must not clobber a newer shape
+    // and make the user's pick vanish on the next upgrade.
+    const m = mountBoth();
+    writeFileSync(m.state, JSON.stringify({ version: 99, ask: 'Future-Profile', review: null }), 'utf8');
+    const g = await callRoute(m.provider, { headers: HOME_HDRS });
+    assert.equal(g.body.ask.panel, null, 'a foreign version reads as no pick');
+    assert.equal(g.body.foreignVersion, true);
+    const w = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: 'X' } });
+    assert.equal(w.status, 409, 'and the write is refused, not silently accepted');
+    assert.match(w.body.error, /newer build/i);
+    assert.match(readFileSync(m.state, 'utf8'), /Future-Profile/, 'the newer file is left intact');
+  });
+
+  it('a corrupt state file is preserved aside and reads as no-pick with a reason', async () => {
+    const m = mountBoth();
+    writeFileSync(m.state, '{ this is not json', 'utf8');
+    const r = await callRoute(m.provider, { headers: HOME_HDRS });
+    assert.equal(r.status, 200, 'a broken preference must not take the panel down');
+    assert.equal(r.body.ask.panel, null);
+    assert.ok(r.body.storeError.length > 0, 'and it must say what happened');
+    const leftovers = readdirSync(m.dir).filter((n) => n.startsWith('provider.json.corrupt-'));
+    assert.equal(leftovers.length, 1, 'the unreadable file is preserved aside, never erased');
+  });
+
+  it('writing a pick never touches ~/.atomcode/config.toml (红线 8 boundary)', async () => {
+    // The load-bearing assertion for this whole feature: the panel chooses a model
+    // by writing the PLUGIN's own state, while AtomCode's configuration stays
+    // read-only for us. If anyone later "makes the dropdown change the default for
+    // AtomCode too", this is the test that fails — here, not on the user's machine.
+    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-prov-home-'));
+    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
+    const cfgPath = join(fakeHome, '.atomcode', 'config.toml');
+    const original = ['default_provider = "AtomGit-qwen3.8-27b"', '', '[providers.atomcode-local]', 'base_url = "http://127.0.0.1:8899/v1"', 'api_key = "local"'].join('\n');
+    writeFileSync(cfgPath, original, 'utf8');
+    const savedHome = process.env.HOME;
+    const savedProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      const m = mountBoth();
+      const w = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: 'AtomGit-glm5.3-flash' } });
+      assert.equal(w.status, 200);
+      assert.equal(readFileSync(cfgPath, 'utf8'), original, 'config.toml must be byte-identical after a pick');
+      // And the pick lives where it should — the plugin state dir, nowhere else.
+      assert.ok(existsSync(m.state));
+      const strays = readdirSync(join(fakeHome, '.atomcode')).filter((n) => /provider/i.test(n));
+      assert.deepEqual(strays, [], 'no provider state may be written under ~/.atomcode');
+    } finally {
+      if (savedHome !== undefined) process.env.HOME = savedHome;
+      else delete process.env.HOME;
+      if (savedProfile !== undefined) process.env.USERPROFILE = savedProfile;
+      else delete process.env.USERPROFILE;
+      rmSync(fakeHome, { recursive: true, force: true });
     }
   });
 });

@@ -17,6 +17,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const BRIDGE = join(__dirname, '..', 'lib', 'index.js');
 const REVIEW = join(__dirname, '..', 'lib', 'review.js');
 const SESSIONS = join(__dirname, '..', 'lib', 'sessions.js');
+const PROVIDER_STORE = join(__dirname, '..', 'lib', 'provider-store.js');
 
 function fileUrl(p) {
   if (p.startsWith('/')) return `file://${p}`;
@@ -530,10 +531,18 @@ describe('lib/index.js — default_provider / review_default_provider (two names
   }
 
   /** Mount the plugin against the probe daemon and hand back the ask tool. */
-  async function mountAsk(extraConfig) {
+  async function mountAsk(extraConfig, picks) {
     const probe = await startChatProbe();
     const dir = mkdtempSync(join(tmpdir(), 'atomcode-dp-'));
     stateDirs.push(dir);
+    // The panel writes provider.json through the route; a test pre-seeds the same
+    // file through the same module, so the precedence ladder is exercised against
+    // the real on-disk shape rather than a mock of it.
+    if (picks && Object.keys(picks).length > 0) {
+      const { createProviderStore } = await import(fileUrl(PROVIDER_STORE));
+      const store = createProviderStore(join(dir, 'provider.json'));
+      for (const [slot, name] of Object.entries(picks)) store.set(slot, name);
+    }
     const { ctx, calls } = fakeCtx();
     const mod = await import(fileUrl(BRIDGE));
     mod.apply(ctx, {
@@ -543,7 +552,7 @@ describe('lib/index.js — default_provider / review_default_provider (two names
       ...extraConfig,
     });
     const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
-    return { ask, chats: probe.chats, calls };
+    return { ask, chats: probe.chats, calls, dir };
   }
 
   it('a configured default_provider reaches POST /chat', async () => {
@@ -571,6 +580,44 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     assert.equal(r.ok, true, r.error);
     assert.ok(!('provider' in chats[0]), `no provider key expected, got ${JSON.stringify(chats[0].provider)}`);
     assert.equal(r.provider, 'AtomGit-qwen3.8-27b', 'falls back to whatever the daemon reports');
+  });
+
+  it('a panel pick outranks the configured default_provider', async () => {
+    // The whole point of the dropdown: a click must beat a line in a config file,
+    // or the control is decoration.
+    const { ask, chats } = await mountAsk({ default_provider: 'AtomGit-qwen3.8-27b' }, { ask: 'AtomGit-glm5.3-flash' });
+    const r = await ask.execute({ message: 'hi' }, {});
+    assert.equal(r.ok, true, r.error);
+    assert.equal(chats[0].provider, 'AtomGit-glm5.3-flash', 'the panel pick wins over the patch field');
+    assert.equal(r.provider, 'AtomGit-glm5.3-flash');
+  });
+
+  it('a per-call provider argument still outranks the panel pick', async () => {
+    const { ask, chats } = await mountAsk({ default_provider: 'AtomGit-qwen3.8-27b' }, { ask: 'AtomGit-glm5.3-flash' });
+    await ask.execute({ message: 'hi', provider: 'AtomGit-qwen3.8-27b' }, {});
+    assert.equal(chats[0].provider, 'AtomGit-qwen3.8-27b', 'one turn may still name its own model');
+  });
+
+  it('clearing the panel pick is read on the NEXT call (no restart needed)', async () => {
+    // The state file is read per call, so BOTH directions of a user's choice take
+    // effect immediately. This asserts the fallback after a clear — the half that
+    // would break if the pick were cached at mount.
+    const { ask, chats, dir } = await mountAsk({ default_provider: 'AtomGit-qwen3.8-27b' }, { ask: 'AtomGit-glm5.3-flash' });
+    const { createProviderStore } = await import(fileUrl(PROVIDER_STORE));
+    createProviderStore(join(dir, 'provider.json')).set('ask', null);
+    await ask.execute({ message: 'hi' }, {});
+    assert.equal(chats[0].provider, 'AtomGit-qwen3.8-27b', 'a cleared file falls back to the config field');
+  });
+
+  it('a panel pick for one slot never lands on the other path', async () => {
+    // 红线 8 with the new layer in play: pin BOTH slots and the ask wire must still
+    // carry ONLY the model profile.
+    const { ask, chats } = await mountAsk(
+      { default_provider: 'AtomGit-qwen3.8-27b', review_default_provider: 'atomcode-local' },
+      { ask: 'AtomGit-glm5.3-flash', review: 'atomcode-local' }
+    );
+    await ask.execute({ message: 'hi' }, {});
+    assert.equal(chats[0].provider, 'AtomGit-glm5.3-flash');
   });
 
   it('an empty/whitespace default_provider behaves exactly like an unset one', async () => {
@@ -642,15 +689,25 @@ describe('lib/index.js — default_provider / review_default_provider (two names
       const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
       assert.match(ask.description, /档位名/, 'the ask description must name the kind of value expected');
       assert.match(ask.description, /default_provider="AtomGit-glm5.3-flash"/, 'the ACTIVE default is echoed');
+      assert.match(ask.description, /详情页面板上选的档位/, 'and the panel slot above it');
       assert.match(ask.parameters.properties.provider.description, /GET \/models/);
       assert.match(ask.parameters.properties.provider.description, /不要传裸模型 id/);
+      assert.match(ask.parameters.properties.provider.description, /面板上选的档位/);
 
       const review = calls.tools.find((t) => t.name === 'atomcode_review');
-      assert.match(review.description, /provider "direct"|直连 provider：direct/, 'the review knob names the real entry');
-      // The two branches must not coexist: with the knob pinned, describing the
-      // auto-select refusal would advertise a rejection that cannot happen.
-      assert.match(review.description, /留空\*\*不会\*\*被拒绝/, 'the pinned branch must say留空 is safe');
-      assert.doesNotMatch(review.description, /会要求你点名/, 'a pinned knob must not advertise the refusal branch');
+      assert.match(review.description, /直连 provider：direct/, 'the review note names the real entry');
+      // A tool description is registered ONCE at mount, while the panel pick is read
+      // PER CALL — so the note may state the ORDER of resolution and must never
+      // state the OUTCOME. Both sentences below are the outcome-claims that this
+      // test has already had to kill twice (a pinned "留空即点名它", an unpinned
+      // "留空时自动选择"): each is false as soon as someone touches the dropdown.
+      assert.match(review.description, /按顺序取：详情页面板选的条目/, 'the ladder must lead with the panel pick');
+      assert.match(review.description, /只有前面几档都没配上.*才会要求你点名/, 'the refusal must stay conditional');
+      assert.doesNotMatch(review.description, /留空即点名它/, 'no unconditional "empty means this one" claim');
+      assert.doesNotMatch(review.description, /provider 留空时自动选择——/, 'no unconditional auto-select claim');
+      // What IS safe to echo: the mount-time config value, which cannot change under
+      // the registered description.
+      assert.match(review.description, /当前="direct"/, 'the config field echo is a mount-time fact');
       assert.match(
         review.parameters.properties.provider.description,
         /providers\.<name>/,
@@ -661,18 +718,25 @@ describe('lib/index.js — default_provider / review_default_provider (two names
         /review_default_provider/,
         'and the knob it falls back to, not the ask one',
       );
+      assert.match(
+        review.parameters.properties.provider.description,
+        /面板上选的条目/,
+        'and the panel slot above it',
+      );
       assert.doesNotMatch(
         review.description,
         /AtomGit-glm5\.3-flash/,
         'the ask-side profile must not leak into the review namespace',
       );
 
-      // Unpinned, the refusal branch is the truthful one and must come back.
+      // Unpinned: the config echo flips to 未配, and the ladder is unchanged — the
+      // point of the conditional phrasing is that ONE sentence stays true either way.
       const unpinned = fakeCtx();
       mod.apply(unpinned.ctx, { state_path: join(mkdtempSync(join(tmpdir(), 'atomcode-dp-desc3-')), 's.json'), auto_start: false });
       const review2 = unpinned.calls.tools.find((t) => t.name === 'atomcode_review');
-      assert.match(review2.description, /会要求你点名/, 'without the knob, ambiguity really is a refusal');
-      assert.doesNotMatch(review2.description, /留空.*不会被拒绝/);
+      assert.match(review2.description, /当前未配/, 'the echo must follow the real config');
+      assert.doesNotMatch(review2.description, /当前="direct"/);
+      assert.match(review2.description, /按顺序取：详情页面板选的条目/);
     } finally {
       if (savedHome !== undefined) process.env.HOME = savedHome;
       else delete process.env.HOME;
@@ -823,9 +887,14 @@ describe('lib/index.js — default_provider / review_default_provider (two names
       });
       return child;
     });
-    const mount = async (extra) => {
+    const mount = async (extra, picks) => {
       const dir = mkdtempSync(join(tmpdir(), 'atomcode-argv-s-'));
       stateDirs.push(dir);
+      if (picks && Object.keys(picks).length > 0) {
+        const { createProviderStore } = await import(fileUrl(PROVIDER_STORE));
+        const store = createProviderStore(join(dir, 'provider.json'));
+        for (const [slot, name] of Object.entries(picks)) store.set(slot, name);
+      }
       const { ctx, calls } = fakeCtx();
       const bridge = await import(fileUrl(BRIDGE));
       bridge.apply(ctx, { state_path: join(dir, 'sessions.json'), auto_start: false, ...extra });
@@ -848,6 +917,22 @@ describe('lib/index.js — default_provider / review_default_provider (two names
       assert.equal(r3.ok, false);
       assert.match(r3.error, /several direct providers/);
       assert.equal(spawned.length, before, 'a refused selection must never reach the spawner');
+
+      // The panel layer, in the same observable form. A pick resolves the ambiguity
+      // with NO config edit (this is what the dropdown is for), and it outranks the
+      // patch field when both are set. Indexed off `spawned.length` because a
+      // refused selection never reaches the spawner at all.
+      const iPanel = spawned.length;
+      const byPanel = await mount({}, { review: 'first' });
+      const r4 = await byPanel.execute({ working_dir: repo, task: 'noop' }, {});
+      assert.equal(r4.ok, true, `a panel pick must resolve the ambiguity: ${r4.error}`);
+      assert.equal(providerOf(spawned[iPanel]), 'first', 'the panel pick reaches --provider');
+
+      const iVsConfig = spawned.length;
+      const panelVsConfig = await mount({ review_default_provider: 'first' }, { review: 'second' });
+      const r5 = await panelVsConfig.execute({ working_dir: repo, task: 'noop' }, {});
+      assert.equal(r5.ok, true, r5.error);
+      assert.equal(providerOf(spawned[iVsConfig]), 'second', 'the panel pick must outrank review_default_provider');
     } finally {
       setSpawnOverride(null);
       if (savedHome !== undefined) process.env.HOME = savedHome;

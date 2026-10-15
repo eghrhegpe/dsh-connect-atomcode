@@ -171,11 +171,11 @@ bundle 形式（与本机 `dsh-connect-*` 同品类）：
 | `auto_start` | `true` | 探测不到 daemon 时 detached 拉起。**面板或额度标签一被轮询就会触发**（ask 路径也会），不再是"等第一次调工具才拉" |
 | `binary` | `''` | 二进制名/路径（空 = PATH；`ATOMCODE_BIN` 亦可） |
 | `approval_mode` | `bypass` | ask 回合内 AtomCode 侧工具审批；共享仓库慎用无人值守 |
-| `default_provider` | `''` | **ask 路径**缺省的**模型档位名**（如 `AtomGit-glm5.3-flash`）。优先级：调用参数 `provider` > 本字段 > AtomCode 自己在 `config.toml` 里的默认。**空 = 连 `provider` 字段都不发**，模型选择不被插件插手。详见「怎么换模型」 |
-| `review_default_provider` | `''` | **review 路径**缺省的**直连条目名**（`[providers.<name>]`，如 `atomcode-local`）。⚠️ 与上一行**不是同一个命名空间**：把 `AtomGit-*` 填这里等于给 CLI 一个它认不出的计费通道。空 = 沿用自动选择（config.toml 的 `default_provider` 可用则用 → 唯一直连条目顶上 → 多个则要求点名，不猜） |
+| `default_provider` | `''` | **ask 路径**缺省的**模型档位名**（如 `AtomGit-glm5.3-flash`）。优先级：调用参数 `provider` > **详情页面板里选的档位** > 本字段 > AtomCode 自己在 `config.toml` 里的默认。**空 = 本层不插手**（再往下交给面板选择/AtomCode）。详见「怎么换模型」 |
+| `review_default_provider` | `''` | **review 路径**缺省的**直连条目名**（`[providers.<name>]`，如 `atomcode-local`）。⚠️ 与上一行**不是同一个命名空间**：把 `AtomGit-*` 填这里等于给 CLI 一个它认不出的计费通道。优先级同上（面板的 review 下拉是独立一格）。空 = 沿用自动选择（config.toml 的 `default_provider` 可用则用 → 唯一直连条目顶上 → 多个则要求点名，不猜） |
 | `working_dir` | `''` | ask 回合的缺省工作目录（同时是侧边对话的会话键） |
 | `review_working_dir` | `''` | **review 的缺省仓库根**。空 = review **不猜**，必须由调用传 `working_dir`（见「治理记录」） |
-| `state_path` | `''` | 会话映射文件（缺省 `~/.dsh/state/dsh-atomcode-bridge/sessions.json`） |
+| `state_path` | `''` | 会话映射文件（缺省 `~/.dsh/state/dsh-atomcode-bridge/sessions.json`）。**面板选的模型档位存在同目录的 `provider.json`**，所以这一个旋钮同时决定两者的位置 |
 | `ask_max_rounds` | `25` | ask 的 agent 工具轮数上限；`0` = 不限（交给 daemon 自带治理）。>0 时插件在 SSE 上数 `tool_start`，超限即断开并返回 `atomcode turn aborted: agent exceeded N tool rounds`。**注意**：断的是客户端这条 HTTP 流，daemon 侧的回合不保证随之停止（它可能继续在后台跑完），所以这是"别再等了"的止损，不是远程 kill |
 | `session_key_prefix` | 自动探测 | 会话键前缀，隔离多 profile（web / desktop）共用同一 state 文件；空 = 按 `DSH_PROFILE`/argv 自动判定 |
 | `daemon_retry_secs` | `60` | 自动拉起**失败**后的重试冷却。`0` = 每次轮询都重试；不设则失败会永久禁用本次挂载的自动拉起 |
@@ -196,22 +196,27 @@ AtomCode 5.x 在这条路上的 "provider" **就是模型档位名**，不是厂
    "effort_levels": ["low", "medium", "xhigh"] }]
 ```
 
-那个 `provider` 字段就是 `~/.atomcode/config.toml` 里 `[models."<档位名>"]` 的键名，也正是它 `default_provider` 存的东西——所以三档粒度各归各位：
+那个 `provider` 字段就是 `~/.atomcode/config.toml` 里 `[models."<档位名>"]` 的键名，也正是它 `default_provider` 存的东西——所以四层粒度各归各位：
 
 | 粒度 | 怎么做 | 谁的地盘 |
 |---|---|---|
-| **单次调用** | 给工具传 `provider="AtomGit-glm5.3-flash"`（用户说一句"用 glm5.3-flash 问 AtomCode"即可） | ✅ 插件本来就支持，无需改动 |
-| **本插件的缺省** | ask 配 `default_provider`（档位名），review 配 `review_default_provider`（直连条目名）——**两个字段，别填串** | ✅ 插件侧（本次新增） |
+| **单次调用** | 给工具传 `provider="AtomGit-glm5.3-flash"`（用户说一句"用 glm5.3-flash 问 AtomCode"即可） | ✅ 插件一直都支持 |
+| **面板上选（推荐）** | 详情页「二进制与配置」卡片里两个下拉：ask 列 `/models` 的档位，review 列 `config.toml` 的直连条目。选完**立即生效**（下次调用就换），存在插件自己的 `provider.json` | ✅ 插件侧，**不用改任何配置文件** |
+| **本插件的缺省（文件侧）** | ask 配 `default_provider`（档位名），review 配 `review_default_provider`（直连条目名）——**两个字段，别填串** | ✅ 插件侧；面板选择**优先于**它 |
 | **整机 AtomCode 的缺省** | 编辑 `~/.atomcode/config.toml` 的 `default_provider` + `default_model`，再 `POST /config/reload`（或等 daemon 空闲 30 分钟自杀后自然重启）；TUI 里是 `/model` | ⚠️ **AtomCode 侧**——本插件对那个文件**只读不写** |
 
-插件详情页的「二进制与配置」卡片**就有这两行**（数据来自 `/api/atomcode-bridge/stats` 的 `config.defaultProvider` / `config.reviewDefaultProvider`）：
+**为什么面板选择反而排在配置字段前面**：配置字段是给"愿意编辑文件的人"的静态缺省，而面板那一下是用户**刚刚做出的动作**。点击输给一行配置，这个控件就是死的——本仓库不发布死控件。两者都能在面板上看到（卡片会写"生效 X（来自 面板/配置/AtomCode）"），所以谁赢了从来不是秘密。
 
-| 行 | 配了的时候 | 没配的时候 |
+插件详情页的「二进制与配置」卡片**有这两个下拉**（数据来自 `/api/atomcode-bridge/stats` 的 `provider` 分支）：
+
+| 行 | 有选择时 | 没选择时 |
 |---|---|---|
-| `默认档位（ask）` | 档位名，正常色 | `未插手（AtomCode 自己的默认）`，弱一级色 |
-| `默认 provider（review）` | 直连条目名，正常色 | `未插手（按 config.toml 自动选择）`，弱一级色 |
+| `默认档位（ask）` | 显示选中的档位名 + 「生效 X（来自面板）」 | `未插手（AtomCode 自己的默认）` 选项 |
+| `默认 provider（review）` | 显示选中的直连条目名 + 「生效 X（来自面板）」 | `未插手（按 config.toml 自动选择）` 选项 |
 
-**两行永远都在，不合并也不省略**：合并会让两个命名空间读起来像同一个旋钮（红线 8），而"省掉一行"会让"用户没配"和"这个 host 版本压根不报这个字段"在屏幕上分不开（红线 3）。逻辑是纯函数 `providerRows()`，经 `client.js` 的 `__test` 暴露，由 `test/client-fns.test.mjs` 覆盖（`cfg` 缺失 / 畸形 / 非字符串每一支）。
+**两行永远都在，不合并也不省略**：合并会让两个命名空间读起来像同一个旋钮（红线 8），而"省掉一行"会让"没选"和"这个 host 版本压根不报这两个字段"在屏幕上分不开（红线 3）。档位列表拿不到时（daemon 没在线、本机没有直连条目）**行还在，但禁用并写出原因**，不会渲染一个空下拉假装可选。
+
+写入点只有一处：`POST /api/atomcode-bridge/provider`（同源门禁 + 方法门禁 + 4KB body 上限 + 槽位/名字校验），落盘到 `provider.json`（与 `sessions.json` 同目录，版本化，损坏文件保留旁路，**更新的版本写的文件拒绝覆盖**）。落盘与读取都**只碰插件自己的 state**——`~/.atomcode/config.toml` 依旧只读，`test/stats-route.test.mjs` 里那条"写一次 pick，config.toml 必须逐字节不变"就是钉这条的。
 
 实测证据（一个 3 字母的回合，2.2s / 20k token，其中 17k 命中缓存）：当时默认明明是 `qwen3.8-27b`，发 `POST /chat {"provider":"AtomGit-glm5.3-flash"}` 之后 SSE 回来的是
 
@@ -251,6 +256,7 @@ data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-f
 | **额度正则过宽**（`window` 会误匹配无关行） | 标签收紧为 `用量|usage|quota`，兜底锚定 `重置于`/`resets at` 而非"含重置" |
 | **渲染端零测试** | 6 个纯函数提到闭包外并经 `__test` 暴露，`client-fns.test.mjs` 覆盖 |
 | **文档用词不实**（"118 条断言"实为 118 个 test） | 改为 test 数并加说明 |
+| **模型选择只能改配置文件**（改一行要开文件、且只在挂载时读一次） | 详情页加两个下拉（ask / review 各一，各自命名空间），持久化到**插件自己的** `provider.json`，**每次调用重读**所以选完即生效、不用重启 host。优先级定为：调用参数 > 面板选择 > 配置字段 > AtomCode 自己（面板赢在"那是用户刚做的动作"——控件输给配置文件就是死控件）。写入点单一路由 `POST /api/atomcode-bridge/provider`（同源 + 方法门禁 + 4KB 上限 + 槽位/名字校验），**从不写 `~/.atomcode/config.toml`**；测试里有一条"写一次 pick 后 config.toml 必须逐字节不变 + `~/.atomcode` 下不得出现任何 provider 文件"钉这条边界。两个工具的描述同步改成**只讲顺序、不讲结果**——描述挂载时注册一次而面板选择每次调用才读，任何"留空即 X"的固定句式都是掷硬币 |
 
 ### 未修 / 明确不做
 

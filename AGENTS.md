@@ -17,13 +17,13 @@
 | daemon 起不来 / 端口被占 | `lib/daemon.js` 的 `ensureDaemonStarted` | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
 | `atomcode_review` 报不可用 | 本文件红线 1 | `lib/review.js` 的 `checkReviewProvision` | 这是**本机配置事实**，不是临时故障 |
 | 加/改 client 槽位 | 本文件「宿主 ABI 面」 | `test/client-id.test.mjs`（注册契约门禁） | 改 seat 名必须同步改那条测试的断言 |
-| **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」；`docs/AtomCode-CLI与daemon接口参考.md` §4「`POST /chat` 的请求体字段」 | host 侧 `lib/index.js` 的 `defaultProvider` / `reviewDefaultProvider` + `pickAskProvider()` / `pickReviewProvider()`；渲染侧 `client.js` 的 `providerRows()`（详情页两行，永不合并永不省略） | 本文件**红线 8**（两条命名空间 + 只读边界）。单次换模型传调用参数 `provider` 就够，不用改插件 |
+| **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」；`docs/AtomCode-CLI与daemon接口参考.md` §4「`POST /chat` 的请求体字段」 | host 侧 `lib/index.js` 的 `resolveProvider()`（顺序：调用参数 > 面板选择 > `default_provider` / `review_default_provider`）+ `lib/provider-store.js`（`provider.json`）；渲染侧 `client.js` 的 `providerSelectModel()` / `ProviderSelectRow`（详情页两个下拉） | 本文件**红线 8**（两条命名空间 + `config.toml` 只读）。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点**，不用碰任何配置文件 |
 
 ## 项目一句话
 
 DSH 插件：把本机已登录的 **AtomCode**（官方二进制，终端 AI 编程助手）作为**侧边工具台**接入 DeepSeek Harness。
 注册**两个工具**：`atomcode_ask`（侧边咨询，一个完整自主回合）与 `atomcode_review`（one-shot 代码评审）。
-Host（Node/cordis）只做四件事：注册工具、开一个只读统计路由、管 daemon 生命周期、解析额度；Client（React bundle）渲染详情页统计卡片与输入框额度标签。
+Host（Node/cordis）只做五件事：注册工具、开一个只读统计路由 + 一个只写插件自己 state 的偏好路由、管 daemon 生命周期、解析额度、持有 `provider.json` 偏好；Client（React bundle）渲染详情页统计卡片、模型下拉与输入框额度标签。
 
 **三条事实**（写代码前先认清你在动哪一条）：
 
@@ -61,7 +61,7 @@ Host（Node/cordis）只做四件事：注册工具、开一个只读统计路�
 | 面 | 用途 | 坏了会怎样 |
 |---|---|---|
 | `ctx.tools`（`ctx.get('tools')`） | 注册两个工具 | `apply` 早退，插件静默不挂 |
-| `ctx.webServer.register({kind:'exact', path})` | `/api/atomcode-bridge/stats` 只读路由 | 面板与 chip 永久 `null`（客户端渲染 `—`） |
+| `ctx.webServer.register({kind:'exact', path})` | **两条路由**：`/api/atomcode-bridge/stats`（只读快照）与 `/api/atomcode-bridge/provider`（面板的模型选择写入点，写插件自己的 `provider.json`）。两条都同源门禁 | 面板与 chip 永久 `null`（客户端渲染 `—`）；provider 路由没了则两个下拉**禁用并写出原因**（不是空下拉） |
 | `ctx.effect(fn)` | 卸载时注销工具与路由 | **注意语义**：它执行 `fn` 当 setup，把返回值当 cleanup |
 | `ctx.logger?.warn` | 可选，全部日志都带 `[atomcode-bridge]` 前缀 | — |
 | `client` 侧 `ctx.slots.inject/register` | 两个 seat：详情页 `plugins.detail.section` + 输入框下方 `conversation.composer.dock`（额度读数，`order: 1`） | 有 try/catch 兜底，缺 seat 只降级 |
@@ -136,14 +136,18 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
    `provider` 收的是**档位名**（= `GET /models` 的 `provider` 字段 = config 里 `[models."<名>"]` 的键
    = `default_provider` 的值，形如 `AtomGit-glm5.3-flash`）；review 走 CLI，`--provider` 收的才是
    `[providers.<name>]` 直连条目名（形如 `atomcode-local`）。裸模型 id（`glm5.3-flash`）两边都不认。
-   插件侧旋钮是**两个字段、各管一条路**：`default_provider`（ask）与 `review_default_provider`（review），
-   各自"调用参数 > 该字段 > 原有默认"。**留空的行为两条路不一样，别说成一句**：ask 留空**连 `provider`
-   字段都不发**（AtomCode 自己的默认说话）；review 留空是**回落到自动选择**，而自动选择几乎总会显式交出
-   `--provider`（config.toml 的默认命中、或唯一直连条目顶上）。曾经一版用同一个字段喂两条路、又用同一句话
-   描述两条路——两个都是这条红线要防的错，现在由 `wiring.test.mjs` 双向钉住互不渗漏、并断言描述里
-   "已配旋钮"与"歧义要点名"两个分支不得并存。
-   "面板上放个按钮直接改默认模型"看着像顺手的事，实际要写的是**别人应用的配置文件**——那是 AtomCode 侧的
-   `default_provider`/`default_model` + `POST /config/reload`。**别把这条只读边界改成读写。**
+   插件侧旋钮是**两个字段 + 面板两个下拉、各管一条路**：`default_provider`（ask）与
+   `review_default_provider`（review）是文件侧缺省，面板选择（`provider.json`）**优先于**它们。
+   顺序是：**调用参数 > 面板选择 > 配置字段 > 原有默认**。**留空的行为两条路不一样，别说成一句**：
+   ask 留空**连 `provider` 字段都不发**（AtomCode 自己的默认说话）；review 留空是**回落到自动选择**，
+   而自动选择几乎总会显式交出 `--provider`（config.toml 的默认命中、或唯一直连条目顶上）。
+   顺带一条同源教训：**工具描述只许讲顺序，不许讲结果**——描述在挂载时注册一次，而面板选择每次调用才读，
+   所以"留空即点名它"这类固定结论必然在某些状态下是假的（评审已经抓过两次）。
+   边界在这儿：**面板写的是插件自己的 state 文件，这是允许的，也是这个功能的意义**；
+   **`~/.atomcode/config.toml` 永远只读**——改全局默认是 AtomCode 侧的事
+   （`default_provider`/`default_model` + `POST /config/reload`）。谁把写入点挪到那个文件上，
+   就是踩这条红线（`test/stats-route.test.mjs` 里"写一次 pick 后 config.toml 逐字节不变、
+   `~/.atomcode` 下不得出现任何 provider 文件"就是钉它的）。
 
 ## 并行会话纪律
 

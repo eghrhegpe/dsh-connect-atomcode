@@ -331,7 +331,7 @@ AtomCode error: missing base URL: pass --base-url, set $ATOMCODE_BASE_URL, or ad
 | AtomCode 面 | 插件里的位置 |
 |---|---|
 | `GET /health` | `lib/daemon.js: health()` —— 存活探测与拉起轮询 |
-| `GET /models` | `lib/daemon.js: listModels()`（live 测试用；插件本体未调用——**插件面板上没有模型选择器**，档位名靠 `default_provider` 配置或调用参数） |
+| `GET /models` | `lib/daemon.js: listModels()` —— **插件本体已调用**：详情页 ask 档位下拉的选项来源（缓存 30s；拿不到时下拉禁用并写明原因，不渲染空框） |
 | `POST /chat` (SSE) | `lib/daemon.js: streamChat()/askChat()` —— `atomcode_ask`（`provider` 字段由插件的 `default_provider` 配置或调用参数填入；**留空时连字段都不发**） |
 | `POST /command` `{command:"status"}` | `lib/daemon.js: runCommand()` + `lib/quota.js` —— 额度显示 |
 | `atomcode daemon --port … --no-telemetry` | `lib/daemon.js: spawnDaemon()` —— 自动拉起 |
