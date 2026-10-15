@@ -26,6 +26,8 @@
     "cordis.patch.yml",
     "locale",
     "README.md",
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md",
     "LICENSE"
   ],
   "scripts": {

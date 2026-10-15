@@ -1043,3 +1043,39 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     }
   });
 });
+
+describe('version truth — the manifest and the reported version cannot disagree', () => {
+  // `AGENTS.md` used to call `lib/index.js`'s stats body a "truth source" for the
+  // version. It is not: it is a BUILD ARTIFACT of `src/host/index.ts`. What the
+  // rule actually needs is that the two HAND-EDITED places agree:
+  //
+  //   package.json       — what pnpm / a GitHub-direct install pins
+  //   src/host/index.ts  — what the plugin REPORTS on its stats route, and what
+  //                        the panel therefore shows next to the daemon version
+  //
+  // Nothing else could notice a half-bumped version: `build-gate.test.mjs`
+  // compares `lib/` against `src/` and never looks at the manifest, so a release
+  // could ship as 0.4.1 while every panel says 0.4.0. This repository keeps no
+  // git tags either, so the version string IS the release identity.
+  //
+  // Reading `src/` as TEXT (never importing it) is deliberate and safe here. The
+  // "tests hit artifacts, not sources" rule exists for module identity — see the
+  // `setSpawnOverride` note at the top of this file — and a text read shares no
+  // module state.
+  it('package.json version === the version in the src/host stats body', () => {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+    const src = readFileSync(join(__dirname, '..', 'src', 'host', 'index.ts'), 'utf8');
+    const m = src.match(/^\s*version:\s*'([^']+)',\s*$/m);
+    assert.ok(m, 'src/host/index.ts must declare a version literal in its stats body');
+    assert.equal(m[1], pkg.version, `package.json says ${pkg.version}, the plugin reports ${m[1]}`);
+  });
+
+  it('the committed artifact agrees too — the chain manifest → src → lib is whole', () => {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+    const built = readFileSync(BRIDGE, 'utf8');
+    assert.ok(
+      built.includes(`version: "${pkg.version}"`),
+      `lib/index.js must be built from a source reporting ${pkg.version}`,
+    );
+  });
+});

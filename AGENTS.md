@@ -15,13 +15,13 @@
 |---|---|---|---|
 | **额度读数改了不显示 / 位置不对** | 本文件红线 7 | `dsh-cordis-client-runner/lib/client.js` 里 `key: "conversation.composer.dock"` 的契约（`kind`/`scope`/`occupants`） | 见红线 7 |
 | **chip 弹窗 / portal / Tooltip 行为** | `README.md` §「为什么是弹窗而不是原生 tooltip」 | `dsh-client-ui-conversation` 的 `ContextMeter`（宿主同款交互的抄写对象） | 两个 seed 模块（`react-dom` / `dsh-client-ui-primitives`）是否还在 seed 表里 |
-| 改 host 逻辑 / 加配置字段 / 加路由 | 本文件「三条事实」「红线」 | `lib/index.js`（`apply` 是唯一装配点）→ `cordis.patch.yml` 对照字段注释 | `npm test` 里的 `wiring` / `stats-route` |
-| 改额度解析 / 面板渲染 | `lib/quota.js`（纯函数，无宿主依赖） | `test/quota.test.mjs` + `test/protocol.test.mjs` | 解析不出来时**必须**回落到原文，不得编数字 |
-| 排查"为什么没生效 / 报错" | 本文件「工作目录与装载方式」 | `lib/daemon.js`（daemon 探测真源） | 先分清 Host 进程 vs Client 控制台 |
-| daemon 起不来 / 端口被占 | `lib/index.js` 的 `ensureDaemonStarted`（拉起/重试/单飞在那；`lib/daemon.js` 是它调用的传输与探测层，没有这个符号） | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
-| `atomcode_review` 报不可用 | 本文件红线 1 | `lib/review.js` 的 `checkReviewProvision` | 这是**本机配置事实**，不是临时故障 |
+| 改 host 逻辑 / 加配置字段 / 加路由 | 本文件「三条事实」「红线」 | `src/host/index.ts`（`apply` 是唯一装配点；产物 `lib/index.js` 只用来**读符号**）→ `cordis.patch.yml` 对照字段注释 | `npm test` 里的 `wiring` / `stats-route` |
+| 改额度解析 / 面板渲染 | `src/host/quota.ts`（纯函数，无宿主依赖） | `test/quota.test.mjs` + `test/protocol.test.mjs` | 解析不出来时**必须**回落到原文，不得编数字 |
+| 排查"为什么没生效 / 报错" | 本文件「工作目录与装载方式」 | `src/host/daemon.ts`（daemon 探测真源） | 先分清 Host 进程 vs Client 控制台 |
+| daemon 起不来 / 端口被占 | `src/host/index.ts` 的 `ensureDaemonStarted`（拉起/重试/单飞在那；`src/host/daemon.ts` 是它调用的传输与探测层，没有这个符号） | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
+| `atomcode_review` 报不可用 | 本文件红线 1 | `src/host/review.ts` 的 `checkReviewProvision` | 这是**本机配置事实**，不是临时故障 |
 | 加/改 client 槽位 | 本文件「宿主 ABI 面」 | `test/client-id.test.mjs`（注册契约门禁） | 改 seat 名必须同步改那条测试的断言 |
-| **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」 | host 侧 `lib/index.js` 的 `resolveProvider()` + `lib/provider-store.js`；渲染侧 `src/client/index.ts` 的 `ProviderSelectRow` + `src/client/rows.ts` 的 `providerSelectModel()` | 见**红线 8**。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点** |
+| **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」 | host 侧 `src/host/index.ts` 的 `resolveProvider()` + `src/host/provider-store.ts`；渲染侧 `src/client/index.ts` 的 `ProviderSelectRow` + `src/client/rows.ts` 的 `providerSelectModel()` | 见**红线 8**。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点** |
 | **详情页那张卡该显示什么 / 放哪儿** | `src/client/rows.ts` 的 `turnBoundaryRows()` + `providerRows()`；`src/client/quota.ts` 的 `quotaView()`；座位在 `src/client/index.ts` 的 `apply()` 里（**改完必须 `npm run build`**） | 上面「面板的显示纪律」一段 | ①**恒定值不是信息**，patch-only 旋钮要标"你改过/插件默认"，判断来自 host 的 `config.authored`/`config.defaults`；②座位见红线 7 |
 
 ## 项目一句话
@@ -37,7 +37,7 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
    穿透它的权限模型、并把 O(N²) tokens 灌回每个会话轮次。**别把它"加回来"**——这是决定，不是疏漏。
 2. **额度是从本地化文本解析出来的，不是 API。** AtomCode 没有额度 HTTP 接口，唯一来源是
    `POST /command {"command":"status"}` 返回的 `text`。解析不出来时**绝不编数字**，原样显示原文
-   （`lib/quota.js` 的 `reason` 字段）。这条是本插件唯一"看起来能改成读 JSON"的地方，而它不能。
+   （`src/host/quota.ts` 的 `reason` 字段）。这条是本插件唯一"看起来能改成读 JSON"的地方，而它不能。
 3. **三条私有无版本协议无握手可谈。** `/chat` SSE 词表、`status` 本地化文本、review CLI 的 provider 解析，
    都会随二进制升级悄悄漂移。v0.4 的答案不是握手而是**可观测降级**：静默失败必须变成
    面板上的具名诊断或 `protocol.quotaTextDrift` 信号（回归守卫 = `test/protocol.test.mjs`）。
@@ -71,15 +71,18 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
   而本插件把"为什么挑这个座位""为什么这个 deadline 是 4s"这类契约写在函数体里。
   所以"**注释也是契约**"那条纪律**现在指 `src/`**：改契约注释改 `src/client/*.ts`，
   改产物里的没用（下一次构建就没了）。产物只给浏览器读，别指望从它溯源。
-- `.gitignore` 里 `node_modules/`、`dist/`、`upstream/` 都是为了防误提交；
-  `lib/`、`client.js`、`src/`、`test/`、`docs/` **都要入库**（GitHub 直装源不跑 prepack）。
+- `.gitignore` 里 `node_modules/`、`dist/`、`/upstream/` 都是为了防误提交；探针与审查残留那两条
+  （`/.probe-*.mjs`、`/.prev_*`）**只挡仓库根**——探针的正式位置是 `scripts/probes/`（**入库**，
+  结论与脚本必须一起在，否则证据不可复现）。
+  `lib/`、`client.js`、`src/`、`test/`、`docs/`、`scripts/` **都要入库**（GitHub 直装源不跑 prepack）。
 - **`upstream/` 绝不入库，与兄弟插件一致**（sensenova / agnes / modelscope 三家都写了
   `/upstream/` 且 `git ls-files upstream/` 为 0）。理由**不是体积**（本仓库那份才 0.2 MB），
   而是它是**自带 `.git` 与 remote 的嵌套 clone**（`baimocn/atomcode-open-api`）：
   `git add upstream/` 会把它加成 **gitlink（mode 160000）**，凭空造出一个没人维护的隐式
   submodule，之后 `git status` 永远多一条脏记录。参照件一律"本机容纳、不进本仓库历史"。
-  **它的产权/出处说明在 `README.md` 的「✅ 已验证的修法：本地代理 + 直连 provider」一节**
-  （MIT / Python / "不参与构建"都在那里写的），**不在「许可」**——改那条说明时记得这里指的还是它。
+  **它的产权/出处说明现在在 `THIRD_PARTY_NOTICES.md`**（MIT / Python / "不参与构建"都在那里写的），
+  它的实测与风险在 `docs/AtomGit-网关与-review-通路.md`——2026-10-16 从 `README.md` 拆出去的两处。
+  改任一条说明时，记得这份文件里指的是它们。
 
 ## 宿主 ABI 面（本插件实际用到的，别的都别碰）
 
@@ -98,7 +101,8 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 
 ## 面板的显示纪律（2026-10 那张卡被用户嫌弃"又丑又多字"之后写的）
 
-**元纪律：注释也是契约，而注释没有测试。** 契约注释住在 `src/`（产物 `client.js` 会被打包器抹掉函数体注释，见「工作目录与装载方式」）。`wiring.test.mjs` 有一条注释一致性测试：`default_provider` / `review_default_provider` 各只许出现一次 `Precedence:`且必须含面板；`review_working_dir` 必须写明"拒绝"而非"回落"。**改了字段行为就顺手改注释，否则那条测试会红。**
+**元纪律：注释也是契约，而注释没有测试。** 契约注释住在 `src/`（产物 `client.js` 会被打包器抹掉函数体注释，见「工作目录与装载方式」）。`wiring.test.mjs` 有一条注释一致性测试：`default_provider` / `review_default_provider` 各只许出现一次 `Precedence:`且必须含面板；`review_working_dir` 必须写明"拒绝"而非"回落"。**改了字段行为就顺手改注释，否则那条测试会红。**（同一个套件里还有一条**版本号一致性**测试，
+见「已知缺口」——那条是 2026-10-16 补的。）
 数字同理：**别把会变的计数写进文档**。
 
 详情页那张卡曾经有 **6 行恒定值**，用户原话是「感觉插件又丑又多字呢」。三条教训已实现在 `src/client/rows.ts`：
@@ -163,7 +167,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
    `~/.atomcode/config.toml`，把 `atomcode_review` 的**工具描述**降级成"本机不可用 + 改用 ask"，
    让模型**调用前**就知道。修法只有一个：加一个标准 + 显式 `api_key` 的直连 provider。
    **别把这个探针删掉或改成运行时才检查**——它是"调用前告知"而非"调用后报错"的关键。
-2. **解析不出来的额度不许编数字。** `lib/quota.js` 解析失败返回 null + `reason`，面板显示原文或原因。
+2. **解析不出来的额度不许编数字。** `src/host/quota.ts` 解析失败返回 null + `reason`，面板显示原文或原因。
    "显示 0%"比"什么都不显示"危险得多。
 3. **不新增静默失败分支。** daemon 起不来、配额不可用、路由缺失，都要么给用户可见的状态，
    要么显式降级（`return null`），不许 `catch` 后吞掉。客户端所有 slot 注册都包了 try/catch，
@@ -200,8 +204,9 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 
 ## 并行会话纪律
 
-工作树常同时有他人未提交改动（本文件写下时就有另一会话在改 `lib/index.js`、`lib/quota.js`、
-`protocol.test.mjs`，`lib/index.js` 在几十分钟内从 682 行长到 853 行）：
+工作树常同时有他人未提交改动（本文件写下时就有另一会话在改 `src/host/index.ts`、
+`src/host/quota.ts`、`protocol.test.mjs`，其中一个文件在几十分钟内涨了几百行——
+**具体行数不写，理由同「验证」一节**）：
 
 - **不碰 `git stash / push / pop`**（`status/log/show` 只读可用）。
 - 提交用路径限定：`git commit -m "<说明>" -- <自己的文件>`；禁 `git add -A` / `add -u`。
@@ -213,26 +218,39 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 - **同一个文件被两个会话改着**：优先等对方提交；必须 hunk 级提交时 `git add <文件>` 后提交索引
   （**不要** `git commit -- <路径>`，那会把工作树里对方的半改一起写入）。
 
-## 去哪查（docs/ 地图）
+## 去哪查（AI 专属落点）
+
+**文档层的索引只有一份：[`docs/README.md`](docs/README.md)**——它按「什么时候读它」列了每份文档。
+本文件不抄第二遍：两处索引必然分叉，而分叉之后没人知道哪份是对的。
+这里只留**改代码时**才需要的落点：
 
 | 何时 | 查 |
 |---|---|
-| 第一次进这个仓库 | `docs/README.md` → `../README.md`（定位、配置表、额度、已知限制） |
-| 查 AtomCode 的命令 / 端点 / SSE 词表 / 签名门 | `docs/AtomCode-CLI与daemon接口参考.md`（实测速查） |
-| 查 CodingPlan 套餐的 5 小时窗口规则 | `docs/AtomCode-CodingPlan网页版可用信息.md`、`docs/AtomCode-CodingPlan网页版额度卡片.md` |
-| 加配置字段 | `cordis.patch.yml`（**全部字段带注释，是字段的注释真源**）+ `lib/index.js` 的 `apply` |
-| 改 client 槽位 | 本文件「宿主 ABI 面」+ `test/client-id.test.mjs` |
+| 第一次进这个仓库 | `docs/README.md`（索引）→ `README.md`（手册）→ 本文件（纪律） |
+| 加配置字段 | `cordis.patch.yml`（**全部字段带注释，是字段的注释真源**）+ `src/host/index.ts` 的 `apply` |
+| 加 / 改 client 槽位 | 本文件「宿主 ABI 面」+ `test/client-id.test.mjs` |
 | 协议漂移（daemon 换版本后行为变了） | `test/protocol.test.mjs`（故意说错的假 daemon 载荷）+ `protocol` 分支（面板显示 `daemonVersion` / `quotaTextDrift`） |
 | 改测试前 | `test/` 各套件头注——**头注就是契约**，不是附件 |
+| 想知道某版本改了什么 | `CHANGELOG.md`（**本仓库不打 git tag**，它是版本→提交的唯一回查入口） |
+| 分不清某件事是「忘了做」还是「决定不做」 | `docs/DECISIONS.md` |
+| 复现 docs/ 里的实测 | `scripts/probes/`（每个脚本头注都写了成本） |
+| 来源与许可 | `THIRD_PARTY_NOTICES.md` |
+| 写 / 改文档的纪律 | `docs/README.md` 的「写文档的纪律」四条 |
 
 ## 已知缺口（别当成"没做"，也别当成 bug）
 
-- **没有 `docs/PITFALLS.md`、`docs/ARCHITECTURE.md`、`docs/RELEASING.md`**——本插件没有兄弟插件那套
-  事故史账本；三条事实 + 红线就是全部的判断依据。别照抄一份空的出来占位。
-- **版本号只有两处真源**：`package.json` 与 `lib/index.js` 的 stats body。`cordis.patch.yml` 没有 version 字段。发版前把两处一起对齐，**只改一处就是撒谎**。
+- **没有 `docs/PITFALLS.md` 与 `docs/ARCHITECTURE.md`**——本插件没有兄弟插件那套事故史账本；
+  三条事实 + 8 条红线 + `docs/DECISIONS.md` 就是全部的判断依据。别照抄一份空的出来占位。
+  （事故卷宗只有一份，按主题拆在 `docs/AtomGit-网关与-review-通路.md` 里。）
+- **没有 `docs/RELEASING.md`，但发版纪律有落点。** 版本号**两处手改**：`package.json` 的 `version`
+  与 `src/host/index.ts` 里 stats body 的 `version`。两处必须一致，断言在 `test/wiring.test.mjs`
+  （产物 `lib/index.js` 由构建生成，手改它等于没改）。
+  **2026-10-16 补上这条断言**：此前这条纪律只写在文档里，而 `build-gate` 只比 `lib/` 与 `src/`、
+  从不看 manifest——「只改一处」就是那样能悄悄漂开的。`cordis.patch.yml` 没有 version 字段。
+  **本仓库不打 git tag**，所以「某版本是哪次提交」只能靠 `CHANGELOG.md` + `git log --date=short` 回查。
 - **`upstream/atomcode-open-api`** 是参照件（第三方 AtomCode OpenAPI 实现，自带 `.git`），
-  已被 `.gitignore` 排除、**故意不在仓库历史里**（见「工作目录与装载方式」那条）。
-  它不是构建输入、不参与测试，只作接口形态的对照；出处与许可写在 `README.md` 的
-  「✅ 已验证的修法：本地代理 + 直连 provider」一节（v0.4.1 的回环探活也引用它），
-  **不在「许可」标题下**。
+  已被 `.gitignore` 的 `/upstream/` 排除、**故意不在仓库历史里**（见「工作目录与装载方式」那条）。
+  它不是构建输入、不参与测试，只作接口形态的对照。
+  **出处与许可在 `THIRD_PARTY_NOTICES.md`**，实测与风险在 `docs/AtomGit-网关与-review-通路.md`
+  （v0.4.1 的回环探活也引用它）——两处都不是「许可」标题下的东西。
   本机 `git status` 里看不到它是**预期行为**，别去"修"，也别 `git add -f`。
