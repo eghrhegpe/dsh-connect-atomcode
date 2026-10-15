@@ -52,12 +52,25 @@ function startFakeDaemon(state) {
           ]));
           return;
         }
-        res.end(sse([
+        // `state.toolStarts` drives the round fuse: the plugin counts `tool_start`
+        // events and closes the stream past its budget, so a turn emitting more
+        // than the budget must come back FUSED rather than merely described.
+        const events = [
           { type: 'runtime_info', provider: 'Fake-Provider' },
           { type: 'session_assigned', session_id: sessionId },
-          { type: 'text', content: 'ok' },
-          { type: 'done', session_id: sessionId, tokens: 5, tool_calls: 0, stop_reason: 'stopped' },
-        ]));
+        ];
+        for (let i = 0; i < (state.toolStarts || 0); i += 1) {
+          events.push({ type: 'tool_start', name: `synthetic-tool-${i}` });
+        }
+        events.push({ type: 'text', content: 'ok' });
+        events.push({
+          type: 'done',
+          session_id: sessionId,
+          tokens: 5,
+          tool_calls: state.toolStarts || 0,
+          stop_reason: 'stopped',
+        });
+        res.end(sse(events));
         return;
       }
       res.writeHead(404);
@@ -114,7 +127,7 @@ describe('atomcode_ask — session continuity glue', () => {
     fake.server.close();
     if (savedProfile !== undefined) process.env.DSH_PROFILE = savedProfile;
   });
-  beforeEach(() => { state.requests.length = 0; state.mode = 'ok'; });
+  beforeEach(() => { state.requests.length = 0; state.mode = 'ok'; state.toolStarts = 0; });
 
   it('a fresh turn records the session the daemon assigned', async () => {
     const statePath = tempState();
@@ -317,41 +330,55 @@ describe('atomcode_ask — bounded default and reply truncation', () => {
     assert.doesNotMatch(r.reply, /truncated/);
   });
 
-  it('the default round budget is BOUNDED (no more "unlimited by default")', async () => {
+  // The round budget is a FUSE, and these assert its BEHAVIOUR against a daemon
+  // that emits more tool_start events than any sane budget — not the wording of
+  // the description. The two suites above this one used port 45995 (nothing
+  // listening) and therefore "passed" for the wrong reason: a closed port fails
+  // the turn whether the fuse is bounded or not, so neither one could tell a
+  // fused turn from an unreachable daemon.
+  const TOOL_STORM = 40;
+
+  it('the default round budget is BOUNDED, and a turn past it is fused', async () => {
+    state.toolStarts = TOOL_STORM;
     const statePath = tempState();
-    const tools = [];
-    const ctx = {
-      get: (name) => (name === 'tools' ? { register: (d) => { tools.push(d); return () => {}; } } : undefined),
-      logger: { warn() {}, error() {}, info() {} },
-      fiber: { entry: { options: { id: 'dsh-atomcode-bridge' } } },
-      inject() {},
-      effect() {},
-      on() {},
-    };
-    mod.apply(ctx, { auto_start: false, port: 45995, state_path: statePath });
-    const ask = tools.find((t) => t.name === 'atomcode_ask');
-    assert.doesNotMatch(ask.parameters.properties.max_rounds.description, /默认不限/, 'the default must not advertise "unlimited"');
-    // The bridge's own ceiling, pinned: an explicit 0 must not mean unlimited.
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    assert.doesNotMatch(
+      ask.parameters.properties.max_rounds.description,
+      /默认不限/,
+      'the default must not advertise "unlimited"',
+    );
     const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
-    assert.equal(r.ok, false, 'a closed port with auto_start:false cannot complete a turn');
-    assert.doesNotMatch(ask.parameters.properties.max_rounds.description, /默认不限/);
+    assert.equal(r.ok, false, 'the shipped default must fuse a 40-tool turn');
+    assert.match(r.error, /exceeded 25 tool rounds/, 'the error must name the budget it tripped');
   });
 
-  it('an explicit ask_max_rounds: 0 is still honoured as "unlimited" when the user asks for it', async () => {
+  it('a configured ask_max_rounds: 3 trips the fuse at 3', async () => {
+    state.toolStarts = TOOL_STORM;
     const statePath = tempState();
-    const tools = [];
-    const ctx = {
-      get: (name) => (name === 'tools' ? { register: (d) => { tools.push(d); return () => {}; } } : undefined),
-      logger: { warn() {}, error() {}, info() {} },
-      fiber: { entry: { options: { id: 'dsh-atomcode-bridge' } } },
-      inject() {},
-      effect() {},
-      on() {},
-    };
-    // An explicit >0 must win over the new 25 default.
-    mod.apply(ctx, { auto_start: false, port: 45995, state_path: statePath, ask_max_rounds: 3 });
-    const ask = tools.find((t) => t.name === 'atomcode_ask');
-    assert.equal(typeof ask.execute, 'function');
+    const ask = await mountAsk(mod, { statePath, port: fake.port, config: { ask_max_rounds: 3 } });
+    const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+    assert.equal(r.ok, false);
+    assert.match(r.error, /exceeded 3 tool rounds/);
+  });
+
+  it('an explicit ask_max_rounds: 0 disables the fuse (unlimited)', async () => {
+    // cordis.patch.yml: "Set 0 to hand the budget back to the daemon's own loop";
+    // README: "0 = 不限". The old `> 0` gate turned an explicit 0 into 25, so the
+    // knob was documented in three places and honoured in none.
+    state.toolStarts = TOOL_STORM;
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port, config: { ask_max_rounds: 0 } });
+    const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+    assert.equal(r.ok, true, '0 means "no fuse", so a 40-tool turn must complete');
+    assert.equal(r.round_count, TOOL_STORM);
+  });
+
+  it('a per-call max_rounds: 0 disables the fuse even over a bounded config', async () => {
+    state.toolStarts = TOOL_STORM;
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port, config: { ask_max_rounds: 3 } });
+    const r = await ask.execute({ message: 'hi', max_rounds: 0, working_dir: WORKDIR }, {});
+    assert.equal(r.ok, true, 'a per-call 0 must override a bounded config budget');
   });
 });
 
@@ -415,4 +442,38 @@ describe('session_key_prefix — profile detection', () => {
       rmSync(dirname(statePath), { recursive: true, force: true });
     }
   });
+});
+
+describe('atomcode_ask — the provider ladder is described ONCE, in order', () => {
+  const state = { requests: [], counter: 0, mode: 'ok' };
+  let fake;
+
+  before(async () => { fake = await startFakeDaemon(state); });
+  after(() => fake.server.close());
+
+  // The description is the model's ONLY input about which layer wins (红线 8), so
+  // every rung must appear exactly once. The old string appended default_provider's
+  // parenthetical AFTER the last rung, producing
+  // "… > 默认档位（当前 default_provider="x"） > 默认档位" — a ladder whose last two
+  // steps are the same step, read by a model as an ordering it cannot resolve.
+  const RUNGS = ['本参数', '详情页面板上选的档位', '插件配置 default_provider', 'AtomCode 自己的默认档位'];
+
+  for (const withDefault of [false, true]) {
+    it(`names each rung exactly once (default_provider ${withDefault ? 'set' : 'unset'})`, async () => {
+      const statePath = tempState();
+      const ask = await mountAsk(mod, {
+        statePath,
+        port: fake.port,
+        config: withDefault ? { default_provider: 'AtomGit-glm5.3-flash' } : {},
+      });
+      for (const rung of RUNGS) {
+        const count = ask.description.split(rung).length - 1;
+        assert.equal(count, 1, `rung "${rung}" must appear exactly once; got ${count}`);
+      }
+      // The parenthetical states default_provider's current value, so it belongs
+      // NEXT TO that rung — not trailing the last one.
+      assert.match(ask.description, /default_provider[（(][^）)]*[）)] > AtomCode 自己的默认档位/);
+      assert.doesNotMatch(ask.description, /AtomCode 自己的默认档位[（(][^）)]*[）)] > /);
+    });
+  }
 });

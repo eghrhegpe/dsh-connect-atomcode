@@ -273,8 +273,14 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
     typeof config.review_default_provider === 'string' && config.review_default_provider.trim() !== ''
       ? config.review_default_provider.trim()
       : undefined;
+  // 0 is a DELIBERATE value someone wrote down, not a missing one. cordis.patch.yml
+  // ("Set 0 to hand the budget back to the daemon's own loop"), README ("0 = 不限")
+  // and daemon.ts (`roundFuse = maxRounds > 0 ? n : 0`) all agree that 0 means
+  // "no fuse"; a `> 0` gate here silently turned an explicit 0 into 25, i.e. three
+  // documents promising a knob the code never honoured. Only values that cannot BE
+  // a round count (non-integers, negatives) fall back to the default.
   const askMaxRounds =
-    Number.isInteger(config.ask_max_rounds) && config.ask_max_rounds > 0
+    Number.isInteger(config.ask_max_rounds) && config.ask_max_rounds >= 0
       ? config.ask_max_rounds
       : DEFAULT_ASK_MAX_ROUNDS;
   const authoredAskMaxRounds = askMaxRounds !== DEFAULT_ASK_MAX_ROUNDS;
@@ -742,10 +748,15 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
   // is what /chat's `provider` and config.toml's `default_provider` both hold.
   // Telling the model before the call beats a wrong-provider turn (红线 1's
   // "inform before, not after" discipline, applied to model selection).
+  // The parenthetical names the state of `default_provider`, so it belongs TO that
+  // rung — not after the last one. Appending it to "AtomCode 自己的默认档位" made the
+  // ladder read "… > 默认档位（当前…） > 默认档位", i.e. the same rung twice, and this
+  // string is the model's ONLY input about the order (红线 8: describe the ladder,
+  // never its outcome). Rung counts are pinned by test/ask-glue.test.mjs.
   const providerHint =
     '换模型：provider 参数收的是 AtomCode 的模型档位名（daemon GET /models 里的 provider 字段，' +
     '如 "AtomGit-glm5.3-flash"；不是裸模型 id "glm5.3-flash"）。' +
-    '优先级：本参数 > 详情页面板上选的档位 > 插件配置 default_provider > AtomCode 自己的默认档位' +
+    '优先级：本参数 > 详情页面板上选的档位 > 插件配置 default_provider' +
     (defaultProvider ? `（当前 default_provider="${defaultProvider}"）` : '（当前未配 default_provider）') +
     ' > AtomCode 自己的默认档位；返回里的 provider= 是 daemon 报的真实生效值。';
 
@@ -776,7 +787,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
         provider: { type: 'string', description: '可选：点名 AtomCode 模型档位，传它就换本次回合用的模型。名字以 daemon GET /models 的 provider 字段为准（如 "AtomGit-glm5.3-flash"），不要传裸模型 id（"glm5.3-flash"）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
         working_dir: { type: 'string', description: '可选：回合的工作目录，同时是侧边对话的会话键；缺省用插件配置' },
         timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800' },
-        max_rounds: { type: 'number', description: '可选：工具调用轮数上限（按 daemon SSE 的 tool_start 事件计数；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数。默认取插件配置，当前 25）。超限只中止本端等待并返回错误，不保证停掉 daemon 侧回合' },
+        max_rounds: { type: 'number', description: '可选：工具调用轮数上限（按 daemon SSE 的 tool_start 事件计数；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数。默认取插件配置，当前 25；传 0 关掉本端熔断，交回 daemon 自带治理）。超限只中止本端等待并返回错误，不保证停掉 daemon 侧回合' },
       },
       required: ['message'],
     },
@@ -916,15 +927,18 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
         Number.isFinite(args.timeout_secs) && args.timeout_secs > 0
           ? Math.floor(args.timeout_secs) * 1000
           : 30 * 60 * 1000;
-      const maxRounds = Number.isFinite(args.max_rounds) && args.max_rounds > 0
-        ? Math.floor(args.max_rounds)
-        : askMaxRounds;
+      // Same contract as the config field above: an explicit 0 is "no fuse", not
+      // a missing value, so it must not fall back to the configured budget.
+      const maxRounds =
+        Number.isFinite(args.max_rounds) && args.max_rounds >= 0 ? Math.floor(args.max_rounds) : askMaxRounds;
       const result = await askChat({
         message: String(args.message || ''),
         port,
         approvalMode,
         timeoutMs,
-        ...(maxRounds > 0 ? { maxRounds } : {}),
+        // Forwarded unconditionally, 0 included: dropping it here would be the
+        // same "0 is not honoured" bug one layer down.
+        maxRounds,
         ...(sessionId ? { sessionId } : {}),
         ...(askProvider ? { provider: askProvider } : {}),
         ...(workDir ? { workingDir: workDir } : {}),
