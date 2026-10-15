@@ -605,50 +605,110 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     // 红线 1 discipline applied to model selection: the model is told BEFORE the
     // call. AtomCode 5.x has no "provider == vendor" notion on this path; passing
     // "glm5.3-flash" instead of "AtomGit-glm5.3-flash" is the obvious wrong move.
-    const dir = mkdtempSync(join(tmpdir(), 'atomcode-dp-desc-'));
+    //
+    // HOME is pinned (like the review-selection test below) because the review
+    // description interpolates the machine's usable direct providers: reading the
+    // DEVELOPER'S real ~/.atomcode/config.toml would make the "must not mention the
+    // ask profile" assertion a property of this host rather than of the code.
+    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-dp-desc-'));
+    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
+    writeFileSync(
+      join(fakeHome, '.atomcode', 'config.toml'),
+      [
+        'default_provider = "account-gw"',
+        '[providers.direct]',
+        'provider = "openai"',
+        'base_url = "https://direct.test/v1"',
+        'api_key = "sk-1"',
+      ].join('\n'),
+      'utf8',
+    );
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-dp-desc2-'));
     stateDirs.push(dir);
-    const { ctx, calls } = fakeCtx();
-    const mod = await import(fileUrl(BRIDGE));
-    mod.apply(ctx, { state_path: join(dir, 'sessions.json'), auto_start: false, default_provider: 'AtomGit-glm5.3-flash' });
-    const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
-    assert.match(ask.description, /档位名/, 'the ask description must name the kind of value expected');
-    assert.match(ask.description, /default_provider="AtomGit-glm5.3-flash"/, 'the ACTIVE default is echoed');
-    assert.match(ask.parameters.properties.provider.description, /GET \/models/);
-    assert.match(ask.parameters.properties.provider.description, /不要传裸模型 id/);
-    const review = calls.tools.find((t) => t.name === 'atomcode_review');
-    // The ask profile must NOT show up in the review tool's text: handing
-    // "AtomGit-..." to the CLI would name a provider it cannot bill against.
-    assert.doesNotMatch(
-      review.description,
-      /AtomGit-glm5\.3-flash/,
-      'the ask-side profile must not leak into the review namespace',
-    );
-    assert.match(review.parameters.properties.provider.description, /providers\.<name>/);
-    assert.match(
-      review.parameters.properties.provider.description,
-      /review_default_provider/,
-      'the review knob must be named as its own field, not the ask one',
-    );
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      const { ctx, calls } = fakeCtx();
+      const mod = await import(fileUrl(BRIDGE));
+      mod.apply(ctx, {
+        state_path: join(dir, 'sessions.json'),
+        auto_start: false,
+        default_provider: 'AtomGit-glm5.3-flash',
+        review_default_provider: 'direct',
+      });
+      const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
+      assert.match(ask.description, /档位名/, 'the ask description must name the kind of value expected');
+      assert.match(ask.description, /default_provider="AtomGit-glm5.3-flash"/, 'the ACTIVE default is echoed');
+      assert.match(ask.parameters.properties.provider.description, /GET \/models/);
+      assert.match(ask.parameters.properties.provider.description, /不要传裸模型 id/);
+
+      const review = calls.tools.find((t) => t.name === 'atomcode_review');
+      assert.match(review.description, /provider "direct"|直连 provider：direct/, 'the review knob names the real entry');
+      // The two branches must not coexist: with the knob pinned, describing the
+      // auto-select refusal would advertise a rejection that cannot happen.
+      assert.match(review.description, /留空\*\*不会\*\*被拒绝/, 'the pinned branch must say留空 is safe');
+      assert.doesNotMatch(review.description, /会要求你点名/, 'a pinned knob must not advertise the refusal branch');
+      assert.match(
+        review.parameters.properties.provider.description,
+        /providers\.<name>/,
+        'the review parameter must name its OWN namespace',
+      );
+      assert.match(
+        review.parameters.properties.provider.description,
+        /review_default_provider/,
+        'and the knob it falls back to, not the ask one',
+      );
+      assert.doesNotMatch(
+        review.description,
+        /AtomGit-glm5\.3-flash/,
+        'the ask-side profile must not leak into the review namespace',
+      );
+
+      // Unpinned, the refusal branch is the truthful one and must come back.
+      const unpinned = fakeCtx();
+      mod.apply(unpinned.ctx, { state_path: join(mkdtempSync(join(tmpdir(), 'atomcode-dp-desc3-')), 's.json'), auto_start: false });
+      const review2 = unpinned.calls.tools.find((t) => t.name === 'atomcode_review');
+      assert.match(review2.description, /会要求你点名/, 'without the knob, ambiguity really is a refusal');
+      assert.doesNotMatch(review2.description, /留空.*不会被拒绝/);
+    } finally {
+      if (savedHome !== undefined) process.env.HOME = savedHome;
+      else delete process.env.HOME;
+      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
+      else delete process.env.USERPROFILE;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 
   it('review: a configured review_default_provider fills the selection slot instead of refusing to guess', async () => {
     // A config with TWO usable direct providers and an unusable config.toml
     // default: with no plugin default, selection must refuse rather than pick a
-    // billing channel. Naming one in the plugin config resolves that refusal —
-    // proven by getting past selection all the way to the (missing) binary.
+    // billing channel. Naming one in the plugin config resolves that refusal.
+    //
+    // Both direct entries point at DEAD LOOPBACK ports on purpose. The CLI's argv
+    // is not observable from here (the run dies at a missing binary), so "which
+    // entry did selection pick" would otherwise be unassertable — and a weaker
+    // version of this test passed vacuously: the fake binary fails identically for
+    // `first` and `second`, so a regression that ignored the per-call argument
+    // stayed green. A dead loopback entry instead dies in probeLocalEndpoint, whose
+    // diagnostic NAMES the selected provider and its base_url, which makes the
+    // precedence claim assertable in the positive direction.
     const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-dp-rev-'));
     mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
+    const FIRST = 'http://127.0.0.1:45981/v1';
+    const SECOND = 'http://127.0.0.1:45982/v1';
     writeFileSync(
       join(fakeHome, '.atomcode', 'config.toml'),
       [
         'default_provider = "AtomGit-qwen3.8-27b"',
         '[providers.first]',
         'provider = "openai"',
-        'base_url = "https://first.test/v1"',
+        `base_url = "${FIRST}"`,
         'api_key = "sk-1"',
         '[providers.second]',
         'provider = "openai"',
-        'base_url = "https://second.test/v1"',
+        `base_url = "${SECOND}"`,
         'api_key = "sk-2"',
       ].join('\n'),
       'utf8',
@@ -663,8 +723,8 @@ describe('lib/index.js — default_provider / review_default_provider (two names
       stateDirs.push(dir);
       const { ctx, calls } = fakeCtx();
       const bridge = await import(fileUrl(BRIDGE));
-      // A binary that cannot exist: the run must die at spawn, which is the
-      // signal that provider selection was PASSED (never spawn the real CLI).
+      // A binary that cannot exist, as a backstop: this test must NEVER spawn the
+      // real CLI even if the probe order ever changes.
       bridge.apply(ctx, {
         state_path: join(dir, 'sessions.json'),
         auto_start: false,
@@ -681,14 +741,18 @@ describe('lib/index.js — default_provider / review_default_provider (two names
 
       const withDefault = await mountReview({ review_default_provider: 'second' });
       const r2 = await withDefault.execute({ working_dir: repo, task: 'noop' }, {});
-      assert.equal(r2.ok, false, 'the run still fails, but at the fake binary, not at selection');
-      assert.doesNotMatch(r2.error, /several direct providers/);
+      assert.equal(r2.ok, false, 'the run still fails — at the dead endpoint, not at selection');
       assert.doesNotMatch(r2.error, /needs a repository/);
+      assert.match(r2.error, /provider "second"/, 'the configured entry must be the one selected');
+      assert.match(r2.error, /45982/, 'and its base_url is what got probed');
+      assert.doesNotMatch(r2.error, /45981/, 'the other direct entry must not be touched');
 
-      // A per-call argument still outranks the configured default.
+      // A per-call argument outranks the configured default — asserted in the
+      // POSITIVE direction, which is what the earlier version could not do.
       const withArg = await mountReview({ review_default_provider: 'second' });
       const r3 = await withArg.execute({ working_dir: repo, task: 'noop', provider: 'first' }, {});
-      assert.doesNotMatch(r3.error, /several direct providers/);
+      assert.match(r3.error, /provider "first"/, 'the argument must win over the configured default');
+      assert.doesNotMatch(r3.error, /45982/, 'the pinned default must not be the one dialed');
 
       // The namespaces stay apart: the ASK-side profile must not resolve the
       // review ambiguity, because "AtomGit-qwen3.8-27b" is not a billable direct

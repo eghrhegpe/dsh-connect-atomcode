@@ -137,8 +137,11 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
    = `default_provider` 的值，形如 `AtomGit-glm5.3-flash`）；review 走 CLI，`--provider` 收的才是
    `[providers.<name>]` 直连条目名（形如 `atomcode-local`）。裸模型 id（`glm5.3-flash`）两边都不认。
    插件侧旋钮是**两个字段、各管一条路**：`default_provider`（ask）与 `review_default_provider`（review），
-   各自"调用参数 > 该字段 > 原有默认"，**留空连字段都不发**。曾经一版用同一个字段喂两条路——那正是
-   这条红线要防的错，现在由 `wiring.test.mjs` 双向钉住互不渗漏。
+   各自"调用参数 > 该字段 > 原有默认"。**留空的行为两条路不一样，别说成一句**：ask 留空**连 `provider`
+   字段都不发**（AtomCode 自己的默认说话）；review 留空是**回落到自动选择**，而自动选择几乎总会显式交出
+   `--provider`（config.toml 的默认命中、或唯一直连条目顶上）。曾经一版用同一个字段喂两条路、又用同一句话
+   描述两条路——两个都是这条红线要防的错，现在由 `wiring.test.mjs` 双向钉住互不渗漏、并断言描述里
+   "已配旋钮"与"歧义要点名"两个分支不得并存。
    "面板上放个按钮直接改默认模型"看着像顺手的事，实际要写的是**别人应用的配置文件**——那是 AtomCode 侧的
    `default_provider`/`default_model` + `POST /config/reload`。**别把这条只读边界改成读写。**
 
