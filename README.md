@@ -170,13 +170,13 @@ bundle 形式（与本机 `dsh-connect-*` 同品类）：
 | `port` | `13459` | ask 用的 daemon 端口（避开 TUI 的 13456） |
 | `auto_start` | `true` | 探测不到 daemon 时 detached 拉起。**面板或额度标签一被轮询就会触发**（ask 路径也会），不再是"等第一次调工具才拉" |
 | `binary` | `''` | 二进制名/路径（空 = PATH；`ATOMCODE_BIN` 亦可） |
-| `approval_mode` | `bypass` | ask 回合内 AtomCode 侧工具审批；共享仓库慎用无人值守 |
+| `approval_mode` | `bypass` | ask 回合内 AtomCode 侧工具审批；共享仓库慎用无人值守。面板**不提供输入框**，只能在 patch 里改——详情页「回合边界」会标出这是插件默认还是你改过 |
 | `default_provider` | `''` | **ask 路径**缺省的**模型档位名**（如 `AtomGit-glm5.3-flash`）。优先级：调用参数 `provider` > **详情页面板里选的档位** > 本字段 > AtomCode 自己在 `config.toml` 里的默认。**空 = 本层不插手**（再往下交给面板选择/AtomCode）。详见「怎么换模型」 |
 | `review_default_provider` | `''` | **review 路径**缺省的**直连条目名**（`[providers.<name>]`，如 `atomcode-local`）。⚠️ 与上一行**不是同一个命名空间**：把 `AtomGit-*` 填这里等于给 CLI 一个它认不出的计费通道。优先级同上（面板的 review 下拉是独立一格）。空 = 沿用自动选择（config.toml 的 `default_provider` 可用则用 → 唯一直连条目顶上 → 多个则要求点名，不猜） |
-| `working_dir` | `''` | ask 回合的缺省工作目录（同时是侧边对话的会话键） |
+| `working_dir` | `''` | ask 回合的缺省工作目录（同时是侧边对话的会话键）。面板**不提供输入框**，只能在 patch 里改；详情页「回合边界」标出你改过没有 |
 | `review_working_dir` | `''` | **review 的缺省仓库根**。空 = review **不猜**，必须由调用传 `working_dir`（见「治理记录」） |
 | `state_path` | `''` | 会话映射文件（缺省 `~/.dsh/state/dsh-atomcode-bridge/sessions.json`）。**面板选的模型档位存在同目录的 `provider.json`**，所以这一个旋钮同时决定两者的位置 |
-| `ask_max_rounds` | `25` | ask 的 agent 工具轮数上限；`0` = 不限（交给 daemon 自带治理）。>0 时插件在 SSE 上数 `tool_start`，超限即断开并返回 `atomcode turn aborted: agent exceeded N tool rounds`。**注意**：断的是客户端这条 HTTP 流，daemon 侧的回合不保证随之停止（它可能继续在后台跑完），所以这是"别再等了"的止损，不是远程 kill |
+| `ask_max_rounds` | `25` | ask 的 agent 工具轮数上限；`0` = 不限（交给 daemon 自带治理）。>0 时插件在 SSE 上数 `tool_start`，超限即断开并返回 `atomcode turn aborted: agent exceeded N tool rounds`。**注意**：断的是客户端这条 HTTP 流，daemon 侧的回合不保证随之停止（它可能继续在后台跑完），所以这是"别再等了"的止损，不是远程 kill。面板**不提供输入框**；详情页「回合边界」标出这是默认还是你改过 |
 | `session_key_prefix` | 自动探测 | 会话键前缀，隔离多 profile（web / desktop）共用同一 state 文件；空 = 按 `DSH_PROFILE`/argv 自动判定 |
 | `daemon_retry_secs` | `60` | 自动拉起**失败**后的重试冷却。`0` = 每次轮询都重试；不设则失败会永久禁用本次挂载的自动拉起 |
 | `review_no_web` | `true` | 评审关 web_search（适配代理受限网络；有外网可设 false） |
@@ -201,20 +201,21 @@ AtomCode 5.x 在这条路上的 "provider" **就是模型档位名**，不是厂
 | 粒度 | 怎么做 | 谁的地盘 |
 |---|---|---|
 | **单次调用** | 给工具传 `provider="AtomGit-glm5.3-flash"`（用户说一句"用 glm5.3-flash 问 AtomCode"即可） | ✅ 插件一直都支持 |
-| **面板上选（推荐）** | 详情页「二进制与配置」卡片里两个下拉：ask 列 `/models` 的档位，review 列 `config.toml` 的直连条目。选完**立即生效**（下次调用就换），存在插件自己的 `provider.json` | ✅ 插件侧，**不用改任何配置文件** |
+| **面板上选（推荐）** | 详情页「运行环境」卡片里两个下拉：ask 列 `/models` 的档位，review 列 `config.toml` 的直连条目。选完**立即生效**（下次调用就换），存在插件自己的 `provider.json` | ✅ 插件侧，**不用改任何配置文件** |
 | **本插件的缺省（文件侧）** | ask 配 `default_provider`（档位名），review 配 `review_default_provider`（直连条目名）——**两个字段，别填串** | ✅ 插件侧；面板选择**优先于**它 |
 | **整机 AtomCode 的缺省** | 编辑 `~/.atomcode/config.toml` 的 `default_provider` + `default_model`，再 `POST /config/reload`（或等 daemon 空闲 30 分钟自杀后自然重启）；TUI 里是 `/model` | ⚠️ **AtomCode 侧**——本插件对那个文件**只读不写** |
 
-**为什么面板选择反而排在配置字段前面**：配置字段是给"愿意编辑文件的人"的静态缺省，而面板那一下是用户**刚刚做出的动作**。点击输给一行配置，这个控件就是死的——本仓库不发布死控件。两者都能在面板上看到（卡片会写"生效 X（来自 面板/配置/AtomCode）"），所以谁赢了从来不是秘密。
+**为什么面板选择反而排在配置字段前面**：配置字段是给"愿意编辑文件的人"的静态缺省，而面板那一下是用户**刚刚做出的动作**。点击输给一行配置，这个控件就是死的——本仓库不发布死控件。两者是否打架在面板上看得见：**只有当实际生效值与你选的不同**（比如这次调用显式传了 `provider`，或落在配置字段上），那行才会写出「这次调用实际用 X（不是这里选的）」；一致时它不说话——面板上的值本来就来自面板，回报给用户自己是废话。
 
-插件详情页的「二进制与配置」卡片**有这两个下拉**（数据来自 `/api/atomcode-bridge/stats` 的 `provider` 分支）：
+插件详情页的「运行环境」卡片**有这两个下拉**（数据来自 `/api/atomcode-bridge/stats` 的 `provider` 分支）：
 
 | 行 | 有选择时 | 没选择时 |
 |---|---|---|
-| `默认档位（ask）` | 显示选中的档位名 + 「生效 X（来自面板）」 | `未插手（AtomCode 自己的默认）` 选项 |
-| `默认 provider（review）` | 显示选中的直连条目名 + 「生效 X（来自面板）」 | `未插手（按 config.toml 自动选择）` 选项 |
+| `默认档位`（ask） | 显示选中的档位名 | `未插手` 选项 |
+| `默认 provider`（review） | 显示选中的直连条目名 | `未插手` 选项 |
 
-**两行永远都在，不合并也不省略**：合并会让两个命名空间读起来像同一个旋钮（红线 8），而"省掉一行"会让"没选"和"这个 host 版本压根不报这两个字段"在屏幕上分不开（红线 3）。档位列表拿不到时（daemon 没在线、本机没有直连条目）**行还在，但禁用并写出原因**，不会渲染一个空下拉假装可选。
+**两个控件永远都在，绝不合并成一个**：合并会让两个命名空间读起来像同一个旋钮（红线 8）。它们排成**一行两格**（各带自己的 hover 说明），而不是各占一整行。档位列表拿不到时**控件还在，但禁用并写出原因**，且**两条路的空态各说各的因**——ask 是「daemon 未列出档位」，review 是「config.toml 里没有直连条目」；它们曾经共用一句话，于是 ask 的空态用 review 的来源解释自己，读起来像 bug。长溯源（`/models`、`[providers.<name>]`）在 hover `title` 里，不占正文。
+
 
 写入点只有一处：`POST /api/atomcode-bridge/provider`（同源门禁 + 方法门禁 + 4KB body 上限 + 槽位/名字校验），落盘到 `provider.json`（与 `sessions.json` 同目录，版本化，损坏文件保留旁路，**更新的版本写的文件拒绝覆盖**）。落盘与读取都**只碰插件自己的 state**——`~/.atomcode/config.toml` 依旧只读，`test/stats-route.test.mjs` 里那条"写一次 pick，config.toml 必须逐字节不变"就是钉这条的。
 
@@ -257,6 +258,8 @@ data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-f
 | **渲染端零测试** | 6 个纯函数提到闭包外并经 `__test` 暴露，`client-fns.test.mjs` 覆盖 |
 | **文档用词不实**（"118 条断言"实为 118 个 test） | 改为 test 数并加说明 |
 | **模型选择只能改配置文件**（改一行要开文件、且只在挂载时读一次） | 详情页加两个下拉（ask / review 各一，各自命名空间），持久化到**插件自己的** `provider.json`，**每次调用重读**所以选完即生效、不用重启 host。优先级定为：调用参数 > 面板选择 > 配置字段 > AtomCode 自己（面板赢在"那是用户刚做的动作"——控件输给配置文件就是死控件）。写入点单一路由 `POST /api/atomcode-bridge/provider`（同源 + 方法门禁 + 4KB 上限 + 槽位/名字校验），**从不写 `~/.atomcode/config.toml`**；测试里有一条"写一次 pick 后 config.toml 必须逐字节不变 + `~/.atomcode` 下不得出现任何 provider 文件"钉这条边界。两个工具的描述同步改成**只讲顺序、不讲结果**——描述挂载时注册一次而面板选择每次调用才读，任何"留空即 X"的固定句式都是掷硬币 |
+| **那张卡"又丑又多字"**（用户原话） | 详情页那张卡曾有 **6 行恒定值**：`来源`/`路径` 是同一件事说两遍，`审批模式`/`默认工作目录`/`ask 轮数上限` 报告的是**用户从没拨过的旋钮**，`评审可用性` 则永远显示「可用」。收敛为：① 拆成「运行环境」（`AtomCode` 一行含来源 + 两个下拉并排一行两格；`评审可用性`**只在不可用时出现**）与「回合边界」（`审批模式`/`工作目录`/`ask 轮数上限`，各标"（插件默认）"或"（已改）"）；② "改过没有"由 host 的 `config.authored`/`config.defaults` 判定，**不在渲染侧比缺省值**——显式写 `bypass` 与兜底 `bypass` 在值上分不开，且 `askMaxRounds === 25` 是第二份 25，`lib/index.js` 一改就撒谎；③ 空态文案**按槽位分家**（原先共用一句，于是 ask 的空态用 review 的来源解释自己）；④「生效 X（来自面板）」只在**实际生效值与所选不同**时出现，一致时不说话。`turnBoundaryRows()` 与 `providerRows()` 都是纯函数，由 `client-fns.test.mjs` 覆盖（含变异实验） |
+| **两个下拉的目录形状不同（实机才抓到）** | `GET /models` 给的是**对象数组** `{provider, model, isDefault, effortLevels}`，review 的直连条目是**字符串数组**，而两者都进同一个 `providerSelectModel()`。原先一起走 `map(name)`（只认字符串）→ **ask 下拉整个是空的**，review 正常。这条 bug 被上一条的**共用空态文案掩盖**成"像是文案问题"，隔了一轮才用真 daemon 快照（5.2.3）抓出来。现在按元素类型展平、只取 `provider`（档位名），`model`（裸 id）两条路都不认（红线 8）；并有一条测试直接喂**实机原样的两种载荷**，回退到 `map(name)` 时该测试失败。教训记进 `AGENTS.md`「面板的显示纪律」 |
 
 ### 未修 / 明确不做
 

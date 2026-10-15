@@ -17,7 +17,8 @@
 | daemon 起不来 / 端口被占 | `lib/daemon.js` 的 `ensureDaemonStarted` | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
 | `atomcode_review` 报不可用 | 本文件红线 1 | `lib/review.js` 的 `checkReviewProvision` | 这是**本机配置事实**，不是临时故障 |
 | 加/改 client 槽位 | 本文件「宿主 ABI 面」 | `test/client-id.test.mjs`（注册契约门禁） | 改 seat 名必须同步改那条测试的断言 |
-| **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」；`docs/AtomCode-CLI与daemon接口参考.md` §4「`POST /chat` 的请求体字段」 | host 侧 `lib/index.js` 的 `resolveProvider()`（顺序：调用参数 > 面板选择 > `default_provider` / `review_default_provider`）+ `lib/provider-store.js`（`provider.json`）；渲染侧 `client.js` 的 `providerSelectModel()` / `ProviderSelectRow`（详情页两个下拉） | 本文件**红线 8**（两条命名空间 + `config.toml` 只读）。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点**，不用碰任何配置文件 |
+| **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」；`docs/AtomCode-CLI与daemon接口参考.md` §4「`POST /chat` 的请求体字段」 | host 侧 `lib/index.js` 的 `resolveProvider()`（顺序：调用参数 > 面板选择 > `default_provider` / `review_default_provider`）+ `lib/provider-store.js`（`provider.json`）；渲染侧 `client.js` 的 `providerSelectModel()` / `ProviderSelectRow`（详情页「运行环境」卡里两个下拉，一行两格） | 本文件**红线 8**（两条命名空间 + `config.toml` 只读）。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点**，不用碰任何配置文件 |
+| **详情页那张卡该显示什么** | `client.js` 的 `turnBoundaryRows()`（「回合边界」卡）与 `providerRows()`（「运行环境」卡） | 上面「面板的显示纪律」一段 | **恒定值不是信息**：patch-only 的旋钮要标出"你改过"还是"插件默认"，且这个判断来自 host 的 `config.authored` / `config.defaults`，不许在渲染侧硬编码缺省值去比 |
 
 ## 项目一句话
 
@@ -70,6 +71,35 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 
 配置项一律走 `rawConfig` 里 `{get()}` 盒子的手工解包（本插件无 schemastery Config schema），
 每个字段都自带类型兜底 —— 加载器 patch 送来的配置是未校验的，**别改成信任输入**。
+
+## 面板的显示纪律（2026-10 那张卡被用户嫌弃"又丑又多字"之后写的）
+
+详情页那张卡曾经有 **6 行恒定值**（`来源`、`路径`、`审批模式`、`默认工作目录`、`ask 轮数上限`、
+`评审可用性`），用户的原话是「感觉插件又丑又多字呢」。教训不是"排版要好看"，是三条：
+
+1. **恒定值不是信息。** `自动探测`、`bypass（插件默认）`、`（会话工作目录）`、`25（有界）` 报告的都是
+   **用户没拨过的旋钮**。它们要么删、要么折叠，要么（如果它承载风险，如 `bypass`）标出"这是缺省"。
+   判据：**这一行在用户不改任何东西时会变吗？** 不变就不该占正文。
+2. **同一件事不说两遍。** `来源: 自动探测` + `路径: 自动探测（PATH）` 曾经是两行一句话；
+   现在 `来源` 并进路径行，不再单独出现。
+3. **每个空态/异常态要说自己的因。** 两个下拉曾共用一句
+   「本机没有可选项（ask 取 daemon /models，review 取 config.toml 的直连条目）」——于是 ask 的空态
+   用 **review 的来源**解释自己。现在 ask 说 `daemon 未列出档位`、review 说 `config.toml 里没有直连条目`。
+   长溯源下沉到 hover `title`：它是**控件的说明**，不是系统的状态。
+
+配套两条硬纪律：
+
+- **"你改过没有"必须问 host，不许在渲染侧比缺省值。** patch-only 的旋钮（`approval_mode` /
+  `working_dir` / `ask_max_rounds`）在面板上没有输入框，所以快照要带 `config.authored`
+  （host 记录 patch 到底供了哪些字段）和 `config.defaults`（host 的缺省）。
+  渲染侧 `askMaxRounds === 25` 这种比法是**第二份 25**：`lib/index.js` 一改，它就当场撒谎。
+  而且"显式写了 `bypass`"与"我们兜底的 `bypass`"在值上无法区分——只有 host 知道。
+- **同一字段两个端点的形状可能不同，别用一个映射函数盖过去。** 实测（atomcode 5.2.3）：
+  `GET /models` 给的是**对象数组** `{provider, model, isDefault, effortLevels}`，
+  而 review 的直连条目是**字符串数组**。两者都进 `providerSelectModel()`，
+  曾经一起走 `map(name)`（只认字符串）→ **ask 下拉整个是空的**，而 review 正常。
+  这条 bug 被上面第 3 点那句共用文案**掩盖**成了"像是文案问题"，隔了一轮才被实机快照抓出来。
+  取下拉值只取 `provider`（档位名）；`model`（裸 id）两条路都不认（红线 8）。
 
 ## 去哪参考（本机就有，别再全网瞎找）
 

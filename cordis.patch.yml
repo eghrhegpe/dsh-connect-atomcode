@@ -48,6 +48,9 @@
         # run unattended inside the turn. (This is AtomCode-side autonomy,
         # independent of DSH's permission presets — review the trade-off
         # before leaving it on in a shared repo.)
+        # No panel input exists for this field: the detail page's 回合边界 card only
+        # REPORTS it, and labels whether the value is this default or one you set
+        # (the label comes from config.authored, not from comparing the value).
         approval_mode: bypass
         # Which AtomCode MODEL bridged turns ask for when the call does not name
         # one. Value = the model PROFILE name, i.e. the `provider` field of
@@ -86,7 +89,8 @@
         # this if you rely on review without passing working_dir per call.
         review_working_dir: ''
         # Default working directory for bridged turns (ask + review). Empty =
-        # the tool arguments / daemon's own default.
+        # the tool arguments / daemon's own default. No panel input: the detail
+        # page reports it, and shows （会话工作目录） when this stays empty.
         working_dir: ''
         # Where the side-conversation session map lives. Empty = the DSH home
         # convention (~/.dsh/state/dsh-atomcode-bridge/sessions.json).
@@ -102,6 +106,10 @@
         # bridge's HTTP stream only; the daemon-side turn is not guaranteed to
         # stop and may run to completion in the background — it is a "stop
         # waiting" backstop, not a remote kill.
+        # No panel input: the detail page reports it and labels default vs authored.
+        # NOTE for that label: the client compares against the DEFAULT THE SNAPSHOT
+        # REPORTS (config.defaults.askMaxRounds), so changing this number is safe —
+        # but the constant must stay single-sourced in lib/index.js.
         ask_max_rounds: 25
         # Cooldown before a FAILED auto-start is retried. Without it the first
         # failure (binary not yet installed, daemon wedged) would silence

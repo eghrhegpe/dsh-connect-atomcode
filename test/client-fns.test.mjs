@@ -71,7 +71,7 @@ async function loadClient(fakeRequire) {
 }
 
 const mod = await loadClient();
-const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel } = mod.__test;
+const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel, turnBoundaryRows } = mod.__test;
 
 describe('client __test — the formatters are exposed', () => {
   it('exports every pure helper the panel renders through', () => {
@@ -406,8 +406,12 @@ describe('providerRows — the two provider knobs, never merged, never dropped',
   it('emits two rows with distinct ask / review labels on a bare config', () => {
     const rows = providerRows({});
     assert.equal(rows.length, 2, 'both knobs must always render');
-    assert.ok(/ask/.test(rows[0].label) && !/review/.test(rows[0].label), JSON.stringify(rows[0].label));
-    assert.ok(/review/.test(rows[1].label) && !/ask/.test(rows[1].label), JSON.stringify(rows[1].label));
+    // The LABEL is short (the long-winded form moved into `title`), so identity is
+    // read from slotName — which is also the wire value the route takes.
+    assert.deepEqual(rows.map((r) => r.slotName), ['ask', 'review']);
+    assert.notEqual(rows[0].label, rows[1].label, 'two knobs may not share one label');
+    assert.ok(/provider/.test(rows[1].label) && !/provider/.test(rows[0].label), 'the review knob says provider');
+    assert.ok(rows[0].title.includes('atomcode_ask') && rows[1].title.includes('atomcode_review'), 'each title names its own tool');
     assert.equal(rows[0].pinned, false);
     assert.equal(rows[1].pinned, false);
   });
@@ -500,7 +504,7 @@ describe('providerSelectModel — one slot, one dropdown, one namespace', () => 
 
     const none = providerSelectModel({ review: { panel: null, catalog: [] } }, 'review', REVIEW_FALLBACK);
     assert.equal(none.disabled, true);
-    assert.match(none.reason, /没有可选项/, 'an empty catalogue explains itself');
+    assert.match(none.reason, /没有直连条目/, 'an empty catalogue explains itself');
 
     const foreign = providerSelectModel(
       { foreignVersion: true, storeError: 'written by a newer build', ask: { panel: 'X', catalog: ['X'] } },
@@ -534,13 +538,185 @@ describe('providerSelectModel — one slot, one dropdown, one namespace', () => 
     assert.ok(!review.options.some((o) => o.value.startsWith('AtomGit-')), 'and a profile is not a direct entry');
   });
 
-  it('carries the effective value and its source through for display', () => {
+  it('carries the effective value and its source through, and notes ONLY a mismatch', () => {
     const m = providerSelectModel({ ask: { panel: 'A', catalog: ['A'], effective: 'A', source: 'panel' } }, 'ask', ASK_FALLBACK);
     assert.equal(m.effective, 'A');
     assert.equal(m.source, 'panel');
+    // effective === panel is the ordinary case (the click took). Saying so would be
+    // narrating the user's own action back to them, and it cost a line per row.
+    assert.equal(m.note, '', 'agreement is silent');
+
+    // A pick that LOST to another layer is the only case worth a sentence.
+    const lost = providerSelectModel(
+      { ask: { panel: '', catalog: ['A'], effective: 'A', source: 'config' } },
+      'ask',
+      ASK_FALLBACK
+    );
+    assert.equal(lost.note, 'A', 'an effective value that differs from the control must be surfaced');
+
     // Junk in those display fields must not throw or leak "undefined" text.
     const junk = providerSelectModel({ ask: { panel: null, catalog: [], effective: 42, source: [] } }, 'ask', ASK_FALLBACK);
     assert.equal(junk.effective, '');
     assert.equal(junk.source, '');
+    assert.equal(junk.note, '');
+  });
+
+  it('words each empty state for its OWN endpoint, never the other slot\'s', () => {
+    // These two shared one sentence, and that sentence named BOTH sources — so the
+    // ask slot told the user about config.toml direct entries when what was actually
+    // missing was daemon /models. Each reason may mention only its own source.
+    const ask = providerSelectModel({ ask: { panel: null, catalog: [] } }, 'ask', ASK_FALLBACK);
+    const review = providerSelectModel({ review: { panel: null, catalog: [] } }, 'review', REVIEW_FALLBACK);
+    assert.equal(ask.reason, 'daemon 未列出档位');
+    assert.equal(review.reason, 'config.toml 里没有直连条目');
+    assert.ok(!/config\.toml/.test(ask.reason), 'the ask slot must not explain itself via the review source');
+    assert.ok(!/models/.test(review.reason), 'nor the other way round');
+    // A disabled control reports its reason, never a stale mismatch note.
+    assert.equal(ask.note, '');
+    assert.equal(review.note, '');
+  });
+
+  it('flattens BOTH catalogue shapes — objects (ask) and strings (review)', () => {
+    // Measured against a real daemon (atomcode 5.2.3) and a real config.toml: the two
+    // endpoints answer in DIFFERENT shapes for the same field, and both flow through
+    // this one function.
+    //   GET /models        -> [{provider:"AtomGit-glm5.3-flash", model:"glm5.3-flash", isDefault:false, effortLevels:[...]}, ...]
+    //   review direct entries -> ["atomcode-local"]
+    // Mapping both with a "must be a string" helper silently dropped every ask option
+    // (an object is not a string), so the ask dropdown rendered EMPTY while review
+    // worked — and the shared empty-state sentence made it look like a wording bug.
+    const realAsk = [
+      { provider: 'AtomGit-glm5.3-flash', model: 'glm5.3-flash', isDefault: false, effortLevels: ['low', 'high'] },
+      { provider: 'AtomGit-qwen3.8-27b', model: 'qwen3.8-27b', isDefault: true, effortLevels: ['low', 'medium', 'xhigh'] },
+    ];
+    const ask = providerSelectModel({ ask: { panel: null, catalog: realAsk } }, 'ask', ASK_FALLBACK);
+    assert.deepEqual(
+      ask.options.map((o) => o.value),
+      ['', 'AtomGit-glm5.3-flash', 'AtomGit-qwen3.8-27b'],
+      'the ask dropdown must list the model PROFILES, not nothing'
+    );
+    assert.equal(ask.disabled, false, 'and it must be usable, not disabled');
+    // The bare model id is NOT a valid provider on either path (红线 8): using it
+    // would look right in the dropdown and fail at the daemon.
+    assert.ok(!ask.options.some((o) => o.value === 'glm5.3-flash'), 'never offer the bare model id');
+
+    const review = providerSelectModel({ review: { panel: null, catalog: ['atomcode-local'] } }, 'review', REVIEW_FALLBACK);
+    assert.deepEqual(review.options.map((o) => o.value), ['', 'atomcode-local']);
+    assert.equal(review.disabled, false);
+  });
+
+  it('treats a catalogue of unusable elements as EMPTY, and a missing one as unavailable', () => {
+    // Junk elements must not become blank options, and must not fabricate a list.
+    const junk = providerSelectModel({ ask: { panel: null, catalog: [null, 42, {}, { provider: '' }, '  '] } }, 'ask', ASK_FALLBACK);
+    assert.equal(junk.disabled, true, 'nothing usable in the catalogue means nothing to pick');
+    assert.match(junk.reason, /daemon 未列出档位/);
+    assert.deepEqual(junk.options.map((o) => o.value), [''], 'and no blank option may appear');
+    // A non-array is "the host could not tell us", NOT "there are none" — different
+    // reason, different sentence.
+    const missing = providerSelectModel({ ask: { panel: null, catalog: 'nope' } }, 'ask', ASK_FALLBACK);
+    assert.match(missing.reason, /暂不可用/, missing.reason);
+  });
+
+  it('keeps the long provenance OUT of the value, for the hover title', () => {
+    // The card body must stay short; the explanation of what the two namespaces are
+    // belongs in `title`. This pins that the short form is what renders as the value.
+    for (const cfg of [{}, { defaultProvider: 'P', reviewDefaultProvider: 'R' }]) {
+      for (const row of providerRows(cfg)) {
+        assert.ok(!/config\.toml|GET \/models|\/models/.test(row.value), `value must not carry provenance: ${row.value}`);
+        assert.ok(row.title.length > 20, 'and the provenance must exist somewhere (title)');
+        assert.ok(!/[（(]/.test(row.value), `value must not carry a parenthetical: ${row.value}`);
+      }
+    }
+  });
+});
+
+/**
+ * turnBoundaryRows — the "回合边界" card.
+ *
+ * The whole point of this card is that its three knobs are PATCH-ONLY: the panel has
+ * no input for them, so every value shown is either the plugin's built-in default or
+ * something the user authored in cordis.patch.yml. Printing both identically is what
+ * made the old card six constant rows, so each row must say which it is — and it must
+ * take that verdict from the HOST (cfg.authored / cfg.defaults), never from comparing
+ * against a default hardcoded in the renderer.
+ */
+describe('turnBoundaryRows — patch-only knobs must not masquerade as live settings', () => {
+  const HOST = { authored: { approvalMode: false, workingDir: false, askMaxRounds: false }, defaults: { approvalMode: 'bypass', askMaxRounds: 25 } };
+
+  it('labels an untouched knob as the plugin default', () => {
+    const rows = turnBoundaryRows({ approvalMode: 'bypass', askMaxRounds: 25, ...HOST });
+    assert.match(rows[0].text, /bypass（插件默认）/, rows[0].text);
+    assert.match(rows[2].text, /25（插件默认）/, rows[2].text);
+  });
+
+  it('labels a knob the patch AUTHORED as changed, even when the value looks default', () => {
+    // The trap this test exists for: `approval_mode: bypass` written explicitly is
+    // STILL authored. Only the host knows that; a renderer comparing the value to the
+    // default cannot tell the two apart and would call it "插件默认" — a false claim
+    // about a setting the user deliberately wrote down.
+    const rows = turnBoundaryRows({
+      approvalMode: 'bypass',
+      askMaxRounds: 25,
+      authored: { approvalMode: true, workingDir: false, askMaxRounds: true },
+      defaults: { approvalMode: 'bypass', askMaxRounds: 25 },
+    });
+    assert.match(rows[0].text, /bypass（已改）/, rows[0].text);
+    assert.match(rows[2].text, /25（已改）/, rows[2].text);
+  });
+
+  it('follows the HOST default rather than a number of its own', () => {
+    // If lib/index.js ever moves the bounded default off 25, a client-side
+    // `=== 25` would tag the new default as "已改". The verdict must move with the host.
+    const rows = turnBoundaryRows({
+      approvalMode: 'strict',
+      askMaxRounds: 40,
+      authored: { approvalMode: false, workingDir: false, askMaxRounds: false },
+      defaults: { approvalMode: 'strict', askMaxRounds: 40 },
+    });
+    assert.match(rows[0].text, /strict（插件默认）/, rows[0].text);
+    assert.match(rows[2].text, /40（插件默认）/, rows[2].text);
+  });
+
+  it('names the working directory as the session cwd when unset', () => {
+    const rows = turnBoundaryRows({ defaultWorkingDir: '', ...HOST });
+    assert.equal(rows[1].text, '（会话工作目录）');
+    assert.match(rows[1].title, /working_dir 留空/);
+    const set = turnBoundaryRows({ defaultWorkingDir: 'D:\\repo', ...HOST });
+    assert.equal(set[1].text, 'D:\\repo（插件默认）', 'an unauthored branch must not claim authorship');
+  });
+
+  it('reports 0 rounds as 不限 without a default tag (0 is a deliberate choice)', () => {
+    const rows = turnBoundaryRows({ askMaxRounds: 0, ...HOST });
+    assert.equal(rows[2].text, '不限');
+    assert.ok(!/已改/.test(rows[2].text), '0 rounds is authored by definition, so 已改 would be noise');
+  });
+
+  it('degrades on a host that reports no authored/defaults branch at all', () => {
+    // An older host (or the desktop install copy) must still render three rows with
+    // real values — and must make NO authorship claim, rather than inventing one.
+    for (const cfg of [undefined, null, {}, { approvalMode: 'bypass', askMaxRounds: 25 }]) {
+      const rows = turnBoundaryRows(cfg);
+      assert.equal(rows.length, 3, `three rows for ${JSON.stringify(cfg)}`);
+      for (const row of rows) {
+        assert.ok(row.label && row.title, 'every row keeps its label and its hover explanation');
+        assert.ok(!/已改/.test(row.text), `no authorship claim without host evidence: ${row.text}`);
+      }
+    }
+  });
+
+  it('never renders a raw null/undefined for a missing value', () => {
+    const rows = turnBoundaryRows({ approvalMode: 42, askMaxRounds: 'lots', defaultWorkingDir: {} });
+    for (const row of rows) {
+      assert.ok(!/null|undefined|42|lots|\[object/.test(row.text), `junk leaked: ${row.text}`);
+      assert.ok(!/（已改）/.test(row.text), 'and junk is not authored work');
+    }
+  });
+
+  it('keeps the bypass explanation reachable, since this card is where it lives', () => {
+    // The card that carries the safety posture must always explain what bypass means,
+    // even for a user who never opened cordis.patch.yml.
+    const rows = turnBoundaryRows({ approvalMode: 'bypass', ...HOST });
+    assert.match(rows[0].title, /approval_mode/);
+    assert.match(rows[0].title, /无人值守/);
   });
 });

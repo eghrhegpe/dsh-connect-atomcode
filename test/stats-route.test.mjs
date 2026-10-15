@@ -796,6 +796,45 @@ describe('stats route — auto-start on observation', () => {
       rmSync(dirname(unset), { recursive: true, force: true });
     }
   });
+
+  it('reports which patch-only knobs were AUTHORED, not just their values', async () => {
+    // The panel's "（已改）/（插件默认）" tag needs evidence it cannot obtain itself: a
+    // renderer only sees the resolved value, and `approval_mode: bypass` written
+    // explicitly is indistinguishable from our own fallback. So the route must
+    // report authorship, and its own defaults, rather than let the client guess
+    // (which is how a second copy of 25 appears and starts lying on the first change).
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-authored-'));
+    const dir2 = mkdtempSync(join(tmpdir(), 'atomcode-authored2-'));
+    try {
+      const untouched = mountRoute({ statePath: join(dir, 'sessions.json'), port: CLOSED_PORT });
+      const a = (await callRoute(untouched, { headers: { host: '127.0.0.1:3080' } })).body;
+      assert.deepEqual(
+        a.config.authored,
+        { approvalMode: false, workingDir: false, askMaxRounds: false },
+        'a mount that authored nothing must say so'
+      );
+      assert.equal(a.config.defaults.approvalMode, 'bypass');
+      assert.equal(a.config.defaults.askMaxRounds, 25);
+      assert.equal(a.config.askMaxRounds, 25, 'the resolved value still reports the fallback it used');
+
+      // Authoring a value EQUAL to the default must still count as authored.
+      const explicit = mountRoute({
+        statePath: join(dir2, 'sessions.json'),
+        port: CLOSED_PORT,
+        extra: { approval_mode: 'bypass', ask_max_rounds: 25, working_dir: 'D:\\repo' },
+      });
+      const b = (await callRoute(explicit, { headers: { host: '127.0.0.1:3080' } })).body;
+      assert.deepEqual(
+        b.config.authored,
+        { approvalMode: true, workingDir: true, askMaxRounds: true },
+        'writing the same value the default has is still the user deciding it'
+      );
+      assert.equal(b.config.defaultWorkingDir, 'D:\\repo');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
 });
 
 /**

@@ -102,6 +102,16 @@
         // deliberately quieter than a pinned name (which is a live setting the user
         // chose). Same row shape, one step down the label ladder.
         valIdle: { color: 'var(--dsw-alias-label-secondary)', wordBreak: 'break-word', textAlign: 'right' },
+        // An ANOMALY, not a second flavour of idle: the effective value is not what
+        // this control shows, or the control cannot be used. It gets the warning
+        // colour because it is the one thing in these cards worth noticing.
+        valWarn: { color: 'var(--dsw-alias-state-warning-primary)', wordBreak: 'break-word', textAlign: 'right' },
+        // The two model controls share ONE line, two cells — the same readout row
+        // split in half, so a label can sit above its dropdown without the card
+        // growing a row per knob.
+        provGrid: { display: 'flex', gap: '10px', fontSize: '12.5px' },
+        provCell: { display: 'flex', flexDirection: 'column', gap: '4px', flex: '1 1 0', minWidth: 0 },
+        provLabel: { color: 'var(--dsw-alias-label-tertiary)' },
         // The dropdown lives in a readout row, so it borrows the row's type scale
         // and stays visually quiet — this is a setting, not a button.
         select: {
@@ -112,7 +122,8 @@
           border: '1px solid rgba(128, 128, 128, 0.35)',
           borderRadius: '5px',
           padding: '2px 6px',
-          maxWidth: '320px',
+          maxWidth: '100%',
+          width: '100%',
         },
         selectOff: { opacity: 0.55 },
         pill: {
@@ -332,6 +343,7 @@
         quotaView,
         providerRows,
         providerSelectModel,
+        turnBoundaryRows,
       };
 
       function StatusPill({ up }) {
@@ -396,19 +408,21 @@
       }
 
       /**
-       * One interactive provider row: a dropdown scoped to ONE namespace.
+       * One interactive provider control: a dropdown scoped to ONE namespace.
        *
-       * Two per slot, never merged: ask lists daemon model profiles, review lists
-       * config.toml direct entries (红线 8). Pending/error state is local, and the
-       * row is never swapped back to static text — a failed write must stay visible
-       * with its reason, or the user cannot tell "the plugin refused" from "my click
-       * did nothing".
+       * Two per snapshot, never merged: ask lists daemon model profiles, review lists
+       * config.toml direct entries (红线 8). Laid out as one line with two cells —
+       * the label sits above its dropdown, and the provenance that used to sit in
+       * the card body now lives in the `title` (see providerRows()).
+       *
+       * Pending/error state is local, and the control is never swapped back to static
+       * text — a failed write must stay visible with its reason, or the user cannot
+       * tell "the plugin refused" from "my click did nothing".
        */
-      function ProviderSelectRow({ label, slotName, provider, fallbackLabel, reload }) {
+      function ProviderSelectRow({ label, slotName, provider, fallbackLabel, title, reload }) {
         const model = providerSelectModel(provider, slotName, fallbackLabel);
         const [note, setNote] = useState('');
         const [pending, setPending] = useState(false);
-        const SOURCE = { panel: '面板', config: '配置', atomcode: 'AtomCode', auto: '自动选择' };
         const onChange = async (event) => {
           const value = event && event.target ? event.target.value : '';
           setPending(true);
@@ -420,40 +434,38 @@
             return;
           }
           setNote(value === '' ? '已恢复未插手' : '已选 ' + value);
-          // Pull the snapshot now so the row shows its own new effective value
+          // Pull the snapshot now so the control shows its own new effective value
           // without waiting out the 5s poll: the click and its consequence stay
           // together on screen.
           if (typeof reload === 'function') void reload();
         };
-        const sourceText = model.source ? SOURCE[model.source] || model.source : '';
+        // Only when the effective value is NOT what this control shows: a pick that
+        // lost to a per-call argument or to the config field. Silence otherwise —
+        // narrating "this came from the panel" next to the user's own click was
+        // decoration, and it made every row two lines tall.
+        const override = model.note ? '这次调用实际用 ' + model.note + '（不是这里选的）' : '';
+        const trouble = model.disabled ? model.reason : '';
         return h(
           'div',
-          { style: S.row },
-          h('span', { style: S.key }, label),
+          { style: S.provCell },
+          h('span', { style: S.provLabel, title }, label),
           h(
-            'span',
-            { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px', flexWrap: 'wrap' } },
-            h(
-              'select',
-              {
-                style: model.disabled || pending ? { ...S.select, ...S.selectOff } : S.select,
-                value: model.value,
-                disabled: model.disabled || pending,
-                onChange,
-              },
-              model.options.map((option, index) =>
-                h('option', { key: slotName + '-' + index, value: option.value }, option.label)
-              )
-            ),
-            // The answer to "did my click take?": what the NEXT call will actually
-            // use, and which layer decided. Without it a pick that lost to another
-            // layer reads as a dead control.
-            model.effective
-              ? h('span', { style: S.valIdle }, '生效 ' + model.effective + (sourceText ? '（来自' + sourceText + '）' : ''))
-              : null,
-            model.disabled ? h('span', { style: S.valIdle }, model.reason) : null,
-            note ? h('span', { style: S.valIdle }, note) : null
-          )
+            'select',
+            {
+              style: model.disabled || pending ? { ...S.select, ...S.selectOff } : S.select,
+              value: model.value,
+              disabled: model.disabled || pending,
+              onChange,
+              title: trouble || override || title,
+              'aria-label': label,
+            },
+            model.options.map((option, index) =>
+              h('option', { key: slotName + '-' + index, value: option.value }, option.label)
+            )
+          ),
+          trouble ? h('span', { style: S.valWarn, title: trouble }, trouble) : null,
+          override ? h('span', { style: S.valWarn, title: override }, override) : null,
+          note ? h('span', { style: S.valIdle }, note) : null
         );
       }
 
@@ -524,24 +536,24 @@
       }
 
       /**
-       * The "二进制与配置" card's provider rows, derived from ONE stats snapshot.
+       * The model rows, derived from ONE stats snapshot.
        *
-       * Two rows, always both, never collapsed into one and never dropped:
-       *  - they are TWO DIFFERENT namespaces (ask = daemon model profile, review =
-       *    CLI direct entry), and one merged row would read as "same knob, two
-       *    names" — the exact confusion 红线 8 exists to prevent;
-       *  - a row that disappears when unset is indistinguishable from a host build
-       *    that does not report the field at all. So an unpinned knob says so in
-       *    words instead of leaving a hole (红线 3: nothing here may fail silently,
-       *    and "silently absent" is a failure the user cannot tell from a bug).
+       * Two entries, always both, never collapsed into one: they are TWO DIFFERENT
+       * namespaces (ask = daemon model profile, review = CLI direct entry), and one
+       * merged row would read as "same knob, two names" — the exact confusion
+       * 红线 8 exists to prevent. The renderer may lay them out side by side
+       * (one line, two cells); it may NOT merge them into one control.
        *
        * The fallbacks name the BEHAVIOR, not the absence: "未插手" tells the user
        * AtomCode's own default is authoritative, which is what they would otherwise
-       * have to infer from an empty field.
+       * have to infer from an empty field. They stay short on purpose — the long
+       * provenance ("ask takes daemon /models, review takes config.toml entries")
+       * lives in the hover `title`, because it is an explanation of the control,
+       * not a state of the system, and printing it in the card body was noise.
        *
        * @param {object|undefined} cfg  the snapshot's config branch (may predate
        *   these fields entirely — an older host build, or the desktop install copy)
-       * @returns {Array<{label:string, value:string, pinned:boolean}>}
+       * @returns {Array<{slotName:string,label:string,value:string,fallback:string,pinned:boolean,title:string}>}
        */
       function providerRows(cfg) {
         const src = cfg && typeof cfg === 'object' ? cfg : {};
@@ -551,17 +563,25 @@
         return [
           {
             slotName: 'ask',
-            label: '默认档位（ask）',
-            fallback: '未插手（AtomCode 自己的默认）',
-            value: ask || '未插手（AtomCode 自己的默认）',
+            label: '默认档位',
+            fallback: '未插手',
+            value: ask || '未插手',
             pinned: ask !== '',
+            title:
+              'atomcode_ask 走 daemon：这里选的是模型档位（GET /models 的 provider 字段，' +
+              '形如 AtomGit-glm5.3-flash）。未插手 = 连 provider 字段都不发，由 AtomCode 自己的默认决定。' +
+              '只影响不显式传 provider 的调用。',
           },
           {
             slotName: 'review',
-            label: '默认 provider（review）',
-            fallback: '未插手（按 config.toml 自动选择）',
-            value: review || '未插手（按 config.toml 自动选择）',
+            label: '默认 provider',
+            fallback: '未插手',
+            value: review || '未插手',
             pinned: review !== '',
+            title:
+              'atomcode_review 走 CLI：这里选的是 config.toml 里的直连条目（[providers.<name>]，' +
+              '形如 atomcode-local）。未插手 = 由 config.toml 的默认或唯一直连条目顶上。' +
+              '与左边是两套命名空间，不能同一个名字两边用。',
           },
         ];
       }
@@ -572,13 +592,19 @@
        *
        * Three things it owns:
        *  - the selected value is the PANEL pick, NOT the effective one: the control
-       *    shows what the user chose, while `effective`/`source` are rendered beside
-       *    it as the answer to "did my click actually take?";
+       *    shows what the user chose, while `effective`/`source` are compared against
+       *    it to answer "did my click actually take?" (`note`, below);
        *  - a panel pick missing from the catalogue is APPENDED, never dropped — a
        *    daemon that restarted with a different config would otherwise render a
        *    real setting as "nothing chosen", which is a lie by omission;
        *  - an unusable slot renders a REASON, never a bare empty dropdown
        *    (红线 3: nothing here may fail silently).
+       *
+       * `note` exists only when the effective value DIFFERS from what this control
+       * shows — a panel pick that lost to a per-call argument or to the config field.
+       * When they agree there is nothing to say: every value on this panel came from
+       * the panel, so narrating that fact was pure decoration (and it printed next to
+       * a dropdown the user had just used themselves).
        *
        * @param {object|undefined} provider  the snapshot's `provider` branch
        * @param {'ask'|'review'} slotName    which namespace (they are NOT one knob)
@@ -594,14 +620,32 @@
             reason: '宿主没有提供档位接口（旧版本，或 /provider 路由未注册）',
             effective: '',
             source: '',
+            note: '',
           };
         }
         const name = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : '');
         const panel = name(src.panel);
-        const catalog = Array.isArray(src.catalog) ? src.catalog.map(name).filter(Boolean) : null;
+        // The two slots do NOT agree on the catalogue element shape, because the two
+        // endpoints do not: /models answers with OBJECTS ({provider, model, isDefault,
+        // effortLevels}) while the review CLI's direct entries are plain STRINGS. Both
+        // go through here, so both are flattened to the option VALUE — and a shape the
+        // host did not send is null (unavailable), never [] (empty), which would read
+        // as "your machine has no models".
+        const optionValue = (v) => {
+          if (typeof v === 'string') return name(v);
+          if (v && typeof v === 'object') {
+            // `provider` is the model PROFILE (what /chat's `provider` takes);
+            // `model` is the bare id and is NOT a valid value on either path (红线 8).
+            return name(v.provider);
+          }
+          return '';
+        };
+        const catalog = Array.isArray(src.catalog) ? src.catalog.map(optionValue).filter(Boolean) : null;
         // A pinned name the catalogue no longer offers stays visible.
         const list = catalog === null ? [] : catalog.indexOf(panel) === -1 && panel ? [panel].concat(catalog) : catalog;
         const options = [{ value: '', label: fallbackLabel }].concat(list.map((n) => ({ value: n, label: n })));
+        const effective = name(src.effective);
+        const source = name(src.source);
         let disabled = false;
         let reason = '';
         if (provider.foreignVersion === true) {
@@ -612,16 +656,82 @@
           reason = name(src.catalogError) || name(provider.storeError) || '档位列表暂不可用（daemon 未在线？）';
         } else if (list.length === 0) {
           disabled = true;
-          reason = '本机没有可选项（ask 取 daemon /models，review 取 config.toml 的直连条目）';
+          // Per slot, because the two empty states have different CAUSES and the
+          // same sentence for both read as a bug (it pointed ask at the review
+          // source). Each names only its own endpoint.
+          reason =
+            slotName === 'ask'
+              ? 'daemon 未列出档位'
+              : 'config.toml 里没有直连条目';
         }
         return {
           value: panel,
           options,
           disabled,
           reason,
-          effective: name(src.effective),
-          source: name(src.source),
+          effective,
+          source,
+          note: !disabled && effective !== '' && effective !== panel ? effective : '',
         };
+      }
+
+      /**
+       * The "回合边界" card's rows — a pure function so the honesty rule below is
+       * testable without a browser.
+       *
+       * The rule: a patch-only knob is labelled by WHERE ITS VALUE CAME FROM, not by
+       * whether it happens to look default-ish. `cfg.authored` is the host's record of
+       * what the patch actually supplied; comparing `askMaxRounds === 25` against a
+       * number hardcoded here would start lying the moment that default moved (and it
+       * would be a second copy of a value `lib/index.js` already owns).
+       *
+       * Rows are KEPT (not hidden) when unset, because this is the card that carries
+       * the `bypass` safety posture — silently dropping it when unset would remove the
+       * one place a user can see that AtomCode's own tools run unattended.
+       *
+       * @param {object|undefined} cfg the snapshot's config branch (may predate
+       *   `authored` entirely — an older host, or the desktop install copy)
+       */
+      function turnBoundaryRows(cfg) {
+        const src = cfg && typeof cfg === 'object' ? cfg : {};
+        const authored = src.authored && typeof src.authored === 'object' ? src.authored : {};
+        const defaults = src.defaults && typeof src.defaults === 'object' ? src.defaults : {};
+        const askDefault = Number.isInteger(defaults.askMaxRounds) ? defaults.askMaxRounds : null;
+        const approvalDefault = typeof defaults.approvalMode === 'string' ? defaults.approvalMode : '';
+        const mode = typeof src.approvalMode === 'string' ? src.approvalMode : '';
+        const dir = typeof src.defaultWorkingDir === 'string' ? src.defaultWorkingDir : '';
+        const rounds = Number.isInteger(src.askMaxRounds) ? src.askMaxRounds : null;
+        // An older host reports no `authored` branch: fall back to comparing against
+        // the DEFAULT the host did send, and say nothing about provenance if it sent
+        // none. Never guess a default locally.
+        const changed = (key, value, fallback) =>
+          key in authored ? authored[key] === true : fallback !== null && fallback !== '' ? value !== fallback : false;
+        const tag = (isChanged) => (isChanged ? '（已改）' : '（插件默认）');
+        return [
+          {
+            label: '审批模式',
+            text: mode === '' ? '—' : mode + tag(changed('approvalMode', mode, approvalDefault)),
+            title:
+              'patch 字段 approval_mode；面板上没有输入框，改它要动 cordis.patch.yml。' +
+              'bypass = AtomCode 自己的工具在回合内无人值守执行（AtomCode 侧自主，与 DSH 的权限预设无关）。',
+          },
+          {
+            label: '工作目录',
+            text: dir === '' ? '（会话工作目录）' : dir + tag(changed('workingDir', dir, null)),
+            title: dir === '' ? 'patch 字段 working_dir 留空 = 靠调用参数或会话工作目录' : 'patch 字段 working_dir',
+          },
+          {
+            label: 'ask 轮数上限',
+            text:
+              rounds === null
+                ? '—'
+                : rounds > 0
+                  ? String(rounds) + tag(changed('askMaxRounds', rounds, askDefault))
+                  : '不限',
+            title:
+              'patch 字段 ask_max_rounds。超出即停止等待（不是远端 kill：daemon 侧的回合可能仍在后台跑完）。',
+          },
+        ];
       }
 
       /**
@@ -1013,41 +1123,59 @@
                   ? h(Row, { label: '拉起重试' }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`)
                   : null
               ),
-              // 二进制与配置
+              // 运行环境 ────────────────────────────────────────────────────
+              // Only what varies. `来源` was merged into the path line (it WAS the
+              // path line's provenance, said twice), and `评审可用性` appears only
+              // when it is NOT 可用 — a row that always reads "可用" is a row the
+              // user learns to skip, which is how a real warning gets missed.
               h(
                 'div',
                 { style: S.card },
-                h('p', { style: S.cardTitle }, '二进制与配置'),
-                h(Row, { label: '来源' }, bin.source === 'config' ? '配置' : bin.source === 'env' ? '环境变量' : '自动探测'),
-                h(Row, { label: '路径' }, binPath),
-                h(Row, { label: '审批模式' }, String(cfg.approvalMode)),
-                h(Row, { label: '默认工作目录' }, cfg.defaultWorkingDir || '（会话工作目录）'),
-                // Two rows, never one merged: these are two DIFFERENT namespaces
-                // (红线 8). providerRows() owns the wording, the snapshot's `provider`
-                // branch owns what is selectable right now — so an older host without
-                // the branch renders the same two rows disabled, with a reason, rather
-                // than an empty dropdown.
-                ...providerRows(cfg).map((row) =>
-                  h(ProviderSelectRow, {
-                    key: 'provider-' + row.slotName,
-                    label: row.label,
-                    slotName: row.slotName,
-                    provider: prov,
-                    fallbackLabel: row.fallback,
-                    reload,
-                  })
-                ),
+                h('p', { style: S.cardTitle }, '运行环境'),
+                h(Row, { label: 'AtomCode' }, binPath),
+                // Two columns, one line, NEVER one merged control: two DIFFERENT
+                // namespaces (红线 8). providerRows() owns the wording, the
+                // snapshot's `provider` branch owns what is selectable right now — so
+                // an older host without the branch renders the same two controls
+                // disabled, with a reason, rather than an empty dropdown.
                 h(
-                  Row,
-                  { label: 'ask 轮数上限' },
-                  cfg.askMaxRounds > 0 ? String(cfg.askMaxRounds) + '（有界）' : '不限'
+                  'div',
+                  { style: S.provGrid },
+                  providerRows(cfg).map((row) =>
+                    h(ProviderSelectRow, {
+                      key: 'provider-' + row.slotName,
+                      label: row.label,
+                      slotName: row.slotName,
+                      provider: prov,
+                      fallbackLabel: row.fallback,
+                      title: row.title,
+                      reload,
+                    })
+                  )
                 ),
-                h(
-                  Row,
-                  { label: '评审可用性' },
-                  cfg.reviewAvailable
-                    ? '可用'
-                    : h('span', { style: S.error }, '不可用 — 改用 atomcode_ask')
+                cfg.reviewAvailable
+                  ? null
+                  : h(
+                      Row,
+                      { label: '评审可用性' },
+                      h('span', { style: S.error }, '不可用 — 改用 atomcode_ask')
+                    )
+              ),
+              // 回合边界 ────────────────────────────────────────────────────
+              // Split out of the card above because these are not "runtime": they
+              // are the SAFETY POSTURE and SCOPE of a bridged turn, and they are
+              // patch-only fields this panel cannot edit (no input exists for them).
+              // So each row says whether it is the plugin's own default or something
+              // the user actually set — reporting an unset default as if it were a
+              // live setting is how six constant rows ended up on screen. The
+              // verdict comes from cfg.authored (the HOST's record of what the patch
+              // supplied), never from comparing against a hardcoded default here.
+              h(
+                'div',
+                { style: S.card },
+                h('p', { style: S.cardTitle }, '回合边界'),
+                turnBoundaryRows(cfg).map((row) =>
+                  h(Row, { key: 'bound-' + row.label, label: row.label }, h('span', { title: row.title }, row.text))
                 )
               ),
               // 会话
