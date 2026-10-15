@@ -256,11 +256,16 @@ export function buildQuotaReport(
     };
   }
   const parsed = parseStatusQuota(result.text);
-  // A line we REFUSED to interpret is drift, even when the plan line parsed
-  // fine. Without the `!parsed.parseIssue` term the panel would render a healthy
-  // plan row next to a missing percentage and report `drift: false` — the exact
-  // silent-wrong-number case red line 2 forbids.
-  const found = (parsed.plan !== null || parsed.usagePercent !== null) && parsed.parseIssue === null;
+  // `found` requires the usage line to parse. The plan line alone is not
+  // enough: the plan line is anchored on the proper noun "CodingPlan" (the
+  // least likely to change), while the usage line is anchored on translated
+  // prose (the most likely to drift). If the plan parses but the usage line
+  // goes unrecognised — the most realistic drift shape — `found` must be
+  // false so the drift banner lights. Without this the panel would render a
+  // healthy plan row next to a missing percentage and report `drift: false`,
+  // leaving the client to invent a reason via `|| '额度读数不可用'` — the
+  // second source of truth this project forbids.
+  const found = parsed.usagePercent !== null && parsed.parseIssue === null;
   const ISSUE_REASON: Record<ParseIssue, string> = {
     'multiple-percentages': '用量行含多个百分数，无法判定哪个是窗口用量（已拒绝猜测，不显示百分比）',
     'reverse-semantics': '用量行按"剩余"语义表述，与本面板的"已用"语义相反（已拒绝换算，不显示百分比）',
@@ -274,7 +279,9 @@ export function buildQuotaReport(
       ? ISSUE_REASON[parsed.parseIssue]
       : found
         ? ''
-        : 'status text carried no recognisable quota line',
+        : parsed.plan !== null
+          ? '用量行未被识别（daemon 的 status 文本可能已升级），计划行正常'
+          : 'status text carried no recognisable quota line',
     // Drift signal for the plugin: the status command succeeded but the
     // localized text no longer matches any known shape. The caller surfaces
     // this (log + panel) so a silent quota blackout after an AtomCode upgrade

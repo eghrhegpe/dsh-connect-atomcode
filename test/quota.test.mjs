@@ -143,6 +143,20 @@ describe('buildQuotaReport', () => {
     assert.equal(r.reason, '');
   });
 
+  it('drift lights when plan parses but usage line is unrecognised', () => {
+    // The most realistic drift shape: plan line anchored on the proper noun
+    // "CodingPlan" (stable), usage line anchored on translated prose (drifts).
+    const r = buildQuotaReport(
+      { ok: true, kind: 'status', text: 'CodingPlan：CodingPlan Lite-体验版 · 到期 2026-10-19（5d / 共 7d）\n已消耗：本窗口 77% · 将于 20:32 恢复' },
+      1234,
+    );
+    assert.equal(r.available, true);
+    assert.equal(r.plan, 'Lite-体验版');
+    assert.equal(r.usagePercent, null);
+    assert.equal(r.drift, true, 'usage line unrecognised → drift must be true');
+    assert.ok(r.reason.length > 0, 'reason must be non-empty when drift is true');
+  });
+
   it('reports unavailable (with the daemon message) when the command failed', () => {
     const r = buildQuotaReport({ ok: false, message: 'unknown command: status' }, 99);
     assert.equal(r.available, false);
