@@ -35,6 +35,14 @@ export interface ProviderSlot {
   /** OBJECTS on the ask path (`/models`), STRINGS on the review path. */
   catalog?: ReadonlyArray<string | { provider?: string; isDefault?: boolean }> | null;
   catalogError?: string | null;
+  /**
+   * base_url per usable provider name, so the pick's dependency is nameable.
+   * REVIEW-ONLY: it lives on the SLOT, not on the `provider` branch root, because
+   * that is where the host writes it (`buildStatsBody` → `provider.review`).
+   * Reading it from the root is what made the loopback warning dead — the two
+   * halves each had a test, and neither test joined them.
+   */
+  endpoints?: Record<string, string> | null;
 }
 
 /** The `provider` branch of the stats snapshot. */
@@ -44,8 +52,6 @@ export interface ProviderBranch {
   foreignVersion?: boolean;
   ask?: ProviderSlot | null;
   review?: ProviderSlot | null;
-  /** base_url per usable review provider name, so the pick's dependency is nameable. */
-  endpoints?: Record<string, string> | null;
 }
 
 /** The `quota` branch, as the renderer consumes it. */

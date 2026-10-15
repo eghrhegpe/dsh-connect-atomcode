@@ -36,6 +36,18 @@
 - 描述改用 `locale/` 目录（不是 `package.json` 里的对象）；`session key` 用 `resolve` 规范化 Windows 路径。
 - 探针 deadline、TOML 行内注释解析、provider 回显标注。
 - 四处可验证的洞一并收口。
+- **「review 本地端点即时警告」此前一次都没真正出现过**：host 把 endpoint 表写在
+  `provider.review.endpoints`，渲染侧却从 `provider.endpoints`（分支根）读，而根上从来没有这个键——
+  于是那段「代理一停 review 立刻断」在生产里恒为空字符串。两半各自的测试都是绿的，因为
+  `stats-route` 断言的是 host 那一半、`client-fns` 的 fixture 是自己手写的另一半形状，
+  **没有任何一条断言把 host 的真实快照喂给渲染侧的读取函数**。现在读路径对齐到 slot，
+  并新增 `test/snapshot-contract.test.mjs` 专门守这条接缝（先跑旧产物确认它红，才改成绿）。
+- **`provider` 路由的 HEAD 以前会带 body**：stats 路由早就只回 header（注释还专门写了理由），
+  provider 路由放行 HEAD 却照常 `writeJson`。现已对齐；两条路由的 HEAD 断言也从「只测状态码」
+  加强为「必须无 payload」——只测状态码正是这条纪律能被漏掉一半的原因。
+- **provider 优先级阶梯不再有两份**：execute 侧四档（含 `argument`），面板侧自己抄了一份三档的，
+  改一边不会动另一边。现在面板侧复用同一个 `resolveProvider`（复用已读的 picks，不额外多读一次文件）；
+  review 空档仍报 `auto`，与 ask 的 `atomcode` 是两个语义，不是同一个旋钮。
 
 ### 性能
 

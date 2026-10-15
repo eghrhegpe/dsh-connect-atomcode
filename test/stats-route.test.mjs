@@ -140,9 +140,13 @@ describe('stats route — registration and gates', () => {
     assert.equal(r.body.name, 'dsh-atomcode-bridge');
   });
 
-  it('HEAD is allowed like GET', async () => {
+  it('HEAD is allowed like GET, and carries no body', async () => {
     const r = await callRoute(route, { method: 'HEAD', headers: { host: '127.0.0.1:3080' } });
     assert.equal(r.status, 200);
+    // The status alone used to be all this asserted, which is why the provider
+    // route could answer HEAD with a full snapshot and stay "tested". A body on
+    // HEAD violates HTTP semantics — say it, on both routes.
+    assert.equal(r.raw, undefined, 'HEAD must end the response with no payload');
   });
 
   it('a write method is rejected with 405 and an Allow header', async () => {
@@ -1116,6 +1120,19 @@ describe("provider route — the panel's own model choice", () => {
     assert.equal(g.body.ask.effective, 'AtomGit-qwen3.8-27b');
     assert.equal(g.body.ask.source, 'config');
     assert.equal(existsSync(m.state), false, 'a read must not create the state file');
+  });
+
+  it('HEAD is allowed but carries no body, exactly like the stats route', async () => {
+    // The method gate lets HEAD through deliberately, so the handler must honor
+    // it. It used to fall through to the same writeJson as GET, answering a HEAD
+    // with the whole provider branch — HTTP semantics broken on the route that
+    // was added second, which is the shape this class of bug always takes.
+    const m = mountBoth();
+    const r = await callRoute(m.provider, { method: 'HEAD', headers: HOME_HDRS });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    assert.equal(r.raw, undefined, 'HEAD must end the response with no payload');
+    assert.equal(existsSync(m.state), false, 'a HEAD must not create the state file either');
   });
 
   it('a null clears the pick and the ladder falls back', async () => {

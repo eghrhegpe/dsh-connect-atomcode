@@ -701,10 +701,18 @@ describe('providerSelectModel — one slot, one dropdown, one namespace', () => 
     // dependency (and, in the only measured working setup, routes billing
     // through a gateway that does not check signatures). README's risk table
     // said that; the control now says it at the moment of the click.
+    // The endpoint map sits ON THE REVIEW SLOT, matching where the host writes
+    // it (`buildStatsBody` → provider.review.endpoints). It used to be handed
+    // here on the branch ROOT, which no host build ever writes — so this test
+    // passed against a shape production never produced. The cross-half contract
+    // test (test/snapshot-contract.test.mjs) is what joins the two halves now.
     const local = providerSelectModel(
       {
-        endpoints: { 'atomcode-local': 'http://127.0.0.1:8899/v1', remote: 'https://openrouter.example/v1' },
-        review: { panel: 'atomcode-local', catalog: ['atomcode-local', 'remote'] },
+        review: {
+          panel: 'atomcode-local',
+          catalog: ['atomcode-local', 'remote'],
+          endpoints: { 'atomcode-local': 'http://127.0.0.1:8899/v1', remote: 'https://openrouter.example/v1' },
+        },
       },
       'review',
       REVIEW_FALLBACK,
@@ -716,16 +724,20 @@ describe('providerSelectModel — one slot, one dropdown, one namespace', () => 
     // trained-out.
     const remote = providerSelectModel(
       {
-        endpoints: { 'atomcode-local': 'http://127.0.0.1:8899/v1', remote: 'https://openrouter.example/v1' },
-        review: { panel: 'remote', catalog: ['atomcode-local', 'remote'] },
+        review: {
+          panel: 'remote',
+          catalog: ['atomcode-local', 'remote'],
+          endpoints: { 'atomcode-local': 'http://127.0.0.1:8899/v1', remote: 'https://openrouter.example/v1' },
+        },
       },
       'review',
       REVIEW_FALLBACK,
     );
     assert.equal(remote.warning, '');
-    // The ask slot never warns: its catalogue is daemon profiles, not endpoints.
+    // The ask slot never warns: its catalogue is daemon profiles, not endpoints
+    // — and an endpoint map smuggled onto the ask slot must still be ignored.
     const ask = providerSelectModel(
-      { endpoints: { x: 'http://127.0.0.1:9/v1' }, ask: { panel: 'x', catalog: ['x'] } },
+      { ask: { panel: 'x', catalog: ['x'], endpoints: { x: 'http://127.0.0.1:9/v1' } } },
       'ask',
       ASK_FALLBACK,
     );

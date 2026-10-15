@@ -247,8 +247,15 @@ export function providerSelectModel(
   // own default. Now:
   //   - source === 'panel'  → "不是这里选的" (the pick lost to a later layer)
   //   - source === 'config' → "来自配置" (the config field won)
-  //   - source === 'atomcode' → "AtomCode 默认" (nothing pinned)
+  //   - source === 'atomcode' → "AtomCode 默认" (nothing pinned; ask slot)
+  //   - source === 'auto'   → nothing (review slot: the CLI picks, see below)
   //   - source === 'argument' → "本次调用指定" (per-call argument overrode)
+  // The last two are worth naming: `argument` is the execute path's own rung —
+  // a POLL snapshot asks the ladder with no argument, so the panel does not
+  // normally produce it, and it is handled anyway because the host's ladder
+  // (one ladder now, shared by both callers) can, and an unhandled source would
+  // render a silently empty note. `auto` says nothing on purpose: leaving review
+  // unpinned is not a value, it is a delegation to the CLI's own ladder.
   // An empty note means "nothing to say" — the control shows what the user
   // chose, so narrating that fact is decoration.
   let note = '';
@@ -272,7 +279,11 @@ export function providerSelectModel(
   // says it at the moment of the click.
   let warning = '';
   if (slotName === 'review') {
-    const endpoints = branch.endpoints && typeof branch.endpoints === 'object' ? branch.endpoints : {};
+    // Read the endpoint map from the SLOT, which is where the host puts it
+    // (`provider.review.endpoints`). It used to be read from the branch ROOT
+    // (`provider.endpoints`), which no host build has ever written — so this
+    // warning was unreachable in practice while both halves' tests stayed green.
+    const endpoints = src.endpoints && typeof src.endpoints === 'object' ? src.endpoints : {};
     const target = name(panel) || effective;
     const baseUrl = name((endpoints as Record<string, unknown>)[target]);
     if (baseUrl !== '' && isLoopbackEndpoint(baseUrl)) {

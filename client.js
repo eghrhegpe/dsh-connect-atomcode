@@ -560,7 +560,7 @@
 		}
 		let warning = "";
 		if (slotName === "review") {
-			const baseUrl = name((branch.endpoints && typeof branch.endpoints === "object" ? branch.endpoints : {})[name(panel) || effective]);
+			const baseUrl = name((src.endpoints && typeof src.endpoints === "object" ? src.endpoints : {})[name(panel) || effective]);
 			if (baseUrl !== "" && isLoopbackEndpoint(baseUrl)) warning = "本地端点 " + baseUrl + "：评审经本机进程转发计费，它一停 review 立刻断（探活会给出具名诊断）";
 		}
 		return {

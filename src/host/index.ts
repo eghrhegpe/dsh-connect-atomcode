@@ -468,16 +468,30 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
    * made, and a click that silently loses to a line in a config file is the kind
    * of dead control this repo refuses to ship. `source` is reported to the panel
    * so the two can never be confused about which one won.
+   *
+   * This ladder is the ONLY one: the execute path calls it with the per-call
+   * argument, and `refreshPanelState` calls it with none to answer "what will the
+   * NEXT call use". They used to be two copies — one four rungs, one three — so
+   * the panel could describe a rung (argument) its own snapshot never produced.
+   *
+   * @param {'ask'|'review'} slot
+   * @param {unknown} argument - the per-call `provider` arg ('' = none).
+   * @param {{ask:string|null, review:string|null}} [alreadyRead] - a pick set the
+   *   caller already read, so one panel poll does not read the file twice.
    */
-  const resolveProvider = (slot: any, argument: any) => {
+  const resolveProvider = (slot: any, argument: any, alreadyRead?: any) => {
     const arg = typeof argument === 'string' && argument.trim() !== '' ? argument.trim() : '';
-    const picks = readProviderPicks();
+    const picks = alreadyRead || readProviderPicks();
     const panel = slot === 'ask' ? picks.ask : picks.review;
     if (arg) return { name: arg, source: 'argument', picks };
     if (panel) return { name: panel, source: 'panel', picks };
     const configured = slot === 'ask' ? defaultProvider : reviewDefaultProvider;
     if (configured) return { name: configured, source: 'config', picks };
-    return { name: '', source: 'atomcode', picks };
+    // The empty-pick fallback differs by slot ON PURPOSE: leaving ask empty means
+    // "the daemon applies its own default profile", while leaving review empty
+    // hands the choice to selectReviewProvider()'s own ladder — a different
+    // thing (红线 8: the two slots are two namespaces, not one knob).
+    return { name: '', source: slot === 'ask' ? 'atomcode' : 'auto', picks };
   };
 
   // Probe review CLI availability at mount time (best-effort: no live spawn).
@@ -766,13 +780,16 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
     stats.panelProvider = { ask: picks.ask, review: picks.review };
     stats.panelStoreError = picks.error;
     stats.panelStoreForeign = picks.foreignVersion;
-    stats.effectiveAsk = picks.ask || defaultProvider || null;
-    stats.effectiveAskSource = picks.ask ? 'panel' : defaultProvider ? 'config' : 'atomcode';
-    stats.effectiveReview = picks.review || reviewDefaultProvider || null;
-    // 'auto', not 'atomcode': leaving the review slot empty hands the decision to
-    // selectReviewProvider()'s own ladder, which is a different thing from the
-    // daemon applying its default. Saying so keeps 红线 8 honest in the snapshot.
-    stats.effectiveReviewSource = picks.review ? 'panel' : reviewDefaultProvider ? 'config' : 'auto';
+    // The SAME ladder the execute path runs, asked with no per-call argument:
+    // "what will the NEXT call use, and who decided". Duplicating this here is
+    // how the two answers drifted apart (the copy had no `argument` rung, and
+    // the panel-side wording for a rung its own snapshot never produces).
+    const ask = resolveProvider('ask', '', picks);
+    stats.effectiveAsk = ask.name || null;
+    stats.effectiveAskSource = ask.source;
+    const review = resolveProvider('review', '', picks);
+    stats.effectiveReview = review.name || null;
+    stats.effectiveReviewSource = review.source;
     const provision = checkReviewProvision();
     stats.reviewCatalog = provision.providers || [];
     stats.reviewEndpoints = provision.endpoints || {};
@@ -1447,10 +1464,16 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
               return;
             }
             log(`provider pick saved (${slot}): ${written.value === null ? 'cleared' : written.value}`);
-            stats.sessionsTracked = sessions.count();
-            refreshPanelState();
           }
           refreshPanelState();
+          // HEAD gets headers only — a body on HEAD violates HTTP semantics, and
+          // the method gate above lets HEAD through deliberately. The stats route
+          // already honors this; this route must not be the half that does not.
+          if (method === 'HEAD') {
+            response.writeHead(200, { 'cache-control': 'no-store' });
+            response.end();
+            return;
+          }
           // `ok` is part of the contract on BOTH methods: the client treats any
           // response without `ok: true` as a failure, so a successful write that
           // answered with a bare provider branch would render as an error.
