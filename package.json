@@ -29,7 +29,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node test/daemon-parse.test.mjs && node test/daemon-stream.test.mjs && node test/review.test.mjs && node test/review-select.test.mjs && node test/wiring.test.mjs && node test/client-id.test.mjs && node test/client-fns.test.mjs && node test/ask-glue.test.mjs && node test/stats-route.test.mjs && node test/quota.test.mjs && node test/protocol.test.mjs",
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "node test/daemon-parse.test.mjs && node test/daemon-stream.test.mjs && node test/review.test.mjs && node test/review-select.test.mjs && node test/wiring.test.mjs && node test/client-id.test.mjs && node test/client-fns.test.mjs && node test/build-gate.test.mjs && node test/ask-glue.test.mjs && node test/stats-route.test.mjs && node test/quota.test.mjs && node test/protocol.test.mjs",
     "test:live": "node test/daemon-live.test.mjs && node test/review-live.test.mjs"
   },
   "dsh": {
@@ -54,6 +56,8 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
     "tsdown": "^0.23.1",
     "typescript": "^5.9.3"
   }

@@ -17,8 +17,8 @@
 | daemon 起不来 / 端口被占 | `lib/index.js` 的 `ensureDaemonStarted`（拉起/重试/单飞在那；`lib/daemon.js` 是它调用的传输与探测层，没有这个符号） | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
 | `atomcode_review` 报不可用 | 本文件红线 1 | `lib/review.js` 的 `checkReviewProvision` | 这是**本机配置事实**，不是临时故障 |
 | 加/改 client 槽位 | 本文件「宿主 ABI 面」 | `test/client-id.test.mjs`（注册契约门禁） | 改 seat 名必须同步改那条测试的断言 |
-| **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」；`docs/AtomCode-CLI与daemon接口参考.md` §4「`POST /chat` 的请求体字段」 | host 侧 `lib/index.js` 的 `resolveProvider()`（顺序：调用参数 > 面板选择 > `default_provider` / `review_default_provider`）+ `lib/provider-store.js`（`provider.json`）；渲染侧 `client.js` 的 `providerSelectModel()` / `ProviderSelectRow`（详情页「运行环境」卡里两个下拉，一行两格） | 本文件**红线 8**（两条命名空间 + `config.toml` 只读）。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点**，不用碰任何配置文件 |
-| **详情页那张卡该显示什么 / 放哪儿** | `client.js` 的 `turnBoundaryRows()`（「回合边界」卡）与 `providerRows()`（「运行环境」卡）；座位在 `apply()` 里 | 上面「面板的显示纪律」一段 | ①**恒定值不是信息**，patch-only 旋钮要标"你改过/插件默认"，判断来自 host 的 `config.authored`/`config.defaults`；②**座位读契约摘要不读名字**——面板属于 `plugins.bundle.config`（描述与 rows **之间**），不是 `plugins.detail.section`（rows **之后**） |
+| **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」；`docs/AtomCode-CLI与daemon接口参考.md` §4「`POST /chat` 的请求体字段」 | host 侧 `lib/index.js` 的 `resolveProvider()`（顺序：调用参数 > 面板选择 > `default_provider` / `review_default_provider`）+ `lib/provider-store.js`（`provider.json`）；渲染侧 `src/client/index.ts` 的 `ProviderSelectRow` + `src/client/provider-model.ts` 的 `providerSelectModel()`（详情页「运行环境」卡里两个下拉，一行两格） | 本文件**红线 8**（两条命名空间 + `config.toml` 只读）。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点**，不用碰任何配置文件 |
+| **详情页那张卡该显示什么 / 放哪儿** | `src/client/turn-boundary.ts` 的 `turnBoundaryRows()`（「回合边界」卡）与 `src/client/provider-model.ts` 的 `providerRows()`（「运行环境」卡）；座位在 `src/client/index.ts` 的 `apply()` 里（**改完必须 `npm run build`**） | 上面「面板的显示纪律」一段 | ①**恒定值不是信息**，patch-only 旋钮要标"你改过/插件默认"，判断来自 host 的 `config.authored`/`config.defaults`；②**座位读契约摘要不读名字**——面板属于 `plugins.bundle.config`（描述与 rows **之间**），不是 `plugins.detail.section`（rows **之后**） |
 
 ## 项目一句话
 
@@ -42,13 +42,28 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 
 - 本目录 `~/.dsh/plugins/dsh-atomcode-bridge` 是**开发副本**；web 端以符号链接载入
   （`~/.dsh/profiles/web/node_modules/dsh-atomcode-bridge` → 本目录，见 `.package-map.json`）。
-- **浏览器与 Host 执行的是磁盘上的这个目录本身**——本插件没有 `src/` → `lib/` 构建层，
-  改完直接刷新页面即可（与兄弟插件 qoder / sensenova 不同：它们有 `tsdown` 构建，别把那条纪律搬过来）。
+- **这里有一条构建纪律，和 qoder / sensenova 同款**：改 `src/` → 跑 `npm run build` →
+  **源码与产物一起提交**。浏览器与 Host 执行的是磁盘上的**产物**，所以"只改源码不构建"= 改动不生效，
+  "只改产物不改进源码"= 下一次构建就被抹掉。两条都由 `test/build-gate.test.mjs` 拦：
+  它用真 `tsdown.config.mjs` 重跑一次构建，要求与提交的产物**逐字节**相同，跑不干净就红。
+- ⚠️ **迁移是分阶段的，两半现在不是同一种东西**（别按一半的规矩推另一半）：
+  · **client 半边已迁移完**——真源是 `src/client/*.ts`，`client.js` 是它的**构建产物**（IIFE）。
+    改面板 / 样式 / 额度渲染 / 座位，**只改 `src/client/`**，然后 `npm run build`。
+  · **host 半边还没迁移**——`lib/*.js` 仍**是手写源码**，`src/host/` 还不存在，
+    `tsdown.config.mjs` 里的 `host` 条目**还注释着**（指向不存在的入口会让 `npm run build` 直接失败）。
+    改 `lib/` 就是改源码，改完直接生效、不需要构建。
+  · 两半都进 `src/` 之后，**这一段要收成一句话**——别让它烂在这里当第二份真相。
 - 桌面端走安装副本；以 `~/.dsh/profiles/{web,desktop}/node_modules` 里的实际 junction 为准。
-- `client.js` **是手写产物，不是生成物**：它是提交进库的 IIFE，不许当"构建输出"删掉或 gitignore，
-  也没有 `Generated … edit the sources` 头。改它就是改源码。
+- **产物不许删、不许 gitignore**：pnpm 拒绝为 git 依赖跑构建脚本
+  （`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，逃生阀是安装方没有的 `allowBuilds`），
+  所以"让 `prepare` 在安装时构建"是**死路**——GitHub 直装源会拿到一个 `main`/`client` 不存在的包。
+  完整理由写在 `tsdown.config.mjs` 头部，那里是这段纪律的真源。
+- **`client.js` 里几乎没有注释**：打包器保留声明前的 JSDoc，但**抹掉函数体内的注释**，
+  而本插件把"为什么挑这个座位""为什么这个 deadline 是 4s"这类契约写在函数体里。
+  所以"**注释也是契约**"那条纪律**现在指 `src/`**：改契约注释改 `src/client/*.ts`，
+  改产物里的没用（下一次构建就没了）。产物只给浏览器读，别指望从它溯源。
 - `.gitignore` 里 `node_modules/`、`dist/`、`upstream/` 都是为了防误提交；
-  `lib/`、`client.js`、`test/`、`docs/` **都要入库**（GitHub 直装源不跑 prepack）。
+  `lib/`、`client.js`、`src/`、`test/`、`docs/` **都要入库**（GitHub 直装源不跑 prepack）。
 - **`upstream/` 绝不入库，与兄弟插件一致**（sensenova / agnes / modelscope 三家都写了
   `/upstream/` 且 `git ls-files upstream/` 为 0）。理由**不是体积**（本仓库那份才 0.2 MB），
   而是它是**自带 `.git` 与 remote 的嵌套 clone**（`baimocn/atomcode-open-api`）：
@@ -75,6 +90,8 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 ## 面板的显示纪律（2026-10 那张卡被用户嫌弃"又丑又多字"之后写的）
 
 **先说一条元纪律（下面所有教训都是它的实例）：注释也是契约，而注释没有测试。**
+（**client 半边的契约注释现在住在 `src/client/*.ts`**：产物 `client.js` 里的函数体注释会被
+打包器抹掉——见「工作目录与装载方式」。改注释改 `src/`。）
 本仓库一个回合内放出过三条**过期注释**：`cordis.patch.yml` 里 `default_provider` 同时挂着
 两段互相矛盾的 `Precedence:`（加面板时漏删了旧那段）、`review_working_dir` 描述了一个
 **代码刻意拒绝**的回退（"空 = 用 host 进程 cwd"，而 `lib/index.js` 是明说不猜仓库并拒绝调用）、
@@ -167,8 +184,10 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
   链的名单看 `package.json` 的 `scripts.test`。**只看自己域的增减**，别去对总数。
 - `npm test` **不消耗额度**、不联网：全部用假 daemon / 假 spawn / 纯函数。
 - `test:live` 默认也**不消耗额度**——只有 `ATOMCODE_LIVE_TURNS=1` 才会跑真实回合。
-- **动了契约/接缝文件，跑全量**：`client.js`、`lib/index.js`、`cordis.patch.yml`、`package.json`。
+- **动了契约/接缝文件，跑全量**：`src/**`（含它构建出的 `client.js`）、`lib/index.js`、`cordis.patch.yml`、`package.json`。
   消费者不可枚举——按域裁剪会漏掉跨域契约。判断标准：这个文件的消费者我数得清吗？数不清就全量。
+- **改了 `src/` 就跑 `npm run typecheck` + `npm run build` + `npm test`**：`typecheck` 是
+  `tsc --noEmit`（strict），`build-gate` 那条会替你确认产物没落后于源码。
 - **改了 `package.json` 的 `scripts.test` 链要连带核对磁盘**：仓库里有过"新套件写好了但没挂进链里"，
   于是 `npm test` 全绿而它一次没跑。挂链时顺手确认 `test/` 下每个 `*.test.mjs` 都在链里。
 

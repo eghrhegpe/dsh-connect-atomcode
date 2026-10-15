@@ -1,16 +1,21 @@
 /**
- * Renderer-side pure formatters and decision functions.
+ * Renderer-side pure formatters.
  *
- * These are the pieces the offline suite exercises through `__test`, so they must stay
- * free of React, of the DOM, and of the loader — everything here is a plain function of
- * its arguments. Keeping them in their own module is what makes that property checkable
- * rather than merely intended.
- *
- * Ported verbatim from the pre-TypeScript `client.js`; the string forms (including the
- * spaces in `' ms'` / `' s'`) are asserted by `test/client-fns.test.mjs`, so they are
- * behaviour, not formatting preference.
+ * Moved verbatim from the pre-TypeScript `client.js`; the only edits are the de-indent,
+ * the `export` keyword, and parameter type annotations.
  */
 
+import type { UnknownRecord } from './types.ts';
+
+/**
+ * Pure formatters, hoisted OUT of the factory closure and attached to the
+ * returned module as `__test`. They were untestable while nested inside
+ * `factory(require)` (the only way in was the module loader, which needs
+ * a browser), and they are exactly the kind of edge-case code that needs
+ * tests: 0ms, negative countdowns, null quota, 100% state.
+ *
+ * The production code below calls these same functions.
+ */
 export function fmtDuration(ms: number | null | undefined): string {
   if (!Number.isFinite(ms) || (ms as number) <= 0) return '—';
   const n = ms as number;
@@ -28,7 +33,7 @@ export function fmtCountdown(secs: number | null | undefined): string {
 }
 
 /** Quota colour: the window being exhausted is the only true error state. */
-export function quotaColor(percent: number | null | undefined, limited?: boolean): string {
+export function quotaColor(percent: number | null | undefined, limited?: boolean | null): string {
   if (limited || (typeof percent === 'number' && percent >= 100)) {
     return 'var(--dsw-alias-state-error-primary)';
   }
@@ -38,9 +43,9 @@ export function quotaColor(percent: number | null | undefined, limited?: boolean
 /**
  * Seconds remaining, counted down locally between polls.
  *
- * A negative result means the snapshot is stale (the window reset since the fetch),
- * which is NOT the same as "no data": the caller must clamp to 0 and keep showing
- * "已重置" rather than rendering the "—" of a null input.
+ * A negative result means the snapshot is stale (the window reset since the
+ * fetch), which is NOT the same as "no data": the caller must clamp to 0
+ * and keep showing "已重置" rather than rendering the "—" of a null input.
  */
 export function liveRemaining(
   resetInSecs: number | null | undefined,
@@ -67,15 +72,19 @@ export function barWidth(percent: number | null | undefined): number {
 /**
  * Merge the panel's surface style with the measured anchor position.
  *
- * Extracted because the merge ORDER is the whole bug surface here, and no test renders
- * a portal: `Object.assign({}, surface, anchored, {left:0, top:0})` looks harmless but
- * clobbers the measured coordinates and pins the dialog to the viewport's top-left
- * corner. The off-screen fallback may apply ONLY while the anchoring hook has not
- * measured yet (it returns null), which is what this encodes.
+ * Extracted because the merge ORDER is the whole bug surface here, and no
+ * test renders a portal: `Object.assign({}, surface, anchored, {left:0,
+ * top:0})` looks harmless but clobbers the measured coordinates and pins
+ * the dialog to the viewport's top-left corner. The off-screen fallback
+ * may apply ONLY while the anchoring hook has not measured yet (it returns
+ * null), which is what this encodes.
+ *
+ * @param {object} surface  the static panel surface
+ * @param {object|null} anchored  the hook's measured position, or null
  */
 export function panelStyle(
-  surface: Record<string, unknown> | null | undefined,
-  anchored: Record<string, unknown> | null | undefined,
-): Record<string, unknown> {
+  surface: UnknownRecord | null | undefined,
+  anchored: UnknownRecord | null | undefined,
+): UnknownRecord {
   return Object.assign({}, surface, anchored ?? { visibility: 'hidden', left: 0, top: 0 });
 }
