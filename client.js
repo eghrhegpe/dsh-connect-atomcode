@@ -94,6 +94,10 @@
         row: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', fontSize: '12.5px' },
         key: { color: 'var(--dsw-alias-label-tertiary)' },
         val: { color: 'var(--dsw-alias-label-primary)', wordBreak: 'break-word', textAlign: 'right' },
+        // An UNPINNED knob is a fact about what the bridge is NOT doing, so it is
+        // deliberately quieter than a pinned name (which is a live setting the user
+        // chose). Same row shape, one step down the label ladder.
+        valIdle: { color: 'var(--dsw-alias-label-secondary)', wordBreak: 'break-word', textAlign: 'right' },
         pill: {
           fontSize: '12px',
           fontWeight: 600,
@@ -309,6 +313,7 @@
         quotaFacts,
         panelStyle,
         quotaView,
+        providerRows,
       };
 
       function StatusPill({ up }) {
@@ -409,6 +414,45 @@
           '5 小时窗口已用 ' + pct + '%',
           liveSecs === null ? null : '约 ' + fmtCountdown(liveSecs) + ' 后重置',
         ].filter(Boolean);
+      }
+
+      /**
+       * The "二进制与配置" card's provider rows, derived from ONE stats snapshot.
+       *
+       * Two rows, always both, never collapsed into one and never dropped:
+       *  - they are TWO DIFFERENT namespaces (ask = daemon model profile, review =
+       *    CLI direct entry), and one merged row would read as "same knob, two
+       *    names" — the exact confusion 红线 8 exists to prevent;
+       *  - a row that disappears when unset is indistinguishable from a host build
+       *    that does not report the field at all. So an unpinned knob says so in
+       *    words instead of leaving a hole (红线 3: nothing here may fail silently,
+       *    and "silently absent" is a failure the user cannot tell from a bug).
+       *
+       * The fallbacks name the BEHAVIOR, not the absence: "未插手" tells the user
+       * AtomCode's own default is authoritative, which is what they would otherwise
+       * have to infer from an empty field.
+       *
+       * @param {object|undefined} cfg  the snapshot's config branch (may predate
+       *   these fields entirely — an older host build, or the desktop install copy)
+       * @returns {Array<{label:string, value:string, pinned:boolean}>}
+       */
+      function providerRows(cfg) {
+        const src = cfg && typeof cfg === 'object' ? cfg : {};
+        const name = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : '');
+        const ask = name(src.defaultProvider);
+        const review = name(src.reviewDefaultProvider);
+        return [
+          {
+            label: '默认档位（ask）',
+            value: ask || '未插手（AtomCode 自己的默认）',
+            pinned: ask !== '',
+          },
+          {
+            label: '默认 provider（review）',
+            value: review || '未插手（按 config.toml 自动选择）',
+            pinned: review !== '',
+          },
+        ];
       }
 
       /**
@@ -805,6 +849,16 @@
                 h(Row, { label: '路径' }, binPath),
                 h(Row, { label: '审批模式' }, String(cfg.approvalMode)),
                 h(Row, { label: '默认工作目录' }, cfg.defaultWorkingDir || '（会话工作目录）'),
+                // Two rows, never one merged: these are two DIFFERENT namespaces
+                // (see providerRows). Row already wraps children in a primary-color
+                // span, so an unpinned value gets one quieter span inside it.
+                ...providerRows(cfg).map((r, i) =>
+                  h(
+                    Row,
+                    { key: 'provider-' + i, label: r.label },
+                    h('span', { style: r.pinned ? undefined : S.valIdle }, r.value)
+                  )
+                ),
                 h(
                   Row,
                   { label: 'ask 轮数上限' },

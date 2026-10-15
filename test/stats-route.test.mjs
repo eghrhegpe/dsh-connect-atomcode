@@ -210,6 +210,13 @@ describe('stats route — snapshot shape the panel depends on', () => {
       'binary.source',
       'config.approvalMode',
       'config.defaultWorkingDir',
+      // Both provider knobs. `providerRows()` in the card dereferences them, and
+      // an UNSET knob must arrive as an explicit null — a missing key would make
+      // "the user pinned nothing" indistinguishable from "this host build does not
+      // report the field at all", which is exactly the ambiguity the rows exist to
+      // remove from the screen.
+      'config.defaultProvider',
+      'config.reviewDefaultProvider',
       'config.reviewAvailable',
       'config.reviewReason',
       'sessions.tracked',

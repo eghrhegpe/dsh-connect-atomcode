@@ -204,6 +204,15 @@ AtomCode 5.x 在这条路上的 "provider" **就是模型档位名**，不是厂
 | **本插件的缺省** | ask 配 `default_provider`（档位名），review 配 `review_default_provider`（直连条目名）——**两个字段，别填串** | ✅ 插件侧（本次新增） |
 | **整机 AtomCode 的缺省** | 编辑 `~/.atomcode/config.toml` 的 `default_provider` + `default_model`，再 `POST /config/reload`（或等 daemon 空闲 30 分钟自杀后自然重启）；TUI 里是 `/model` | ⚠️ **AtomCode 侧**——本插件对那个文件**只读不写** |
 
+插件详情页的「二进制与配置」卡片**就有这两行**（数据来自 `/api/atomcode-bridge/stats` 的 `config.defaultProvider` / `config.reviewDefaultProvider`）：
+
+| 行 | 配了的时候 | 没配的时候 |
+|---|---|---|
+| `默认档位（ask）` | 档位名，正常色 | `未插手（AtomCode 自己的默认）`，弱一级色 |
+| `默认 provider（review）` | 直连条目名，正常色 | `未插手（按 config.toml 自动选择）`，弱一级色 |
+
+**两行永远都在，不合并也不省略**：合并会让两个命名空间读起来像同一个旋钮（红线 8），而"省掉一行"会让"用户没配"和"这个 host 版本压根不报这个字段"在屏幕上分不开（红线 3）。逻辑是纯函数 `providerRows()`，经 `client.js` 的 `__test` 暴露，由 `test/client-fns.test.mjs` 覆盖（`cfg` 缺失 / 畸形 / 非字符串每一支）。
+
 实测证据（一个 3 字母的回合，2.2s / 20k token，其中 17k 命中缓存）：当时默认明明是 `qwen3.8-27b`，发 `POST /chat {"provider":"AtomGit-glm5.3-flash"}` 之后 SSE 回来的是
 
 ```

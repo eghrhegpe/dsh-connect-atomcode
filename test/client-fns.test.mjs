@@ -71,7 +71,7 @@ async function loadClient(fakeRequire) {
 }
 
 const mod = await loadClient();
-const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView } = mod.__test;
+const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows } = mod.__test;
 
 describe('client __test — the formatters are exposed', () => {
   it('exports every pure helper the panel renders through', () => {
@@ -85,6 +85,7 @@ describe('client __test — the formatters are exposed', () => {
       quotaFacts,
       panelStyle,
       quotaView,
+      providerRows,
     })) {
       assert.equal(typeof fn, 'function', `${name} must be callable from tests`);
     }
@@ -388,5 +389,76 @@ describe('quotaView — one snapshot in, one render model out', () => {
   it('carries a clamped bar width so the panel bar cannot overflow', () => {
     assert.equal(quotaView({ ...healthy, usagePercent: 770 }, NOW).barWidth, 100);
     assert.equal(quotaView({ ...healthy, usagePercent: 0 }, NOW).barWidth, 0);
+  });
+});
+
+/**
+ * providerRows — the card's two model knobs.
+ *
+ * The contract is the SHAPE, not the wording: exactly two rows, always, with the
+ * ask profile and the review entry on SEPARATE labels. A merged row, or a row
+ * that vanishes when unset, is how two different namespaces (daemon 档位名 vs CLI
+ * 直连条目名) start reading as one knob — and how an unpinned setting becomes
+ * indistinguishable from an older host that does not report it at all.
+ */
+describe('providerRows — the two provider knobs, never merged, never dropped', () => {
+  it('emits two rows with distinct ask / review labels on a bare config', () => {
+    const rows = providerRows({});
+    assert.equal(rows.length, 2, 'both knobs must always render');
+    assert.ok(/ask/.test(rows[0].label) && !/review/.test(rows[0].label), JSON.stringify(rows[0].label));
+    assert.ok(/review/.test(rows[1].label) && !/ask/.test(rows[1].label), JSON.stringify(rows[1].label));
+    assert.equal(rows[0].pinned, false);
+    assert.equal(rows[1].pinned, false);
+  });
+
+  it('says 未插手 in words instead of leaving a hole when nothing is pinned', () => {
+    for (const cfg of [{}, null, undefined, { defaultProvider: null, reviewDefaultProvider: null }]) {
+      const rows = providerRows(cfg);
+      assert.equal(rows.length, 2, `a missing config branch must not drop rows (${JSON.stringify(cfg)})`);
+      for (const r of rows) {
+        assert.match(r.value, /未插手/, r.value);
+        assert.ok(!/null|undefined/.test(r.value), `never render the raw absence: ${r.value}`);
+      }
+    }
+  });
+
+  it('renders a pinned name verbatim (no decoration) and marks it pinned', () => {
+    const rows = providerRows({
+      defaultProvider: 'AtomGit-glm5.3-flash',
+      reviewDefaultProvider: 'atomcode-local',
+    });
+    assert.deepEqual(rows.map((r) => r.value), ['AtomGit-glm5.3-flash', 'atomcode-local']);
+    assert.deepEqual(rows.map((r) => r.pinned), [true, true]);
+  });
+
+  it('pins ONE knob without implying anything about the other', () => {
+    const rows = providerRows({ defaultProvider: 'AtomGit-qwen3.8-27b' });
+    assert.equal(rows[0].pinned, true);
+    assert.match(rows[0].value, /qwen/);
+    assert.equal(rows[1].pinned, false, 'the review knob must not inherit the ask value');
+    assert.match(rows[1].value, /未插手/);
+  });
+
+  it('trims a real name but treats whitespace as unset', () => {
+    assert.equal(providerRows({ defaultProvider: ' AtomGit-glm5.3-flash ' })[0].value, 'AtomGit-glm5.3-flash');
+    const blank = providerRows({ defaultProvider: '   ', reviewDefaultProvider: '\t' });
+    assert.deepEqual(blank.map((r) => r.pinned), [false, false], 'a blank name must not render as a provider');
+  });
+
+  it('drops non-string junk instead of coercing it into a name', () => {
+    // The snapshot is host-supplied; a number reaching the screen would read as
+    // a legitimate profile the user could then never find in /models.
+    for (const bad of [42, true, {}, [], () => 'AtomGit-glm5.3-flash']) {
+      const rows = providerRows({ defaultProvider: bad, reviewDefaultProvider: bad });
+      assert.deepEqual(rows.map((r) => r.pinned), [false, false], `must reject ${typeof bad}`);
+    }
+  });
+
+  it('tolerates a config branch of the wrong type', () => {
+    for (const weird of ['string', 7, [], () => {}]) {
+      const rows = providerRows(weird);
+      assert.equal(rows.length, 2, 'a malformed branch still renders both rows');
+      assert.deepEqual(rows.map((r) => r.pinned), [false, false]);
+    }
   });
 });
