@@ -58,11 +58,6 @@
         # name ~/.atomcode/config.toml keeps in its own default_provider. NOT a
         # bare model id ("glm5.3-flash"). Measured on atomcode 5.2.x: sending it in
         # POST /chat switches the model (SSE runtime_info reports the one that ran).
-        # Precedence: per-call `provider` argument > this field > AtomCode's own
-        # default. Empty = send nothing at all, so AtomCode's default stays
-        # authoritative. The bridge NEVER writes config.toml: changing the default
-        # for every AtomCode client is an AtomCode-side edit
-        # (default_provider + default_model, then POST /config/reload).
         # ASK path only (daemon POST /chat): maps to that request's `provider`.
         # REVIEW has its own knob below — the two paths do NOT share a namespace.
         # Precedence: per-call `provider` argument > the pick made in the plugin
@@ -70,6 +65,9 @@
         # AtomCode's own default. Empty = send nothing at all, so AtomCode's
         # default stays authoritative. Set this to give the plugin a default that
         # does not depend on anyone opening the panel.
+        # The bridge NEVER writes config.toml: changing the default for every
+        # AtomCode client is an AtomCode-side edit
+        # (default_provider + default_model, then POST /config/reload).
         default_provider: ''
         # REVIEW path only (CLI `atomcode review --provider`). A DIFFERENT
         # namespace from `default_provider` above: this must be a direct
@@ -84,9 +82,12 @@
         # A name this plugin does not recognize is passed through for the CLI to
         # judge — we never block here.
         review_default_provider: ''
-        # Default review working directory (atomcode_review only). Empty = the
-        # HOST PROCESS's cwd, which is usually NOT the user's repository — set
-        # this if you rely on review without passing working_dir per call.
+        # Default review working directory (atomcode_review only). Empty does NOT
+        # fall back to the host process cwd: a review against the wrong tree (or
+        # nothing) that still reports success is worse than a refusal, so an empty
+        # value here AND no `working_dir` on the call makes the tool REFUSE and tell
+        # the caller to name a repository. Set it if you rely on review without
+        # passing working_dir per call.
         review_working_dir: ''
         # Default working directory for bridged turns (ask + review). Empty =
         # the tool arguments / daemon's own default. No panel input: the detail

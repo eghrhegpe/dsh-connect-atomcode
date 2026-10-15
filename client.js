@@ -90,6 +90,14 @@
           border: '1px solid var(--dsw-alias-state-success-primary)',
         },
         updated: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' },
+        // The freshness badge's failure state: same pill, error colour, so a stale
+        // readout is visible from across the room instead of being implied by a
+        // timestamp nobody watches.
+        liveStale: {
+          color: 'var(--dsw-alias-state-error-primary)',
+          borderColor: 'var(--dsw-alias-state-error-primary)',
+        },
+        staleReason: { color: 'var(--dsw-alias-state-error-primary)', maxWidth: '40ch' },
         // `auto-fit` + `minmax` is what makes the cards MERGE INTO A ROW on a wide
         // window instead of marching down one per line: columns are packed until the
         // track would fall below 320px, then they wrap. The old rule was a hardcoded
@@ -552,6 +560,24 @@
           const isCurrent = () => generation.current === mine;
           const controller = typeof AbortController === 'function' ? new AbortController() : null;
           inFlight.current = controller;
+          // A HARD DEADLINE, separate from the poll interval.
+          //
+          // Without it a request that never settles (the daemon wedged on
+          // `POST /command`, a half-open socket) leaves this promise pending forever:
+          // the catch never runs, `error` stays null, and the panel keeps rendering
+          // the last good snapshot while `更新于` silently freezes. That is a silent
+          // degradation — the one thing this plugin is not allowed to do — and it is
+          // the LIKELIEST failure mode, because quota polling is the most frequent
+          // daemon call we make.
+          //
+          // Slightly under POLL_MS so a hung request is surfaced before the next tick
+          // replaces it, making the failure visible instead of merely late.
+          const deadlineMs = Math.max(1000, POLL_MS - 1000);
+          let timedOut = false;
+          const timer = setTimeout(() => {
+            timedOut = true;
+            if (controller && controller.abort) controller.abort();
+          }, deadlineMs);
           try {
             const response = await fetch(STATS_PATH, {
               headers: { accept: 'application/json' },
@@ -571,7 +597,17 @@
             setUpdatedAt(Date.now());
           } catch (reason) {
             if (!isCurrent()) return;
-            setError(reason && reason.message ? reason.message : String(reason));
+            // An abort we caused is a TIMEOUT, not a user cancellation: say so, or a
+            // wedged daemon reports the AbortError text and reads like a bug in here.
+            setError(
+              timedOut
+                ? `面板数据 ${deadlineMs / 1000}s 未返回（daemon 可能卡住）`
+                : reason && reason.message
+                  ? reason.message
+                  : String(reason)
+            );
+          } finally {
+            clearTimeout(timer);
           }
         }, []);
 
@@ -1136,9 +1172,24 @@
               'div',
               { style: S.titleRow },
               h('h3', { style: S.title }, '运行统计'),
-              h('span', { style: S.live }, '实时'),
+              // The badge reports the ACTUAL freshness, not a hopeful constant. It used
+              // to read 实时 unconditionally, including while the panel was showing an
+              // error or a snapshot from minutes ago — a "live" label over stale data
+              // is exactly the silent degradation this plugin forbids.
+              h(
+                'span',
+                { style: error ? { ...S.live, ...S.liveStale } : S.live },
+                error ? '已断开' : '实时'
+              ),
               updatedAt
-                ? h('span', { style: S.updated }, '更新于 ' + new Date(updatedAt).toLocaleTimeString('zh-CN'))
+                ? h(
+                    'span',
+                    { style: S.updated, title: error || '' },
+                    (error ? '最后更新 ' : '更新于 ') + new Date(updatedAt).toLocaleTimeString('zh-CN')
+                  )
+                : null,
+              error
+                ? h('span', { style: { ...S.updated, ...S.staleReason }, title: error }, error)
                 : null
             ),
             // 静默降级的显式信号：额度文本形状变了（AtomCode 升级）时必须说出来，

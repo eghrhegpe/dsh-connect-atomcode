@@ -555,6 +555,64 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     return { ask, chats: probe.chats, calls, dir };
   }
 
+  it('both parameter comments state ONE precedence — and it is the real one', () => {
+    // Comments have no tests, which is exactly why three stale ones shipped in a
+    // single round: `default_provider` carried TWO contradictory `Precedence:`
+    // paragraphs (an older one without the panel, left behind when the panel was
+    // added), `review_working_dir` described a fallback the code deliberately
+    // REFUSES, and the docs quoted a function count that had doubled.
+    //
+    // `cordis.patch.yml` is this repo's field documentation of record, so a
+    // contradiction here is worse than a wrong comment elsewhere: it is the file
+    // the README points at as the source of truth.
+    const yaml = readFileSync(join(__dirname, '..', 'cordis.patch.yml'), 'utf8');
+    const lines = yaml.split('\n');
+    // Map each comment block to the config key it precedes.
+    const owners = new Map();
+    let pending = [];
+    for (const line of lines) {
+      if (/^\s{8}#/.test(line) || /^\s{8}$/.test(line)) {
+        pending.push(line);
+        continue;
+      }
+      const field = line.match(/^\s{8}([a-z_]+):/);
+      if (field) {
+        owners.set(field[1], pending.join('\n'));
+        pending = [];
+      }
+    }
+
+    for (const key of ['default_provider', 'review_default_provider']) {
+      const block = owners.get(key);
+      assert.ok(block, `${key} must have a comment block`);
+      const precedence = block.match(/Precedence:/g) || [];
+      assert.equal(
+        precedence.length,
+        1,
+        `${key} must state its precedence EXACTLY once; found ${precedence.length} — a second, staler ` +
+          'paragraph is how the panel got dropped from this field\'s documented order',
+      );
+      assert.match(block, /panel|detail page/i, `${key}'s documented precedence must include the panel pick`);
+    }
+
+    // review_working_dir: empty REFUSES; it does not fall back to the host cwd.
+    const rwd = owners.get('review_working_dir');
+    assert.ok(rwd, 'review_working_dir must have a comment block');
+    assert.ok(
+      /does NOT fall back|REFUSE/i.test(rwd),
+      'review_working_dir must document the refusal — the code rejects a call with no repository rather than ' +
+        'reviewing the host process cwd (see the "REFUSES rather than falling back" test above)',
+    );
+    assert.ok(
+      !/Empty = the\s*\n?\s*#?\s*HOST PROCESS/i.test(rwd),
+      'the old wording claimed an empty value uses the host cwd, which is the behaviour the code refuses',
+    );
+
+    // ask_max_rounds: the client labels default-vs-authored from config.defaults, so
+    // the number in the shipped patch must be the number the host falls back to.
+    assert.match(owners.get('ask_max_rounds') || '', /defaults/, 'ask_max_rounds must note that the panel reads its default from the snapshot');
+  });
+
   it('a configured default_provider reaches POST /chat', async () => {
     const { ask, chats } = await mountAsk({ default_provider: 'AtomGit-glm5.3-flash' });
     const r = await ask.execute({ message: 'hi' }, {});

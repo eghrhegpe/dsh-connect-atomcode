@@ -257,7 +257,7 @@ data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-f
 | **`drop()` 死代码**（陈旧 session 无处可清） | 接到新的 `atomcode_ask reset_session` 参数上，并处理"显式 session_id + reset"的优先级 |
 | **daemon 拉起失败永久粘住** | `spawnTried` 不再当墓碑；`daemon_retry_secs`（默认 60s）冷却后重试，`spawnAttempts`/`spawnFailures` 可观测。已成功的旧启动在 daemon 不在时也会失效重估 |
 | **额度正则过宽**（`window` 会误匹配无关行） | 标签收紧为 `用量|usage|quota`，兜底锚定 `重置于`/`resets at` 而非"含重置" |
-| **渲染端零测试** | 6 个纯函数提到闭包外并经 `__test` 暴露，`client-fns.test.mjs` 覆盖 |
+| **渲染端零测试** | 纯函数提到闭包外并经 `__test` 暴露，`client-fns.test.mjs` 覆盖。**数量不写死在这里**（写死过"6 个"，很快就不对了）：要数就 `node -e "…"` 读 `client.js` 的 `TESTABLE`，或直接看 `__test` 对象 |
 | **文档用词不实**（"118 条断言"实为 118 个 test） | 改为 test 数并加说明 |
 | **模型选择只能改配置文件**（改一行要开文件、且只在挂载时读一次） | 详情页加两个下拉（ask / review 各一，各自命名空间），持久化到**插件自己的** `provider.json`，**每次调用重读**所以选完即生效、不用重启 host。优先级定为：调用参数 > 面板选择 > 配置字段 > AtomCode 自己（面板赢在"那是用户刚做的动作"——控件输给配置文件就是死控件）。写入点单一路由 `POST /api/atomcode-bridge/provider`（同源 + 方法门禁 + 4KB 上限 + 槽位/名字校验），**从不写 `~/.atomcode/config.toml`**；测试里有一条"写一次 pick 后 config.toml 必须逐字节不变 + `~/.atomcode` 下不得出现任何 provider 文件"钉这条边界。两个工具的描述同步改成**只讲顺序、不讲结果**——描述挂载时注册一次而面板选择每次调用才读，任何"留空即 X"的固定句式都是掷硬币 |
 | **那张卡"又丑又多字"**（用户原话） | 详情页那张卡曾有 **6 行恒定值**：`来源`/`路径` 是同一件事说两遍，`审批模式`/`默认工作目录`/`ask 轮数上限` 报告的是**用户从没拨过的旋钮**，`评审可用性` 则永远显示「可用」。收敛为：① 拆成「运行环境」（`AtomCode` 一行含来源 + 两个下拉并排一行两格；`评审可用性`**只在不可用时出现**）与「回合边界」（`审批模式`/`工作目录`/`ask 轮数上限`，各标"（插件默认）"或"（已改）"）；② "改过没有"由 host 的 `config.authored`/`config.defaults` 判定，**不在渲染侧比缺省值**——显式写 `bypass` 与兜底 `bypass` 在值上分不开，且 `askMaxRounds === 25` 是第二份 25，`lib/index.js` 一改就撒谎；③ 空态文案**按槽位分家**（原先共用一句，于是 ask 的空态用 review 的来源解释自己）；④「生效 X（来自面板）」只在**实际生效值与所选不同**时出现，一致时不说话。`turnBoundaryRows()` 与 `providerRows()` 都是纯函数，由 `client-fns.test.mjs` 覆盖（含变异实验） |
@@ -477,7 +477,7 @@ npm test           # 链的名单就是 package.json 的 scripts.test：daemon-p
 - `ask-glue.test.mjs` — 会话连续性 glue：`continue` 是否 replay 正确 session、省略 `continue` 是否开新线、显式 `session_id` 是否优先、**失败回合是否不覆盖已记录会话**、working_dir 是否分键、尾斜杠是否折叠，以及 `session_key_prefix` 的 profile 自动探测/显式覆盖；外加 `reset_session`（清掉陈旧会话）与 reply 截断标记。
 - `stats-route.test.mjs` — 详情页统计路由（唯一被渲染端调用的接口）：方法门（405）、同源门（403/放行）、快照里面板会解引用的**每一个字段**、二进制来源回退链、`sessions.tracked` 实时读盘且**按 prefix 计数**、**失败后按 `daemon_retry_secs` 重试拉起**、以及额度分支（解析 / 必带 working_dir / 跨轮询缓存 / `0` 关闭 / daemon 不在时不编数字 / 文本漂移标记的置位与复位）。
 - `quota.test.mjs` — 额度文本解析器（真实抓取的载荷 + 英文 + 用尽 100% + 空/畸形输入 + 时长解析）。
-- `client-fns.test.mjs` — **渲染端纯函数**（v0.4 新增）：`fmtDuration` / `fmtCountdown` / `quotaColor` / `liveRemaining` / `pctLabel` / `barWidth`。v0.3 只测了客户端的**注册契约**（id / inject / 槽位座位），而这些真正会算出错误数字的边界——0ms、负倒计时、null 额度、770% 的进度条——一个都没测。
+- `client-fns.test.mjs` — **渲染端纯函数**（v0.4 新增）：额度格式化与判定（`fmtDuration` / `fmtCountdown` / `quotaColor` / `liveRemaining` / `pctLabel` / `barWidth` / `quotaFacts` / `panelStyle` / `quotaView`）加模型档位与回合边界（`providerRows` / `providerSelectModel` / `turnBoundaryRows`）。v0.3 只测了客户端的**注册契约**（id / inject / 槽位座位），而这些真正会算出错误数字的边界——0ms、负倒计时、null 额度、770% 的进度条、两种目录形状、无证据时的"已改"标签——一条都没测。**名单以 `client.js` 的 `TESTABLE` 为准**，这里只是索引，不追着它改。
 - `protocol.test.mjs` — **漂移钉子**（v0.4 新增）：daemon 用完全陌生的 SSE 词汇应答时必须**响亮报错**（而不是含糊的 "ended before done"）、加性未知事件**不得**让健康回合失败、`healthInfo` 暴露 daemon 版本、额度文本改词后不编数字、TOML provider 解析的引号名与全引号段名。
 
 Live 套件需要真环境，**缺前置条件时自述原因并跳过**（不会静默变红）：
