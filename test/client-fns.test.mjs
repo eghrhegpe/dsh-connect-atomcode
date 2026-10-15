@@ -71,7 +71,7 @@ async function loadClient(fakeRequire) {
 }
 
 const mod = await loadClient();
-const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle } = mod.__test;
+const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView } = mod.__test;
 
 describe('client __test — the formatters are exposed', () => {
   it('exports every pure helper the panel renders through', () => {
@@ -84,6 +84,7 @@ describe('client __test — the formatters are exposed', () => {
       barWidth,
       quotaFacts,
       panelStyle,
+      quotaView,
     })) {
       assert.equal(typeof fn, 'function', `${name} must be callable from tests`);
     }
@@ -319,5 +320,73 @@ describe('pctLabel and barWidth', () => {
     assert.equal(barWidth(-5), 0);
     assert.equal(barWidth(NaN), 0);
     assert.equal(barWidth(null), 0);
+  });
+});
+
+/**
+ * quotaView — the single derivation both chip variants share.
+ *
+ * Extracted because the pre-split code built the label string unconditionally
+ * from a `pct` that defaulted to null, so the composer dock printed
+ * `atom · 5小时 null%` for the frame before the first stats response landed —
+ * while the function's own doc comment claimed it rendered nothing then.
+ * Making `label` unconstructable unless the quota is known turns that whole bug
+ * class into a type error rather than a review finding.
+ */
+describe('quotaView — one snapshot in, one render model out', () => {
+  const NOW = 1_700_000_000_000;
+  const healthy = {
+    available: true,
+    usagePercent: 18,
+    plan: 'Lite-体验版',
+    expires: '2026-10-19',
+    planWindow: '5d / 共 7d',
+    resetInSecs: 3600,
+    fetchedAt: NOW,
+    limited: false,
+  };
+
+  it('produces no label at all while the quota is unknown', () => {
+    for (const q of [undefined, null, {}, { available: false }, { available: true }, { available: true, usagePercent: null }, { available: true, usagePercent: '18' }]) {
+      const v = quotaView(q, NOW);
+      assert.equal(v.known, false, `must report unknown for ${JSON.stringify(q)}`);
+      assert.equal(v.label, undefined, 'a constructible label is how null% reached the screen');
+      assert.equal(v.pct, undefined);
+    }
+  });
+
+  it('never renders the string "null" or "undefined" in the label', () => {
+    // The regression stated outright: the old code path could emit this text.
+    const v = quotaView(healthy, NOW);
+    assert.equal(v.label, 'atom · 5小时 18%');
+    assert.ok(!/null|undefined|NaN/.test(v.label), v.label);
+  });
+
+  it('keeps the normal state ambient (tertiary), not primary', () => {
+    // The dock is a readout strip; a primary-color gauge among the session
+    // pills reads as a control the host owns.
+    assert.equal(quotaView(healthy, NOW).color, 'var(--dsw-alias-label-tertiary)');
+  });
+
+  it('alarms only on an exhausted window, by either signal', () => {
+    const ERROR = 'var(--dsw-alias-state-error-primary)';
+    assert.equal(quotaView({ ...healthy, limited: true }, NOW).color, ERROR);
+    assert.equal(quotaView({ ...healthy, usagePercent: 100 }, NOW).color, ERROR);
+    assert.equal(quotaView({ ...healthy, usagePercent: 99.9 }, NOW).color, 'var(--dsw-alias-label-tertiary)');
+  });
+
+  it('advances the countdown locally from fetchedAt', () => {
+    const v = quotaView({ ...healthy, resetInSecs: 3600 }, NOW + 600_000);
+    assert.deepEqual(v.facts.at(-1), '约 50m0s 后重置', 'countdown must follow the clock, not the snapshot');
+  });
+
+  it('drops the countdown row entirely when the snapshot cannot support one', () => {
+    const v = quotaView({ ...healthy, resetInSecs: null }, NOW);
+    assert.ok(!v.facts.some((f) => f.includes('后重置')), JSON.stringify(v.facts));
+  });
+
+  it('carries a clamped bar width so the panel bar cannot overflow', () => {
+    assert.equal(quotaView({ ...healthy, usagePercent: 770 }, NOW).barWidth, 100);
+    assert.equal(quotaView({ ...healthy, usagePercent: 0 }, NOW).barWidth, 0);
   });
 });

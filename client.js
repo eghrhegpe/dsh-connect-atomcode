@@ -38,7 +38,8 @@
       //
       // Required defensively anyway: a factory that throws fails to
       // materialize and takes its CONSUMER down with it, so a host without
-      // these two degrades to the native-tooltip chip instead (see QuotaChip).
+      // these two degrades to the native-tooltip chip (`QuotaChipDegraded`, picked
+      // at factory time — see QUOTA_READOUT) instead of failing to mount.
       let reactDom = null;
       let primitives = null;
       try {
@@ -113,7 +114,7 @@
         },
         error: { color: 'var(--dsw-alias-state-error-primary)', fontSize: '12.5px' },
 
-        // ── 额度 chip 与其面板（只给 QuotaChip 用） ──────────────────────
+        // ── 额度读数 chip 与其面板（只给 QUOTA_READOUT 两个变体用） ────────
         // Theme tokens only, no hardcoded colors: a wrong token name fails
         // SILENTLY to a fallback rather than throwing, so these must match the
         // host's real `--dsw-*` names (a sibling plugin burned an incident on
@@ -298,7 +299,17 @@
         return Object.assign({}, surface, anchored ?? { visibility: 'hidden', left: 0, top: 0 });
       }
 
-      const TESTABLE = { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle };
+      const TESTABLE = {
+        fmtDuration,
+        fmtCountdown,
+        quotaColor,
+        liveRemaining,
+        pctLabel,
+        barWidth,
+        quotaFacts,
+        panelStyle,
+        quotaView,
+      };
 
       function StatusPill({ up }) {
         const color = up ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-error-primary)';
@@ -401,6 +412,43 @@
       }
 
       /**
+       * Everything the readout renders, derived from ONE stats snapshot.
+       *
+       * Extracted because both chip variants must agree on what "no quota"
+       * means, and the label must be unconstructable while `known` is false:
+       * building `'atom · 5小时 ' + pct + '%'` from a `pct` that defaulted to
+       * null is what printed `atom · 5小时 null%` for the frame before the first
+       * stats response landed. Here `label` simply does not exist unless the
+       * quota is known, so the bug cannot be reintroduced by a caller.
+       *
+       * @param {object|undefined} quota  the snapshot's quota branch
+       * @param {number} nowMs            clock for the locally advanced countdown
+       */
+      function quotaView(quota, nowMs) {
+        const known = !!quota && quota.available === true && typeof quota.usagePercent === 'number';
+        if (!known) return { known: false };
+        const pct = Math.round(quota.usagePercent);
+        const limited = quota.limited === true;
+        const liveSecs = liveRemaining(quota.resetInSecs, quota.fetchedAt, nowMs);
+        return {
+          known: true,
+          pct,
+          limited,
+          label: 'atom · 5小时 ' + pct + '%',
+          // `quotaColor` answers "is this an alarm?" and returns the PRIMARY
+          // label for the normal case — right for the detail page's big metric,
+          // wrong here. In the dock the normal state must read as an ambient
+          // environment fact beside the session readouts, so the mapping is
+          // done here rather than by weakening the shared helper.
+          color: limited || quota.usagePercent >= 100
+            ? 'var(--dsw-alias-state-error-primary)'
+            : 'var(--dsw-alias-label-tertiary)',
+          facts: quotaFacts(quota, pct, liveSecs),
+          barWidth: barWidth(pct),
+        };
+      }
+
+      /**
        * Compact quota readout: `atom · 5小时 19%` — a click-opens panel.
        *
        * Rendered into `conversation.composer.dock` ("Ambient entries below the
@@ -437,22 +485,7 @@
         const rootRef = useRef(null);
         const panelRef = useRef(null);
 
-        const quota = data && data.quota;
-        const known = !!quota && quota.available === true && typeof quota.usagePercent === 'number';
-        const pct = known ? Math.round(quota.usagePercent) : null;
-        // `quotaColor` answers "is this an alarm?" and returns the PRIMARY label
-        // for the normal case — right for the detail page's big metric, wrong
-        // here. In the dock the normal state must read as an ambient
-        // environment fact next to the session readouts, so the two states are
-        // mapped here rather than by weakening the shared helper.
-        const alarmed = known && (quota.limited === true || quota.usagePercent >= 100);
-        const color = alarmed
-          ? 'var(--dsw-alias-state-error-primary)'
-          : 'var(--dsw-alias-label-tertiary)';
-        const liveSecs = known
-          ? liveRemaining(quota.resetInSecs, quota.fetchedAt, Date.now())
-          : null;
-        const facts = known ? quotaFacts(quota, pct, liveSecs) : [];
+        const view = quotaView(data && data.quota, Date.now());
 
         useEffect(() => {
           if (!open) return undefined;
@@ -470,42 +503,35 @@
           return () => document.removeEventListener('keydown', onKeyDown);
         }, [open]);
 
-        if (!primitives || !reactDom) {
-          // Degraded host: no portal, no anchoring hooks. Keep the old chip so
-          // the number is still readable — just with the browser tooltip.
-          if (!known) return null;
-          return h(
-            'span',
-            {
-              title: quotaFacts(quota, pct, liveSecs).join(' · '),
-              'data-quota-percent': pct,
-              style: CHIP_STYLE(color),
-            },
-            'atom · 5小时 ' + pct + '%'
-          );
-        }
-
+        // The two primitive hooks are part of this component's FIXED tail, not an
+        // optional branch: this component is only ever registered when both seeds
+        // resolved (see `QUOTA_READOUT`), so their presence cannot vary between
+        // renders of one instance. That is what makes the early return below legal.
         const anchored = primitives.useAnchoredPosition({
-          open: open && known,
+          open: open && view.known,
           anchorRef: rootRef,
           panelRef,
           side: 'top',
           gap: 8,
           margin: 12,
         });
-        primitives.useDismissOnOutsidePointer(rootRef, open && known, setOpen, panelRef);
+        primitives.useDismissOnOutsidePointer(rootRef, open && view.known, setOpen, panelRef);
+
+        // Every hook has now run unconditionally. Bailing here keeps the dock
+        // empty instead of printing a percent that has not arrived yet.
+        if (!view.known) return null;
 
         return h(
           'span',
           {
             ref: rootRef,
-            'data-quota-percent': pct,
-            style: CHIP_STYLE(color),
+            'data-quota-percent': view.pct,
+            style: CHIP_STYLE(view.color),
           },
           h(
             primitives.Tooltip,
             {
-              label: facts.join(' · '),
+              label: view.facts.join(' · '),
               side: 'top',
               delayMs: 200,
               // The panel already shows this; two stacked tooltips fight.
@@ -520,14 +546,12 @@
                 'aria-expanded': open,
                 onClick: () => setOpen(!open),
               },
-              // The dock row separates its entries with ` · ` and pairs each
-              // readout with its own glyph, so match that grammar instead of
-              // carrying a product name: this reads as "the AtomCode quota".
-              'atom · 5小时 ' + pct + '%'
+              // Built by quotaView, which cannot produce a label at all unless
+              // the percent is a real number — so `null%` is unconstructable.
+              view.label
             )
           ),
           open &&
-            known &&
             reactDom.createPortal(
               h(
                 'div',
@@ -547,8 +571,8 @@
                   h(
                     'span',
                     { style: S.panelPct },
-                    pctLabel(pct),
-                    quota.limited ? h('span', { style: S.panelLimited }, '已用尽') : null
+                    pctLabel(view.pct),
+                    view.limited ? h('span', { style: S.panelLimited }, '已用尽') : null
                   )
                 ),
                 // Single-hue bar: the daemon's `status` text carries only a
@@ -560,12 +584,12 @@
                   h('div', {
                     style: {
                       height: '100%',
-                      width: barWidth(pct) + '%',
-                      background: color,
+                      width: view.barWidth + '%',
+                      background: view.color,
                     },
                   })
                 ),
-                facts.map((fact, index) =>
+                view.facts.map((fact, index) =>
                   h(
                     'p',
                     {
@@ -580,6 +604,38 @@
             )
         );
       }
+
+      /**
+       * The seed-less host variant: same number, native `title` instead of a
+       * panel. It calls NO primitive hooks, which is the whole reason it exists
+       * as its own component — a single QuotaChip that branched over
+       * `primitives` would have a conditional hook tail (Rules of Hooks). That
+       * is survivable only because `primitives` is a factory-scope constant, and
+       * it turns into "Rendered fewer hooks than expected" the moment the seed
+       * table is loaded lazily, with the crash site far from the cause.
+       */
+      function QuotaChipDegraded() {
+        const { data } = useStats();
+        const view = quotaView(data && data.quota, Date.now());
+        if (!view.known) return null;
+        return h(
+          'span',
+          {
+            title: view.facts.join(' · '),
+            'data-quota-percent': view.pct,
+            style: CHIP_STYLE(view.color),
+          },
+          view.label
+        );
+      }
+
+      /**
+       * Which readout the composer dock gets — decided ONCE, at factory time,
+       * from whether the two seed modules resolved. Stable for the life of the
+       * registration, so whichever component is chosen always runs the same
+       * hook sequence in every render.
+       */
+      const QUOTA_READOUT = primitives && reactDom ? QuotaChip : QuotaChipDegraded;
 
       function StatusSection(props) {
         // Only render on this plugin's detail page.
@@ -843,7 +899,7 @@
                   id: 'atomcode-bridge-quota',
                   order: 1,
                 },
-                QuotaChip
+                QUOTA_READOUT
               );
             } catch (e) {
               return function () {};

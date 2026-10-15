@@ -156,9 +156,72 @@ describe('buildQuotaReport', () => {
     assert.match(r.reason, /no recognisable quota line/);
   });
 
-  it('handles a missing result object', () => {
+it('handles a missing result object', () => {
     const r = buildQuotaReport(undefined, 5);
     assert.equal(r.available, false);
     assert.equal(typeof r.reason, 'string');
+  });
+});
+
+/**
+ * Refusals found by AtomCode reviewing the v0.4 commit (2026-10-14).
+ *
+ * Both cases share one shape: the line parses "successfully" and yields a
+ * number that is NOT the window usage. Before these guards the parser took the
+ * FIRST percentage on the line and reported `found: true`, so `drift` stayed
+ * false and the panel showed a confident wrong number — precisely what red
+ * line 2 ("解析不出来的额度不许编数字") exists to prevent. The fix refuses,
+ * and refusing must LIGHT the drift lamp rather than hide behind a plan line
+ * that happened to parse.
+ */
+describe('parseStatusQuota — lines it must refuse to interpret', () => {
+  const planLine = '  CodingPlan：CodingPlan Lite-体验版  ·  到期 2026-10-19（5d / 共 7d）';
+  const twoPcts = '  用量：折扣 20% 当前时间窗口用量约 77%  ·  重置于 20:32（29m 13s 后）';
+  const reverse = '  Usage: 100% remaining  ·  resets at 09:15 (1h 2m 3s)';
+
+  it('refuses a usage line carrying two percentages', () => {
+    const r = parseStatusQuota([planLine, twoPcts].join('\n'));
+    // Picking either is a guess: 20 is the wrong concept, 77 assumes which of
+    // the two the label points at.
+    assert.equal(r.usagePercent, null, 'must not pick a winner among two percentages');
+    assert.equal(r.parseIssue, 'multiple-percentages');
+    assert.equal(r.limited, false, 'a refused number must never raise the exhausted alarm');
+    // The reset clock comes from its own labelled field, so it survives.
+    assert.equal(r.resetAt, '20:32');
+    assert.equal(r.resetInSecs, 1753);
+  });
+
+  it('refuses reverse semantics ("100% remaining") instead of converting it', () => {
+    const r = parseStatusQuota([planLine, reverse].join('\n'));
+    assert.equal(r.usagePercent, null);
+    assert.equal(r.parseIssue, 'reverse-semantics');
+    // The whole point: a FULL window must not be reported as exhausted.
+    assert.equal(r.limited, false, '100% remaining must not read as 100% spent');
+  });
+
+  it('does NOT refuse a normal single-percentage line (no over-blocking)', () => {
+    // A guard that fires on healthy input blackouts the quota — the same harm
+    // in the other direction. This is why REMAINING_LABEL is narrow and does
+    // not match a bare `余`.
+    const r = parseStatusQuota(REAL_ZH);
+    assert.equal(r.usagePercent, 77);
+    assert.equal(r.parseIssue, null);
+  });
+
+  it('surfaces a refusal as drift, even though the plan line parsed fine', () => {
+    // The blind spot this closes: `found` used to be true on plan-only
+    // success, so the panel reported a healthy state beside a missing number.
+    const r = buildQuotaReport({ ok: true, text: [planLine, twoPcts].join('\n') }, 1);
+    assert.equal(r.available, true, 'the command itself worked');
+    assert.equal(r.usagePercent, null);
+    assert.equal(r.drift, true, 'a refused line IS drift');
+    assert.notEqual(r.reason, '', 'the panel needs text to explain the missing number');
+    assert.match(r.reason, /多个百分数|无法判定/);
+  });
+
+  it('names reverse semantics in the report reason', () => {
+    const r = buildQuotaReport({ ok: true, text: [planLine, reverse].join('\n') }, 1);
+    assert.equal(r.drift, true);
+    assert.match(r.reason, /剩余|相反/);
   });
 });
