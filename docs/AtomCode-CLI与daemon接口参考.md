@@ -147,7 +147,7 @@ plan  reload  remember  resume  review  skills  status  todo  undo  whoami
 | `plan` | ❌ `unknown command: plan` |
 | `model` | ❌ `unknown command: model` |
 | `help` | ❌ `unknown command: help` |
-| `review` | ❌ `unknown command: review`（2026-10 实测：TUI 斜杠表里有 `review`，但 HTTP `/command` 白名单不放它——**不存在"daemon 侧评审"这个面**，评审只有 `atomcode review` CLI 与 daemon `/chat` 两条路） |
+| `review` | ❌ `unknown command: review`（2026-10 实测：TUI 斜杠表里有 `review`，但 HTTP `/command` 白名单不放它——**"把评审当一条命令来发"在 daemon 侧不存在**。⚠️ 但别说成"daemon 侧没有评审能力"：daemon 的 agent 自带 `code_review` **工具**（见 §4 末节，已实测执行），所以评审的两条路是 `atomcode review` CLI 与经 `/chat` 让 agent 用它，而不是 `/command`） |
 
 > **注意**：需求里常提的 `/usage`（TUI 斜杠形式）在 HTTP `/command` 上**不被接受**；额度只在 `status` 里。
 
@@ -255,6 +255,18 @@ data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-f
 → **换模型不需要改 `config.toml`，一个请求参数就够**；`runtime_info` 报的是**真实生效值**（不是回显请求），所以档位名打错会当场露馅。整个回合 2.2s / 20278 token（`cached_tokens` 17472）。
 
 `GET /models` 还带 `effort_applicable` / `reasoning_effort` / `effort_levels`（本机：qwen3.8-27b = `low|medium|xhigh`，glm5.3-flash = `low|high`）。**思考档位有没有 `/chat` 的入口——未实测**；已知 IDE 实时通道有 `/live/reasoning_effort`，本插件没用。
+
+### AtomCode 自带 `code_review` 工具 `[实测 2026-10-14]`（本插件未直接暴露）
+
+会话事件里能看到 agent 的工具清单含 **`code_review`**，模型自己选用的参数形状：
+
+```json
+{ "scope": { "kind": "range", "base": "HEAD~2", "head": "HEAD" }, "depth": "deep+verify" }
+```
+
+**为什么这条对本仓库重要**：这个评审器跑在 **daemon 运行时**里，而 daemon 持有 AtomGit 网关签名（见 §5），所以它**不受 `atomcode_review` CLI 那道签名门限制**。红线 1 末尾"只能走 `atomcode_ask` 做侧边咨询或让 AtomCode 评审"此前只是推断，现在有执行证据：本仓库那两个提交就是让 AtomCode 经 `atomcode_ask` 用它审出来的（7 轮；末轮 `prompt 80322 / cached 73728`；Lite-体验版 5 小时窗口 2% → 13%）。
+
+未实测的部分：`scope.kind` 的其他取值、`depth` 的档位表、以及它是否等价于 `atomcode review` CLI 的评审人格（两者实现不同——CLI 那份会写 `report_finding`，daemon 这份的产出直接进会话文本）。本插件不暴露它：`/chat` 的 SSE 只以 `tool_start{name}` 报出它在跑，没有独立端点可直连调用。
 
 ---
 

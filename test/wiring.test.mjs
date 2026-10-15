@@ -5,6 +5,7 @@
  * (`atomcode_ask`, `atomcode_review`) and nothing on the `llm` service.
  */
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
@@ -762,6 +763,93 @@ describe('lib/index.js — default_provider / review_default_provider (two names
       const r4 = await withAskProfile.execute({ working_dir: repo, task: 'noop' }, {});
       assert.match(r4.error, /several direct providers/, 'ask config must not leak into review selection');
     } finally {
+      if (savedHome !== undefined) process.env.HOME = savedHome;
+      else delete process.env.HOME;
+      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
+      else delete process.env.USERPROFILE;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('review: the selected provider actually lands in the CLI argv', async () => {
+    // The positive form of the precedence claim. The loopback test above proves
+    // WHICH entry selection picked (via the probe's named diagnostic); this one
+    // proves the picked name is what the CLI is handed — via review.js's documented
+    // `setSpawnOverride` seam, so nothing real is ever spawned.
+    //
+    // Why both tests exist: the original version of this suite asserted precedence
+    // through a missing binary, where `first` and `second` produce an identical
+    // ENOENT. That assertion could not fail, which is exactly how a precedence
+    // regression would ship green.
+    const { setSpawnOverride } = await import(fileUrl(REVIEW));
+    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-argv-'));
+    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
+    writeFileSync(
+      join(fakeHome, '.atomcode', 'config.toml'),
+      [
+        'default_provider = "account-gw"',
+        '[providers.first]',
+        'provider = "openai"',
+        'base_url = "https://first.test/v1"',
+        'api_key = "sk-1"',
+        '[providers.second]',
+        'provider = "openai"',
+        'base_url = "https://second.test/v1"',
+        'api_key = "sk-2"',
+      ].join('\n'),
+      'utf8',
+    );
+    const repo = mkdtempSync(join(tmpdir(), 'atomcode-argv-repo-'));
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    /** @type {string[][]} */
+    const spawned = [];
+    const providerOf = (argv) => {
+      const i = argv.indexOf('--provider');
+      return i >= 0 ? argv[i + 1] : undefined;
+    };
+    setSpawnOverride((_bin, args) => {
+      spawned.push(args);
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {};
+      setImmediate(() => {
+        child.stdout.emit('data', '{"findings":[]}');
+        child.emit('exit', 0);
+      });
+      return child;
+    });
+    const mount = async (extra) => {
+      const dir = mkdtempSync(join(tmpdir(), 'atomcode-argv-s-'));
+      stateDirs.push(dir);
+      const { ctx, calls } = fakeCtx();
+      const bridge = await import(fileUrl(BRIDGE));
+      bridge.apply(ctx, { state_path: join(dir, 'sessions.json'), auto_start: false, ...extra });
+      return calls.tools.find((t) => t.name === 'atomcode_review');
+    };
+    try {
+      const pinned = await mount({ review_default_provider: 'second' });
+      const r1 = await pinned.execute({ working_dir: repo, task: 'noop' }, {});
+      assert.equal(r1.ok, true, `the fake CLI must have "run": ${r1.error}`);
+      assert.equal(providerOf(spawned[0]), 'second', 'the configured default reaches --provider');
+
+      const argued = await mount({ review_default_provider: 'second' });
+      const r2 = await argued.execute({ working_dir: repo, task: 'noop', provider: 'first' }, {});
+      assert.equal(r2.ok, true, r2.error);
+      assert.equal(providerOf(spawned[1]), 'first', 'the per-call argument must outrank the configured default');
+
+      const before = spawned.length;
+      const ambiguous = await mount({});
+      const r3 = await ambiguous.execute({ working_dir: repo, task: 'noop' }, {});
+      assert.equal(r3.ok, false);
+      assert.match(r3.error, /several direct providers/);
+      assert.equal(spawned.length, before, 'a refused selection must never reach the spawner');
+    } finally {
+      setSpawnOverride(null);
       if (savedHome !== undefined) process.env.HOME = savedHome;
       else delete process.env.HOME;
       if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
