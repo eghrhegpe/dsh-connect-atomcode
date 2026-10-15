@@ -101,47 +101,20 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 **元纪律：注释也是契约，而注释没有测试。** 契约注释住在 `src/`（产物 `client.js` 会被打包器抹掉函数体注释，见「工作目录与装载方式」）。`wiring.test.mjs` 有一条注释一致性测试：`default_provider` / `review_default_provider` 各只许出现一次 `Precedence:`且必须含面板；`review_working_dir` 必须写明"拒绝"而非"回落"。**改了字段行为就顺手改注释，否则那条测试会红。**
 数字同理：**别把会变的计数写进文档**。
 
-详情页那张卡曾经有 **6 行恒定值**（`来源`、`路径`、`审批模式`、`默认工作目录`、`ask 轮数上限`、
-`评审可用性`），用户的原话是「感觉插件又丑又多字呢」。教训不是"排版要好看"，是三条：
+详情页那张卡曾经有 **6 行恒定值**，用户原话是「感觉插件又丑又多字呢」。三条教训已实现在 `src/client/rows.ts`：
 
-1. **恒定值不是信息。** `自动探测`、`bypass（插件默认）`、`（会话工作目录）`、`25（有界）` 报告的都是
-   **用户没拨过的旋钮**。它们要么删、要么折叠，要么（如果它承载风险，如 `bypass`）标出"这是缺省"。
-   判据：**这一行在用户不改任何东西时会变吗？** 不变就不该占正文。
-2. **同一件事不说两遍。** `来源: 自动探测` + `路径: 自动探测（PATH）` 曾经是两行一句话；
-   现在 `来源` 并进路径行，不再单独出现。
-3. **每个空态/异常态要说自己的因。** 两个下拉曾共用一句
-   「本机没有可选项（ask 取 daemon /models，review 取 config.toml 的直连条目）」——于是 ask 的空态
-   用 **review 的来源**解释自己。现在 ask 说 `daemon 未列出档位`、review 说 `config.toml 里没有直连条目`。
-   长溯源下沉到 hover `title`：它是**控件的说明**，不是系统的状态。
+1. **恒定值不是信息** → `turnBoundaryRows()` 只渲染有信息的行
+2. **同一件事不说两遍** → `来源` 已并进路径行
+3. **空态各说各的因** → `providerSelectModel()` 的 `reason` 按 slot 分（ask 说 `daemon 未列出档位`，review 说 `config.toml 里没有直连条目`）
 
-配套两条硬纪律：
+配套两条硬纪律也已实现：
 
-- **"你改过没有"必须问 host，且问的是"跟出厂缺省一不一样"，不是"配置里有没有这个键"。** patch-only 的旋钮
-  （`approval_mode` / `working_dir` / `ask_max_rounds`）在面板上没有输入框，所以快照带 `config.authored`
-  （host 判定**该值是否偏离**插件自带 `cordis.patch.yml` 里的缺省）与 `config.defaults`（那份缺省）。
-  两条都是血：①渲染侧 `askMaxRounds === 25` 是**第二份 25**，`lib/index.js` 一改就撒谎；
-  ②**"键存在"当"改过"也是错的**——随插件发布的 patch **每个键都显式写**（它就是字段注释真源），
-  于是 stock 安装上 `authored` 全为 true，每行都挂「已改」。实机就是这样：用户没动过任何东西，
-  `bypass` 与 `25` 却显示「已改」。**判据是"值 != 出厂缺省"**。
-  另：拿不到 `authored`（旧宿主）时渲染侧不许猜——**只有真能比出差异才贴标签**，
-  否则留空（`unknown`），与"解析不出来的额度不许编数字"同源。
-- **同一字段两个端点的形状可能不同，别用一个映射函数盖过去。** 实测（atomcode 5.2.3）：
-  `GET /models` 给的是**对象数组** `{provider, model, isDefault, effortLevels}`，
-  而 review 的直连条目是**字符串数组**。两者都进 `providerSelectModel()`，
-  曾经一起走 `map(name)`（只认字符串）→ **ask 下拉整个是空的**，而 review 正常。
-  这条 bug 被上面第 3 点那句共用文案**掩盖**成了"像是文案问题"，隔了一轮才被实机快照抓出来。
-  取下拉值只取 `provider`（档位名）；`model`（裸 id）两条路都不认（红线 8）。
+- **"你改过没有"必须问 host** → `turnBoundaryRows()` 用 `cfg.authored` 判定，不用渲染侧硬编码比较
+- **两个端点形状不同** → `providerSelectModel()` 的 `optionValue` 按类型展平，只取 `provider`（档位名）
+
 - **面板要占"描述与 rows 之间"那个座位。** 首选 `plugins.bundle.config`（keyed，渲染在描述与 rows 之间），回落 `plugins.detail.section`（list seat，渲染在 rows 之后）。座位选择见红线 7。该 seat 还带 `view: 'summary' | 'page'`：`summary` 是插件卡片的一行摘要，**只许一行**。
-- **`manifest.description` 必须是字符串，多语言靠 `locale/` 目录——不是 package.json 里塞对象。** 面板的
-  title/description 由 `dsh-app-boot` 的 `readPluginMeta()` 解析，真实机制是：
-  ①`<pkg>/locale/en.json` 是**扫描锚点**（没有它一个字典都不加载）；
-  ②同目录每个 `*.json` 按**文件名**当语言 id（本项目是 `en` / `zh`，与宿主 `LOCALE_IDS = ["zh","en"]` 一致）；
-  ③文件形状是 `{ "meta": { "title", "description" } }`；
-  ④`manifest.description` 只当**英文兜底**，且经 `fallbackText()`——**只认非空字符串，对象一律返回 undefined**。
-  所以把 `description` 写成 `{ en, zh }` 对象会**静默清空描述**，页面只剩包名（踩过，一轮后才发现）。
-  另外 `files[]` 必须含 `locale`，否则安装副本里没有字典。`test/client-id.test.mjs` 钉住全部四条。
-  同一个字符串不要两头写：卡片的 `summary` 视图已由宿主渲染描述，**别再硬编码一句简介**（那是第二份真源，
-  而且正是"英文墙"的来源）；`summary` 现在只报描述说不了的东西——daemon 活没活。
+- **`manifest.description` 必须是字符串，多语言靠 `locale/` 目录。** 四条机制（锚点扫描、文件名当语言 id、`{ meta: { title, description } }` 形状、`fallbackText()` 只认非空字符串）由 `test/client-id.test.mjs` 钉住。同一个字符串不要两头写：`summary` 视图只报描述说不了的东西——daemon 活没活。
+
 - **布局：不要把整个面板钉死宽度。** `wrap.maxWidth` 曾是 `760px`，于是宽窗口下留大片空白、
   且两列卡片永远用不上多余空间；`grid` 还写成硬编码 `1fr 1fr`，**任何宽度都是两列**。
   现在是 `maxWidth: 1180px` + `repeat(auto-fit, minmax(320px, 1fr))`：窄屏 1 列、宽屏 3 列。
