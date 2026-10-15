@@ -1,0 +1,24 @@
+name: ci
+
+# The repo's whole discipline is local self-enforcement (AGENTS.md): the
+# byte-identical artifact gate only runs when someone remembers `npm test`.
+# This workflow makes the gate — and the type check — run on every push and
+# PR, so a forgotten `npm run build` fails here instead of shipping a bundle
+# whose lib/ and client.js no longer match src/ to GitHub direct installs.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
