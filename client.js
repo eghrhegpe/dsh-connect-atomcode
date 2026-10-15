@@ -560,6 +560,12 @@
 			const STATS_PATH = "/api/atomcode-bridge/stats";
 			const PROVIDER_PATH = "/api/atomcode-bridge/provider";
 			const POLL_MS = 5e3;
+			let statsCache = {
+				data: null,
+				error: null,
+				fetchedAt: 0,
+				promise: null
+			};
 			const TESTABLE = {
 				fmtDuration,
 				fmtCountdown,
@@ -666,6 +672,19 @@
 				const generation = useRef(0);
 				const inFlight = useRef(null);
 				const load = useCallback(async () => {
+					if (statsCache.fetchedAt > 0 && Date.now() - statsCache.fetchedAt < POLL_MS) {
+						setData(statsCache.data);
+						setError(statsCache.error);
+						setUpdatedAt(statsCache.fetchedAt);
+						return;
+					}
+					if (statsCache.promise) {
+						await statsCache.promise;
+						setData(statsCache.data);
+						setError(statsCache.error);
+						setUpdatedAt(statsCache.fetchedAt);
+						return;
+					}
 					generation.current += 1;
 					const mine = generation.current;
 					const isCurrent = () => generation.current === mine;
@@ -677,29 +696,37 @@
 						timedOut = true;
 						if (controller && controller.abort) controller.abort();
 					}, deadlineMs);
-					try {
-						const response = await fetch(STATS_PATH, {
-							headers: { accept: "application/json" },
-							cache: "no-store",
-							...controller ? { signal: controller.signal } : {}
-						});
-						if (!isCurrent()) return;
-						if (!response.ok) {
-							setError("HTTP " + response.status);
-							setData(null);
-							return;
+					statsCache.promise = (async () => {
+						try {
+							const response = await fetch(STATS_PATH, {
+								headers: { accept: "application/json" },
+								cache: "no-store",
+								...controller ? { signal: controller.signal } : {}
+							});
+							if (!isCurrent()) return;
+							if (!response.ok) {
+								statsCache.error = "HTTP " + response.status;
+								statsCache.data = null;
+								return;
+							}
+							const body = await response.json();
+							if (!isCurrent()) return;
+							statsCache.data = body && body.ok ? body : null;
+							statsCache.error = null;
+							statsCache.fetchedAt = Date.now();
+						} catch (reason) {
+							if (!isCurrent()) return;
+							statsCache.error = timedOut ? `面板数据 ${deadlineMs / 1e3}s 未返回（daemon 可能卡住）` : reason && reason.message ? reason.message : String(reason);
+							statsCache.data = null;
+						} finally {
+							clearTimeout(timer);
+							statsCache.promise = null;
 						}
-						const body = await response.json();
-						if (!isCurrent()) return;
-						setData(body && body.ok ? body : null);
-						setError(null);
-						setUpdatedAt(Date.now());
-					} catch (reason) {
-						if (!isCurrent()) return;
-						setError(timedOut ? `面板数据 ${deadlineMs / 1e3}s 未返回（daemon 可能卡住）` : reason && reason.message ? reason.message : String(reason));
-					} finally {
-						clearTimeout(timer);
-					}
+					})();
+					await statsCache.promise;
+					setData(statsCache.data);
+					setError(statsCache.error);
+					setUpdatedAt(statsCache.fetchedAt);
 				}, []);
 				useEffect(() => {
 					load();

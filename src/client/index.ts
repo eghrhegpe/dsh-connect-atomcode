@@ -86,6 +86,22 @@ const REGISTRATION = {
     const PROVIDER_PATH = '/api/atomcode-bridge/provider';
     const POLL_MS = 5000;
 
+    // ── Module-level shared stats cache ────────────────────────────────────
+    //
+    // Without this, every open session mounts its own useStats() and polls
+    // /api/atomcode-bridge/stats independently — 20 sessions = 4 req/s to the
+    // DSH host, each carrying a sessions.count() disk read. The cache lets
+    // all component instances share one fetch: the first caller initiates,
+    // others await the same promise, and a fresh result is reused within
+    // POLL_MS.
+    interface StatsCache {
+      data: any;
+      error: any;
+      fetchedAt: number;
+      promise: Promise<void> | null;
+    }
+    let statsCache: StatsCache = { data: null, error: null, fetchedAt: 0, promise: null };
+
     const TESTABLE = {
       fmtDuration,
       fmtCountdown,
@@ -205,6 +221,21 @@ const REGISTRATION = {
       const inFlight = useRef(null);
 
       const load = useCallback(async () => {
+        // Reuse a fresh cache entry: another instance fetched within POLL_MS.
+        if (statsCache.fetchedAt > 0 && Date.now() - statsCache.fetchedAt < POLL_MS) {
+          setData(statsCache.data);
+          setError(statsCache.error);
+          setUpdatedAt(statsCache.fetchedAt);
+          return;
+        }
+        // Share an in-flight fetch: another instance initiated the request.
+        if (statsCache.promise) {
+          await statsCache.promise;
+          setData(statsCache.data);
+          setError(statsCache.error);
+          setUpdatedAt(statsCache.fetchedAt);
+          return;
+        }
         generation.current += 1;
         const mine = generation.current;
         const isCurrent = () => generation.current === mine;
@@ -228,37 +259,45 @@ const REGISTRATION = {
           timedOut = true;
           if (controller && controller.abort) controller.abort();
         }, deadlineMs);
-        try {
-          const response = await fetch(STATS_PATH, {
-            headers: { accept: 'application/json' },
-            cache: 'no-store',
-            ...(controller ? { signal: controller.signal } : {}),
-          });
-          if (!isCurrent()) return;
-          if (!response.ok) {
-            setError('HTTP ' + response.status);
-            setData(null);
-            return;
+        // Publish the in-flight promise so other instances can share it.
+        statsCache.promise = (async () => {
+          try {
+            const response = await fetch(STATS_PATH, {
+              headers: { accept: 'application/json' },
+              cache: 'no-store',
+              ...(controller ? { signal: controller.signal } : {}),
+            });
+            if (!isCurrent()) return;
+            if (!response.ok) {
+              statsCache.error = 'HTTP ' + response.status;
+              statsCache.data = null;
+              return;
+            }
+            const body = await response.json();
+            if (!isCurrent()) return;
+            statsCache.data = body && body.ok ? body : null;
+            statsCache.error = null;
+            statsCache.fetchedAt = Date.now();
+          } catch (reason: any) {
+            if (!isCurrent()) return;
+            // An abort we caused is a TIMEOUT, not a user cancellation: say so, or a
+            // wedged daemon reports the AbortError text and reads like a bug in here.
+            statsCache.error =
+              timedOut
+                ? `面板数据 ${deadlineMs / 1000}s 未返回（daemon 可能卡住）`
+                : reason && reason.message
+                  ? reason.message
+                  : String(reason);
+            statsCache.data = null;
+          } finally {
+            clearTimeout(timer);
+            statsCache.promise = null;
           }
-          const body = await response.json();
-          if (!isCurrent()) return;
-          setData(body && body.ok ? body : null);
-          setError(null);
-          setUpdatedAt(Date.now());
-        } catch (reason: any) {
-          if (!isCurrent()) return;
-          // An abort we caused is a TIMEOUT, not a user cancellation: say so, or a
-          // wedged daemon reports the AbortError text and reads like a bug in here.
-          setError(
-            timedOut
-              ? `面板数据 ${deadlineMs / 1000}s 未返回（daemon 可能卡住）`
-              : reason && reason.message
-                ? reason.message
-                : String(reason)
-          );
-        } finally {
-          clearTimeout(timer);
-        }
+        })();
+        await statsCache.promise;
+        setData(statsCache.data);
+        setError(statsCache.error);
+        setUpdatedAt(statsCache.fetchedAt);
       }, []);
 
       useEffect(() => {
