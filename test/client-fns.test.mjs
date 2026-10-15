@@ -656,19 +656,38 @@ describe('turnBoundaryRows — patch-only knobs must not masquerade as live sett
     assert.match(rows[2].text, /25（插件默认）/, rows[2].text);
   });
 
-  it('labels a knob the patch AUTHORED as changed, even when the value looks default', () => {
-    // The trap this test exists for: `approval_mode: bypass` written explicitly is
-    // STILL authored. Only the host knows that; a renderer comparing the value to the
-    // default cannot tell the two apart and would call it "插件默认" — a false claim
-    // about a setting the user deliberately wrote down.
+  it('labels a knob the host reports as DEPARTED as changed', () => {
+    // `authored` means "this value differs from the plugin's shipped default". The
+    // host decides it, because a renderer sees only the resolved value: `bypass`
+    // written deliberately and `bypass` as our own fallback are the same string.
+    // NOTE the counterpart case, which used to be asserted the other way and was
+    // WRONG: the shipped cordis.patch.yml writes every key, so key-presence is true
+    // on a stock install — "did the config contain it" would tag every row 「已改」.
     const rows = turnBoundaryRows({
-      approvalMode: 'bypass',
-      askMaxRounds: 25,
+      approvalMode: 'ask',
+      askMaxRounds: 40,
       authored: { approvalMode: true, workingDir: false, askMaxRounds: true },
       defaults: { approvalMode: 'bypass', askMaxRounds: 25 },
     });
-    assert.match(rows[0].text, /bypass（已改）/, rows[0].text);
-    assert.match(rows[2].text, /25（已改）/, rows[2].text);
+    assert.match(rows[0].text, /ask（已改）/, rows[0].text);
+    assert.match(rows[2].text, /40（已改）/, rows[2].text);
+  });
+
+  it('does NOT cry wolf when the values merely restate the defaults', () => {
+    // The live host was in exactly this state: a stock patch with approval_mode:
+    // bypass / ask_max_rounds: 25 and nothing changed by the user. Tagging those
+    // 「已改」 is the noise this whole card exists to remove.
+    const rows = turnBoundaryRows({
+      approvalMode: 'bypass',
+      askMaxRounds: 25,
+      authored: { approvalMode: false, workingDir: false, askMaxRounds: false },
+      defaults: { approvalMode: 'bypass', askMaxRounds: 25 },
+    });
+    for (const row of rows) {
+      assert.ok(!/已改/.test(row.text), `nothing was changed, so nothing may claim it: ${row.text}`);
+    }
+    assert.match(rows[0].text, /（插件默认）/);
+    assert.match(rows[2].text, /（插件默认）/);
   });
 
   it('follows the HOST default rather than a number of its own', () => {

@@ -797,12 +797,16 @@ describe('stats route — auto-start on observation', () => {
     }
   });
 
-  it('reports which patch-only knobs were AUTHORED, not just their values', async () => {
+  it('reports which patch-only knobs DEPART from the shipped default', async () => {
     // The panel's "（已改）/（插件默认）" tag needs evidence it cannot obtain itself: a
-    // renderer only sees the resolved value, and `approval_mode: bypass` written
-    // explicitly is indistinguishable from our own fallback. So the route must
-    // report authorship, and its own defaults, rather than let the client guess
-    // (which is how a second copy of 25 appears and starts lying on the first change).
+    // renderer only sees the resolved value, so it cannot tell a deliberate
+    // `approval_mode: bypass` from our own fallback. So the route reports it.
+    //
+    // What it must NOT mean is "the config object contained the key": the shipped
+    // cordis.patch.yml writes EVERY key (it is the field documentation of record),
+    // so key-presence is true on every install — measured live, a stock patch claimed
+    // authored=true for approval_mode / ask_max_rounds that nobody had touched, and
+    // the tag fired on every row. The useful question is departure from the default.
     const dir = mkdtempSync(join(tmpdir(), 'atomcode-authored-'));
     const dir2 = mkdtempSync(join(tmpdir(), 'atomcode-authored2-'));
     try {
@@ -811,25 +815,42 @@ describe('stats route — auto-start on observation', () => {
       assert.deepEqual(
         a.config.authored,
         { approvalMode: false, workingDir: false, askMaxRounds: false },
-        'a mount that authored nothing must say so'
+        'a mount using the shipped values must report NOTHING as changed'
       );
       assert.equal(a.config.defaults.approvalMode, 'bypass');
       assert.equal(a.config.defaults.askMaxRounds, 25);
       assert.equal(a.config.askMaxRounds, 25, 'the resolved value still reports the fallback it used');
 
-      // Authoring a value EQUAL to the default must still count as authored.
-      const explicit = mountRoute({
+      // Writing the SAME value the default has explicitly is still not a change —
+      // that is the whole point, and it is the case the live host was actually in.
+      const same = mountRoute({
         statePath: join(dir2, 'sessions.json'),
         port: CLOSED_PORT,
-        extra: { approval_mode: 'bypass', ask_max_rounds: 25, working_dir: 'D:\\repo' },
+        extra: { approval_mode: 'bypass', ask_max_rounds: 25 },
       });
-      const b = (await callRoute(explicit, { headers: { host: '127.0.0.1:3080' } })).body;
+      const b = (await callRoute(same, { headers: { host: '127.0.0.1:3080' } })).body;
       assert.deepEqual(
         b.config.authored,
-        { approvalMode: true, workingDir: true, askMaxRounds: true },
-        'writing the same value the default has is still the user deciding it'
+        { approvalMode: false, workingDir: false, askMaxRounds: false },
+        'restating the default is not departing from it'
       );
-      assert.equal(b.config.defaultWorkingDir, 'D:\\repo');
+
+      // A real departure IS reported.
+      const dir3 = mkdtempSync(join(tmpdir(), 'atomcode-authored3-'));
+      try {
+        const changed = mountRoute({
+          statePath: join(dir3, 'sessions.json'),
+          port: CLOSED_PORT,
+          extra: { approval_mode: 'ask', ask_max_rounds: 40, working_dir: 'D:\\repo' },
+        });
+        const c = (await callRoute(changed, { headers: { host: '127.0.0.1:3080' } })).body;
+        assert.deepEqual(c.config.authored, { approvalMode: true, workingDir: true, askMaxRounds: true });
+        assert.equal(c.config.approvalMode, 'ask');
+        assert.equal(c.config.askMaxRounds, 40);
+        assert.equal(c.config.defaultWorkingDir, 'D:\\repo');
+      } finally {
+        rmSync(dir3, { recursive: true, force: true });
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(dir2, { recursive: true, force: true });

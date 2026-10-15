@@ -714,15 +714,16 @@
        * The "回合边界" card's rows — a pure function so the honesty rule below is
        * testable without a browser.
        *
-       * The rule: a patch-only knob is labelled by WHERE ITS VALUE CAME FROM, not by
-       * whether it happens to look default-ish. `cfg.authored` is the host's record of
-       * what the patch actually supplied; comparing `askMaxRounds === 25` against a
-       * number hardcoded here would start lying the moment that default moved (and it
-       * would be a second copy of a value `lib/index.js` already owns).
+       * The rule: a patch-only knob is labelled by WHAT THE HOST SAYS ABOUT IT, not by
+       * whether it happens to look default-ish. `cfg.authored` means "this value
+       * DEPARTS from the plugin's shipped default" — the host decides that, because a
+       * renderer only sees the resolved value and could not tell a deliberate
+       * `approval_mode: bypass` from our own fallback. Comparing `askMaxRounds === 25`
+       * here would also be a SECOND copy of a number `lib/index.js` owns.
        *
-       * Rows are KEPT (not hidden) when unset, because this is the card that carries
-       * the `bypass` safety posture — silently dropping it when unset would remove the
-       * one place a user can see that AtomCode's own tools run unattended.
+       * Rows are KEPT (not hidden) when at their defaults, because this is the card
+       * that carries the `bypass` safety posture — silently dropping it would remove
+       * the one place a user can see that AtomCode's own tools run unattended.
        *
        * @param {object|undefined} cfg the snapshot's config branch (may predate
        *   `authored` entirely — an older host, or the desktop install copy)
@@ -736,7 +737,7 @@
         const mode = typeof src.approvalMode === 'string' ? src.approvalMode : '';
         const dir = typeof src.defaultWorkingDir === 'string' ? src.defaultWorkingDir : '';
         const rounds = Number.isInteger(src.askMaxRounds) ? src.askMaxRounds : null;
-        // Authorship verdict: 'authored' | 'default' | 'unknown'.
+        // Verdict: 'changed' | 'default' | 'unknown'.
         //
         // 'unknown' is NOT decoration — it is the only honest answer when the host
         // reports no `authored` branch AND sent no default to compare against. An
@@ -746,11 +747,11 @@
         // assert what we do not know, the same class of lie as printing a guessed
         // quota number (红线 2). So when we cannot tell, we do not tag at all.
         const verdict = (key, value, fallback) => {
-          if (authored && key in authored) return authored[key] === true ? 'authored' : 'default';
+          if (authored && key in authored) return authored[key] === true ? 'changed' : 'default';
           if (fallback === null || fallback === undefined || fallback === '') return 'unknown';
-          return value === fallback ? 'default' : 'authored';
+          return value === fallback ? 'default' : 'changed';
         };
-        const tag = (v) => (v === 'authored' ? '（已改）' : v === 'default' ? '（插件默认）' : '');
+        const tag = (v) => (v === 'changed' ? '（已改）' : v === 'default' ? '（插件默认）' : '');
         return [
           {
             label: '审批模式',

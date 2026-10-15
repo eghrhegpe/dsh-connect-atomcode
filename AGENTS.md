@@ -89,11 +89,15 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 
 配套两条硬纪律：
 
-- **"你改过没有"必须问 host，不许在渲染侧比缺省值。** patch-only 的旋钮（`approval_mode` /
-  `working_dir` / `ask_max_rounds`）在面板上没有输入框，所以快照要带 `config.authored`
-  （host 记录 patch 到底供了哪些字段）和 `config.defaults`（host 的缺省）。
-  渲染侧 `askMaxRounds === 25` 这种比法是**第二份 25**：`lib/index.js` 一改，它就当场撒谎。
-  而且"显式写了 `bypass`"与"我们兜底的 `bypass`"在值上无法区分——只有 host 知道。
+- **"你改过没有"必须问 host，且问的是"跟出厂缺省一不一样"，不是"配置里有没有这个键"。** patch-only 的旋钮
+  （`approval_mode` / `working_dir` / `ask_max_rounds`）在面板上没有输入框，所以快照带 `config.authored`
+  （host 判定**该值是否偏离**插件自带 `cordis.patch.yml` 里的缺省）与 `config.defaults`（那份缺省）。
+  两条都是血：①渲染侧 `askMaxRounds === 25` 是**第二份 25**，`lib/index.js` 一改就撒谎；
+  ②**"键存在"当"改过"也是错的**——随插件发布的 patch **每个键都显式写**（它就是字段注释真源），
+  于是 stock 安装上 `authored` 全为 true，每行都挂「已改」。实机就是这样：用户没动过任何东西，
+  `bypass` 与 `25` 却显示「已改」。**判据是"值 != 出厂缺省"**。
+  另：拿不到 `authored`（旧宿主）时渲染侧不许猜——**只有真能比出差异才贴标签**，
+  否则留空（`unknown`），与"解析不出来的额度不许编数字"同源。
 - **同一字段两个端点的形状可能不同，别用一个映射函数盖过去。** 实测（atomcode 5.2.3）：
   `GET /models` 给的是**对象数组** `{provider, model, isDefault, effortLevels}`，
   而 review 的直连条目是**字符串数组**。两者都进 `providerSelectModel()`，
