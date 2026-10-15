@@ -801,7 +801,15 @@ const REGISTRATION = {
                 { style: S.metrics },
                 h(Metric, { num: (data.sessions && data.sessions.tracked) || 0, label: '已跟踪会话' })
               ),
-              h(Row, { label: '运行时长' }, fmtDuration(data.uptimeMs))
+              h(Row, { label: '运行时长' }, fmtDuration(data.uptimeMs)),
+              // Not a constant row: it renders only while the store reports a
+              // degradation, and it names the cause. Without it the panel kept
+              // showing a tracked count that had quietly stopped growing, which
+              // reads as "nothing to see here" — the exact silent failure 红线 3
+              // is about.
+              data.sessions && data.sessions.error
+                ? h('p', { style: S.error }, '会话续接已降级（回复不受影响）：' + data.sessions.error)
+                : null
             ),
             // 工具使用
             h(

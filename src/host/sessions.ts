@@ -36,8 +36,26 @@
  *
  * Quarantine + temp churn: a corrupt file is renamed to `<path>.corrupt-<ts>`
  * (never silently erased) and orphan temp files survive a SIGKILL between write
- * and rename, so `sweepStale()` trims both — newest few quarantines kept, temp
+ * and rename; `state-file.ts` sweeps both — newest few quarantines kept, temp
  * files older than a minute removed.
+ *
+ * ## Failure semantics: this store NEVER throws
+ *
+ * Session glue is an OPTIMISATION — losing a key costs one fresh side
+ * conversation on the next `continue`. So a state file that cannot be read or
+ * written degrades to "no session recorded"; it must never take a turn down.
+ *
+ * The write side used to break that promise: `set()` called the raw write, so a
+ * throw (EISDIR when `state_path` points at a directory, EACCES, a full disk)
+ * propagated out of `execute()` AFTER the turn had already succeeded — a
+ * complete answer handed back to the model as a tool error, caused by the
+ * bookkeeping rather than the work. The read side degraded; both do now.
+ *
+ * Degrading is not hiding (红线 3). Every degradation is NAMED through the
+ * `onError` observer, deduplicated so that re-reading a broken path once per
+ * call (the panel polls `count()`) reports once, not once per poll. An empty
+ * string means "recovered", so one channel carries both directions and the
+ * caller needs one assignment rather than two branches.
  *
  * @module dsh-atomcode-bridge/sessions
  */
@@ -66,9 +84,30 @@ export function defaultStatePath(): string {
  * @param {string} [keyPrefix] - Optional prefix for every key (e.g. "web" or "desktop").
  *   `get()`/`set()`/`drop()` all take the logical key; the prefix is applied on disk.
  *   Pass an empty string to disable prefixing (default).
+ * @param {{onError?: (error: string) => void}} [options] - `onError` observes every
+ *   degradation (see the module note on failure semantics). It receives the new
+ *   state — a message when degraded, `''` when recovered — and is called only
+ *   when that message actually changes. A throwing observer is swallowed: the
+ *   reporter must not be able to break the store it reports on.
  */
-export function createSessionStore(path = defaultStatePath(), keyPrefix = '') {
+export function createSessionStore(
+  path = defaultStatePath(),
+  keyPrefix = '',
+  options: { onError?: (error: string) => void } = {},
+) {
   const prefix = typeof keyPrefix === 'string' && keyPrefix.trim() !== '' ? keyPrefix.trim() + '::' : '';
+
+  /** Last reported degradation, '' when healthy. Doubles as the dedupe key. */
+  let lastError = '';
+  function reportState(error: string) {
+    if (error === lastError) return;
+    lastError = error;
+    try {
+      options.onError?.(error);
+    } catch {
+      /* an observer must never break the store it observes */
+    }
+  }
 
   // Quarantine/temp reaping now lives in state-file.ts, shared with
   // provider.json — it used to be a verbatim copy of the same loop.
@@ -87,21 +126,46 @@ export function createSessionStore(path = defaultStatePath(), keyPrefix = '') {
       // Distinguish "no file yet" from "file is corrupt": the latter is worth
       // preserving, because the next write would otherwise erase session ids
       // that a running conversation still references.
-      //
-      // KNOWN ASYMMETRY, left alone on purpose: this branch also fires for
-      // EISDIR (the path is a directory), where quarantining means renaming a
-      // directory. provider.json special-cases EISDIR into a named error
-      // instead. Aligning them needs a decision about the WRITE path too
-      // (`writeJsonFile` throws when the destination is a directory, and "fail
-      // the turn" vs "degrade to no session" is a behaviour change, not a
-      // refactor) — so it is not smuggled into this one.
-      if (error && error.code !== 'ENOENT') quarantineFile(path);
+      if (error && error.code === 'ENOENT') return {};
+      // EISDIR is a CONFIGURATION mistake (`state_path` points at a directory),
+      // not a corrupt file, and quarantining here would rename the directory.
+      // Name it and touch nothing — the branch provider.json already had.
+      if (error && error.code === 'EISDIR') {
+        reportState('state path is a directory, not a file');
+        return {};
+      }
+      reportState(
+        quarantineFile(path)
+          ? 'unreadable sessions file was preserved aside'
+          : 'sessions file is unreadable and could not be preserved aside',
+      );
       return {};
     }
   }
 
-  function writeMap(map: SessionMap) {
-    writeJsonFile(path, map);
+  /**
+   * @returns {boolean} whether the map reached the disk. A failed write is
+   *   reported and swallowed: the caller keeps whatever it was doing.
+   */
+  function writeMap(map: SessionMap): boolean {
+    try {
+      writeJsonFile(path, map);
+      reportState('');
+      return true;
+    } catch (error: any) {
+      // Dedupe is by ROOT CAUSE, not by what happened to fail. A directory at
+      // `state_path` fails the READ as EISDIR and the WRITE as EISDIR too; if
+      // each side reported its own wording, the two messages would alternate
+      // and every poll would look like a fresh degradation — a warning log that
+      // never stops is how a real one gets ignored. Same cause, same sentence.
+      const code = error && error.code;
+      reportState(
+        code === 'EISDIR' || code === 'ENOTDIR'
+          ? 'state path is a directory, not a file'
+          : `could not write the sessions file: ${String(error && error.message ? error.message : error)}`,
+      );
+      return false;
+    }
   }
 
   function internalKey(outerKey: string): string {
@@ -114,20 +178,29 @@ export function createSessionStore(path = defaultStatePath(), keyPrefix = '') {
       const entry = readMap()[internalKey(key)];
       return entry && typeof entry.sessionId === 'string' ? entry.sessionId : undefined;
     },
-    /** Record a session for one working_dir key. */
-    set(key: string, sessionId: string): void {
-      if (typeof sessionId !== 'string' || sessionId === '') return;
+    /**
+     * Record a session for one working_dir key.
+     * @returns {boolean} false when nothing was recorded (an empty id) or the
+     *   write degraded. Callers do not branch on it; it exists so a test — and
+     *   anyone debugging a state file — can tell "wrote it" from "could not".
+     */
+    set(key: string, sessionId: string): boolean {
+      if (typeof sessionId !== 'string' || sessionId === '') return false;
       const map = readMap();
       map[internalKey(key)] = { sessionId, updatedAt: Date.now() };
-      writeMap(map);
+      return writeMap(map);
     },
-    /** Drop one working_dir key. */
-    drop(key: string): void {
+    /**
+     * Drop one working_dir key.
+     * @returns {boolean} true when the key is gone afterwards — including the
+     *   case where it was never there, since that is already the goal state.
+     */
+    drop(key: string): boolean {
       const map = readMap();
       const internal = internalKey(key);
-      if (!(internal in map)) return;
+      if (!(internal in map)) return true;
       delete map[internal];
-      writeMap(map);
+      return writeMap(map);
     },
     /**
      * @returns {number} the number of tracked side-conversation keys. With a

@@ -1012,7 +1012,7 @@
 					}, h("span", { title: row.title }, row.text)))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "侧边会话"), h("div", { style: S.metrics }, h(Metric, {
 						num: data.sessions && data.sessions.tracked || 0,
 						label: "已跟踪会话"
-					})), h(Row, { label: "运行时长" }, fmtDuration(data.uptimeMs))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "工具调用统计"), h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
+					})), h(Row, { label: "运行时长" }, fmtDuration(data.uptimeMs)), data.sessions && data.sessions.error ? h("p", { style: S.error }, "会话续接已降级（回复不受影响）：" + data.sessions.error) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "工具调用统计"), h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
 						num: ask.calls,
 						label: "调用"
 					}), h(CallStat, {

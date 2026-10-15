@@ -1277,3 +1277,81 @@ describe("provider route — the panel's own model choice", () => {
     }
   });
 });
+
+/**
+ * The session store's degradation channel.
+ *
+ * Session glue is an optimisation — a state file that cannot be read or written
+ * costs one fresh side conversation, and must never cost a turn. This suite
+ * pins the two ways that promise was broken:
+ *
+ *  - a `state_path` pointing at a DIRECTORY made the raw write throw EISDIR,
+ *    and a throw from `set()` propagated out of `execute()` AFTER the turn had
+ *    already succeeded, handing a complete answer back as a tool error;
+ *  - degrading silently is not an option either — the panel kept showing a
+ *    tracked count that had simply stopped growing (红线 3).
+ */
+describe('stats route — a degraded session store is named, not hidden', () => {
+  const HEADERS = { host: '127.0.0.1:3080' };
+  const dirs = [];
+
+  /** @returns {object} the stats route, mounted over `statePath` (file OR directory). */
+  function mountWithStatePath(statePath) {
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-sessions-'));
+    dirs.push(dir);
+    return captureRoutes({ statePath, port: CLOSED_PORT }).find((r) => r.path === STATS_PATH);
+  }
+
+  after(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a state file that does not exist yet reports no error', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-sessions-'));
+    dirs.push(dir);
+    const route = mountWithStatePath(join(dir, 'sessions.json'));
+    const r = await callRoute(route, { headers: HEADERS });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.sessions.tracked, 0);
+    assert.equal(r.body.sessions.error, '', 'a first run has nothing to report');
+  });
+
+  it('state_path pointing at a DIRECTORY is named, and the directory is left intact', async () => {
+    // The directory IS the state path — the misconfiguration that made the write
+    // throw. `mountWithStatePath` still creates its own temp dir for mounting.
+    const victim = mkdtempSync(join(tmpdir(), 'atomcode-victim-'));
+    dirs.push(victim);
+    const route = mountWithStatePath(victim);
+    const r = await callRoute(route, { headers: HEADERS });
+    assert.equal(r.status, 200, 'a broken state path must not break the stats route');
+    assert.equal(r.body.sessions.tracked, 0);
+    assert.ok(r.body.sessions.error, 'the degradation must be named, not swallowed');
+    assert.match(r.body.sessions.error, /directory/, 'the cause must be the directory, not a generic failure');
+    // EISDIR is a CONFIGURATION mistake, not a corrupt file: quarantining it
+    // would mean renaming the user's directory to `<dir>.corrupt-<ts>`.
+    assert.ok(existsSync(victim), 'the directory must still exist');
+    assert.deepEqual(
+      readdirSync(victim).filter((name) => name.includes('.corrupt-')),
+      [],
+      'a directory must never be quarantined',
+    );
+  });
+
+  it('the store itself degrades on an unwritable path instead of throwing', async () => {
+    // Unit-level, through the same module the host mounts: `set()` used to be a
+    // bare `writeJsonFile` call, so this line threw and took the turn with it.
+    const victim = mkdtempSync(join(tmpdir(), 'atomcode-unwritable-'));
+    dirs.push(victim);
+    const seen = [];
+    const store = createSessionStore(victim, '', { onError: (error) => seen.push(error) });
+    assert.equal(store.set('C:\\repo', 'sess-1'), false, 'the write degraded, so nothing was recorded');
+    assert.equal(store.get('C:\\repo'), undefined);
+    assert.ok(seen.length > 0, 'the degradation must reach the observer');
+    // Deduplicated: a panel poll re-reads a broken path every time, and must not
+    // report the same failure once per poll.
+    const before = seen.length;
+    store.get('C:\\repo');
+    store.count();
+    assert.equal(seen.length, before, 'the same failure must not be reported twice');
+  });
+});

@@ -525,3 +525,28 @@ describe('atomcode_ask — the provider ladder is described ONCE, in order', () 
     });
   }
 });
+
+describe('atomcode_ask — bookkeeping that cannot be written does not fail the turn', () => {
+  const state = { requests: [], counter: 0, mode: 'ok' };
+  let fake;
+
+  before(async () => { fake = await startFakeDaemon(state); });
+  after(() => fake.server.close());
+
+  // The turn is fine; only the mapping that would let the NEXT `continue: true`
+  // resume it is unavailable. Before this was fixed, the `set()` call at the end
+  // of a successful turn threw EISDIR (a `state_path` pointing at a directory)
+  // and the model received a tool error for a turn that had already produced a
+  // complete reply — the bookkeeping took down the work.
+  it('a state_path pointing at a directory degrades the glue, not the answer', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-statedir-'));
+    try {
+      const ask = await mountAsk(mod, { statePath: dir, port: fake.port });
+      const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+      assert.equal(r.ok, true, 'a broken state path must not turn a good answer into an error');
+      assert.match(r.reply, /ok/, 'the reply itself must survive untouched');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

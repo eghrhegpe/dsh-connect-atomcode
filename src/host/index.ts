@@ -188,7 +188,7 @@ function buildStatsBody(stats: Record<string, any>, quota: any) {
     // CodingPlan quota. Only the daemon's `status` command carries it (as
     // localized text), so this branch is best-effort and says why when empty.
     quota: quota ?? { available: false, reason: 'not collected yet', fetchedAt: null },
-    sessions: { tracked: stats.sessionsTracked },
+    sessions: { tracked: stats.sessionsTracked, error: stats.sessionsError },
     ask: stats.ask,
     review: stats.review,
   };
@@ -291,7 +291,25 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
       : detectProfileKey();
   const statePath =
     typeof config.state_path === 'string' && config.state_path !== '' ? config.state_path : defaultStatePath();
-  const sessions = createSessionStore(statePath, sessionKeyPrefix);
+  // `log` lives before its other uses so the store's observer can share the one
+  // `[atomcode-bridge]` prefix instead of re-typing it (and so a second logger
+  // call site cannot drift from it).
+  const log = (message: any) => ctx.logger?.warn(`[atomcode-bridge] ${message}`);
+
+  // Session glue degrades rather than throws (sessions.ts), and every
+  // degradation is NAMED here instead of swallowed (红线 3): a state file this
+  // process cannot write is a fact about the mount, not a reason to hand a
+  // finished turn back as an error. `''` means recovered — same channel.
+  // The observer writes `stats`, which is declared further down: safe because it
+  // can only fire from get/set/drop/count, and every one of those runs long
+  // after the mount finished. Nothing between here and the declaration may call
+  // the store, or this becomes a temporal-dead-zone throw at mount.
+  const sessions = createSessionStore(statePath, sessionKeyPrefix, {
+    onError: (error) => {
+      stats.sessionsError = error;
+      if (error) log(`会话续接已降级（本轮回复不受影响）：${error}`);
+    },
+  });
   // The panel's model choice, in the SAME directory so one `state_path` knob
   // governs both files. Read PER CALL (like sessions, and like the review probe)
   // so a pick made in the panel applies to the very next turn — no host restart.
@@ -403,7 +421,6 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
   // Probe review CLI availability at mount time (best-effort: no live spawn).
   const reviewProvision = checkReviewProvision();
 
-  const log = (message: any) => ctx.logger?.warn(`[atomcode-bridge] ${message}`);
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   /**
@@ -457,6 +474,10 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
     reviewAvailable: reviewProvision.available,
     reviewReason: reviewProvision.reason,
     sessionsTracked: 0,
+    // Why session glue is degraded right now ('' when healthy) — see the
+    // session store's onError observer. Surfaced on the panel so a state file
+    // that cannot be written is visible rather than merely logged.
+    sessionsError: '',
     askRounds: askMaxRounds,
     retrySecs: daemonRetrySecs,
     // Which patch-only knobs the user authored, and our built-in fallbacks. Both
