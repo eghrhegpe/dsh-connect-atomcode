@@ -38,6 +38,7 @@
  */
 import {
   DEFAULT_PORT,
+  TOOLS_CAP,
   askChat,
   health,
   healthInfo,
@@ -805,6 +806,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
           round_count: { type: 'number', description: '本回合 tool_start 事件数（≤ agent 轮数；并行工具会多次计数）' },
           tools: {
             type: 'array',
+            description: `本回合的工具记录，最多 ${TOOLS_CAP} 条（超出部分被省略，见 tools_truncated；tool_calls 仍是真实总数）`,
             items: {
               type: 'object',
               properties: { name: { type: 'string' }, success: { type: 'boolean' } },
@@ -812,12 +814,13 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
               additionalProperties: false,
             },
           },
+          tools_truncated: { type: 'boolean', description: 'tools 数组被截断（只回了前若干条；tool_calls 是真实总数，不代表 tools 就是全部）' },
           stop_reason: { type: 'string' },
           provider: { type: 'string' },
           providerReported: { type: 'boolean', description: 'provider 是否来自 daemon SSE 的 runtime_info（true = 远端实测值；false = daemon 未报，回显本插件请求值、未经远端证实——daemon 升级后若不再发 runtime_info，每回合都会带 false 并标注）' },
           error: { type: 'string' },
         },
-        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'stop_reason', 'provider', 'providerReported', 'error'],
+        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'tools_truncated', 'stop_reason', 'provider', 'providerReported', 'error'],
         additionalProperties: false,
       },
       render(_args: any, value: any) {
@@ -834,6 +837,15 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
           }
           if (value.truncated) {
             lines.push('[注意：reply 已截断，让 AtomCode 把完整内容写到文件里再读]', '');
+          }
+          // Same reason as `truncated`: a clipped tool list reads as the full
+          // story, and the model would then reason "it called 30 tools" when it
+          // called more. `tool_calls` is printed below, so the pair is legible.
+          if (value.tools_truncated) {
+            lines.push(
+              `[注意：tools 只回了前 ${TOOLS_CAP} 条，本回合工具调用不止这些（见 tool_calls）]`,
+              '',
+            );
           }
           if (value.providerReported === false) {
             lines.push('[注意：daemon 未报 runtime_info，provider= 是本插件回传请求值、未经远端证实（daemon 可能已升级）]', '');
@@ -868,6 +880,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
         tool_calls: 0,
         round_count: 0,
         tools: [],
+        tools_truncated: false,
         stop_reason: '',
         provider: askProvider || 'default',
         providerReported: false,
@@ -972,6 +985,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
         tool_calls: result.toolCalls,
         round_count: result.roundCount ?? 0,
         tools: result.tools,
+        tools_truncated: result.toolsTruncated === true,
         stop_reason: result.stopReason,
         provider: result.provider,
         providerReported: result.providerReported,

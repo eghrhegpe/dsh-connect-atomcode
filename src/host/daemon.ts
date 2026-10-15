@@ -32,6 +32,17 @@ import { join } from 'node:path';
 export const DEFAULT_PORT = 13459;
 
 /**
+ * How many tool records a single turn may carry back to the model. A runaway
+ * turn can emit hundreds; an unbounded array would crowd the reply out of the
+ * tool result. The cap is a transport limit, NOT a statement about the turn —
+ * which is why the return value marks the cut (`toolsTruncated`) instead of
+ * letting a clipped array read as the whole story. `toolCalls` stays the true
+ * count (it comes from the daemon's `done`, or from the uncapped list), so the
+ * two together let the caller see "30 of 47 shown".
+ */
+export const TOOLS_CAP = 30;
+
+/**
  * The SSE event vocabulary this client understands (verified against AtomCode
  * 5.2.2/5.2.3 daemon). Anything else on the wire is counted as drift; see
  * `streamChat`'s end-of-stream branch and `askChat`.
@@ -460,7 +471,12 @@ export async function askChat(opts: StreamChatOptions) {
     sessionId: done && typeof done.session_id === 'string' ? done.session_id : sessionId,
     tokens: done && typeof done.tokens === 'number' ? done.tokens : tokens,
     toolCalls: done && typeof done.tool_calls === 'number' ? done.tool_calls : usedTools.length,
-    tools: usedTools.slice(0, 30),
+    // Marked, not silent: at exactly TOOLS_CAP records the array is
+    // indistinguishable from a complete one, so the cut needs its own flag.
+    // (The sibling reply cap does the same thing with `truncated` + an inline
+    // marker; two truncations in one return must not follow two conventions.)
+    tools: usedTools.slice(0, TOOLS_CAP),
+    toolsTruncated: usedTools.length > TOOLS_CAP,
     stopReason: done && typeof done.stop_reason === 'string' ? done.stop_reason : '',
     /** Actual provider name reported by the daemon SSE runtime_info event, or the explicit provider passed in opts, or 'default'. */
     provider: realProvider || opts.provider || 'default',

@@ -444,6 +444,54 @@ describe('session_key_prefix — profile detection', () => {
   });
 });
 
+describe('atomcode_ask — a clipped tool list is MARKED, never silent', () => {
+  const state = { requests: [], counter: 0, mode: 'ok', toolStarts: 0 };
+  let fake;
+
+  before(async () => { fake = await startFakeDaemon(state); });
+  after(() => fake.server.close());
+  beforeEach(() => { state.requests.length = 0; state.toolStarts = 0; });
+
+  // `ask_max_rounds: 0` disables the bridge's round fuse, which is what lets 40
+  // tool rounds reach the aggregator at all — so this case also re-checks that
+  // 0 means "unbounded" rather than falling back to the 25 default.
+  it('caps the array at 30 AND says so, with tool_calls still the true count', async () => {
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port, config: { ask_max_rounds: 0 } });
+    state.toolStarts = 40;
+    const r = await ask.execute({ message: 'spam tools', working_dir: WORKDIR }, {});
+    assert.equal(r.ok, true, 'with the fuse off, 40 rounds must not fail the turn');
+    assert.equal(r.tools.length, 30, 'the array is capped');
+    assert.equal(r.tools_truncated, true, 'the cut must be flagged, not left implicit');
+    assert.equal(r.tool_calls, 40, 'the true count survives the cap');
+    assert.equal(r.tools[0].name, 'synthetic-tool-0', 'the FIRST records are kept, not the last');
+  });
+
+  it('a turn under the cap reports tools_truncated: false', async () => {
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port, config: { ask_max_rounds: 0 } });
+    state.toolStarts = 3;
+    const r = await ask.execute({ message: 'three tools', working_dir: WORKDIR }, {});
+    assert.equal(r.tools.length, 3);
+    assert.equal(r.tools_truncated, false, 'no cut happened, so nothing may be flagged');
+  });
+
+  // The static contract: the schema must NAME the cap, because a caller reading
+  // only the schema (render output aside) has no other way to know 30 is a limit
+  // rather than a coincidence.
+  it('the schema declares the cap, and the marker is a required field', async () => {
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    const props = ask.output.schema.properties;
+    assert.match(props.tools.description, /30/, 'the tools description must name the cap');
+    assert.equal(props.tools_truncated.type, 'boolean');
+    assert.ok(
+      ask.output.schema.required.includes('tools_truncated'),
+      'a truncation marker that may be omitted is not a contract',
+    );
+  });
+});
+
 describe('atomcode_ask — the provider ladder is described ONCE, in order', () => {
   const state = { requests: [], counter: 0, mode: 'ok' };
   let fake;
