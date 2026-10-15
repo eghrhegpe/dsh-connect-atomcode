@@ -681,8 +681,10 @@ describe('turnBoundaryRows — patch-only knobs must not masquerade as live sett
     const rows = turnBoundaryRows({ defaultWorkingDir: '', ...HOST });
     assert.equal(rows[1].text, '（会话工作目录）');
     assert.match(rows[1].title, /working_dir 留空/);
+    // With `authored` present and false, a value is still our default — not authored.
     const set = turnBoundaryRows({ defaultWorkingDir: 'D:\\repo', ...HOST });
-    assert.equal(set[1].text, 'D:\\repo（插件默认）', 'an unauthored branch must not claim authorship');
+    assert.match(set[1].text, /（插件默认）/, 'unauthored must not claim authorship');
+    assert.match(set[1].text, /^D:\\repo/);
   });
 
   it('reports 0 rounds as 不限 without a default tag (0 is a deliberate choice)', () => {
@@ -694,13 +696,30 @@ describe('turnBoundaryRows — patch-only knobs must not masquerade as live sett
   it('degrades on a host that reports no authored/defaults branch at all', () => {
     // An older host (or the desktop install copy) must still render three rows with
     // real values — and must make NO authorship claim, rather than inventing one.
+    // This is the case the LIVE host was actually in: it served `approvalMode:
+    // "bypass"` and `askMaxRounds: 25` with no `authored`/`defaults` keys at all.
     for (const cfg of [undefined, null, {}, { approvalMode: 'bypass', askMaxRounds: 25 }]) {
       const rows = turnBoundaryRows(cfg);
       assert.equal(rows.length, 3, `three rows for ${JSON.stringify(cfg)}`);
       for (const row of rows) {
         assert.ok(row.label && row.title, 'every row keeps its label and its hover explanation');
-        assert.ok(!/已改/.test(row.text), `no authorship claim without host evidence: ${row.text}`);
+        assert.ok(!/已改|插件默认/.test(row.text), `no authorship claim without host evidence: ${row.text}`);
       }
+    }
+  });
+
+  it('never calls a user-set value "the plugin default" without evidence', () => {
+    // The trap: with no `defaults` to compare against, a naive `value === fallback`
+    // check reports false, which used to print "（插件默认）" over the user's own
+    // deliberate setting — a flat lie on exactly the knob that matters (`ask` is a
+    // NON-default approval mode). Absent evidence must stay absent.
+    const noEvidence = turnBoundaryRows({ approvalMode: 'ask', defaultWorkingDir: 'D:\\repo', askMaxRounds: 40 });
+    assert.equal(noEvidence[0].text, 'ask', 'the value is shown, but not labelled');
+    assert.equal(noEvidence[1].text, 'D:\\repo');
+    assert.equal(noEvidence[2].text, '40');
+    for (const row of noEvidence) {
+      assert.ok(!/插件默认/.test(row.text), `must not claim default: ${row.text}`);
+      assert.ok(!/已改/.test(row.text), `and must not claim authorship either: ${row.text}`);
     }
   });
 

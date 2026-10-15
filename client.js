@@ -701,23 +701,32 @@
         const mode = typeof src.approvalMode === 'string' ? src.approvalMode : '';
         const dir = typeof src.defaultWorkingDir === 'string' ? src.defaultWorkingDir : '';
         const rounds = Number.isInteger(src.askMaxRounds) ? src.askMaxRounds : null;
-        // An older host reports no `authored` branch: fall back to comparing against
-        // the DEFAULT the host did send, and say nothing about provenance if it sent
-        // none. Never guess a default locally.
-        const changed = (key, value, fallback) =>
-          key in authored ? authored[key] === true : fallback !== null && fallback !== '' ? value !== fallback : false;
-        const tag = (isChanged) => (isChanged ? '（已改）' : '（插件默认）');
+        // Authorship verdict: 'authored' | 'default' | 'unknown'.
+        //
+        // 'unknown' is NOT decoration — it is the only honest answer when the host
+        // reports no `authored` branch AND sent no default to compare against. An
+        // older host (or the desktop install copy) hands us only the RESOLVED value,
+        // and `approvalMode: 'ask'` from it is either the user's choice or a build
+        // whose default is 'ask' — we cannot tell. Tagging that "（插件默认）" would
+        // assert what we do not know, the same class of lie as printing a guessed
+        // quota number (红线 2). So when we cannot tell, we do not tag at all.
+        const verdict = (key, value, fallback) => {
+          if (authored && key in authored) return authored[key] === true ? 'authored' : 'default';
+          if (fallback === null || fallback === undefined || fallback === '') return 'unknown';
+          return value === fallback ? 'default' : 'authored';
+        };
+        const tag = (v) => (v === 'authored' ? '（已改）' : v === 'default' ? '（插件默认）' : '');
         return [
           {
             label: '审批模式',
-            text: mode === '' ? '—' : mode + tag(changed('approvalMode', mode, approvalDefault)),
+            text: mode === '' ? '—' : mode + tag(verdict('approvalMode', mode, approvalDefault)),
             title:
               'patch 字段 approval_mode；面板上没有输入框，改它要动 cordis.patch.yml。' +
               'bypass = AtomCode 自己的工具在回合内无人值守执行（AtomCode 侧自主，与 DSH 的权限预设无关）。',
           },
           {
             label: '工作目录',
-            text: dir === '' ? '（会话工作目录）' : dir + tag(changed('workingDir', dir, null)),
+            text: dir === '' ? '（会话工作目录）' : dir + tag(verdict('workingDir', dir, null)),
             title: dir === '' ? 'patch 字段 working_dir 留空 = 靠调用参数或会话工作目录' : 'patch 字段 working_dir',
           },
           {
@@ -726,7 +735,7 @@
               rounds === null
                 ? '—'
                 : rounds > 0
-                  ? String(rounds) + tag(changed('askMaxRounds', rounds, askDefault))
+                  ? String(rounds) + tag(verdict('askMaxRounds', rounds, askDefault))
                   : '不限',
             title:
               'patch 字段 ask_max_rounds。超出即停止等待（不是远端 kill：daemon 侧的回合可能仍在后台跑完）。',
