@@ -197,6 +197,35 @@ function buildStatsBody(stats: Record<string, any>, quota: any) {
 export const name = 'atomcode-bridge';
 export const inject = ['tools', 'webServer'];
 
+// ── Built-ins that take no input from the patch row ─────────────────────────
+// Kept at module scope so `readConfig` stays a function of `rawConfig` alone,
+// and so their comments travel with them instead of being re-typed (a second
+// copy of a default is a copy that starts lying the day the default moves).
+  /**
+   * Hard deadline for the daemon's liveness and metadata probes. Loopback
+   * answers in single-digit milliseconds when healthy, so real elapsed time
+   * here means the daemon is wedged half-open. Every other wait in this plugin
+   * has a budget (`runCommand`'s internal timeout, `streamChat`'s timeoutMs,
+   * the review wall-clock fuse, the panel's client-side deadline) — the two
+   * calls that decide whether the daemon is alive AT ALL were the only ones
+   * without one, which left `daemon_start_timeout_secs` (a budget built on
+   * "each poll fails fast") silently ineffective in exactly the wedged state
+   * it was configured for.
+   */
+  const DAEMON_PROBE_TIMEOUT_MS = 5_000;
+  /**
+   * Budget for the quota `POST /command status` call — the one daemon call that
+   * runs on the PANEL's schedule (every `quota_refresh_secs`) rather than the
+   * ask path's. Selected under the panel's client deadline so both sides agree
+   * on "the daemon is wedged" at roughly the same moment; see `readQuota`.
+   */
+  const DAEMON_COMMAND_TIMEOUT_MS = 3_500;
+  // The built-in fallbacks for the patch-only knobs. Named once so the snapshot can
+  // report them and the panel never hardcodes a second copy of "25" (a copy that
+  // would silently start lying the moment this default moved).
+  const DEFAULT_APPROVAL_MODE = 'bypass';
+  const DEFAULT_ASK_MAX_ROUNDS = 25;
+
 /**
  * Config arrives unvalidated from the Loader patch (the sibling bridge
  * `dsh-connect-sensenova-token-plan` ships no DSH Config schema either);
@@ -210,7 +239,7 @@ export const inject = ['tools', 'webServer'];
  *   ask_max_rounds (25 = bounded default; 0 = unlimited)
  *   session_key_prefix ('' = auto-detect) · daemon_retry_secs (60)
  */
-export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
+function readConfig(rawConfig: Record<string, any>) {
   // The Loader hands config values through as `{ get() }` boxes; unwrap
   // first (same normalization dsh-connect-qoder performs).
   const config: Record<string, any> = {};
@@ -226,11 +255,6 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
       : DEFAULT_PORT;
   const autoStart = config.auto_start !== false;
   const binary = typeof config.binary === 'string' && config.binary !== '' ? config.binary : undefined;
-  // The built-in fallbacks for the patch-only knobs. Named once so the snapshot can
-  // report them and the panel never hardcodes a second copy of "25" (a copy that
-  // would silently start lying the moment this default moved).
-  const DEFAULT_APPROVAL_MODE = 'bypass';
-  const DEFAULT_ASK_MAX_ROUNDS = 25;
   const approvalMode =
     typeof config.approval_mode === 'string' && config.approval_mode !== ''
       ? config.approval_mode
@@ -291,6 +315,109 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
       : detectProfileKey();
   const statePath =
     typeof config.state_path === 'string' && config.state_path !== '' ? config.state_path : defaultStatePath();
+  // Review's default repo root. Kept SEPARATE from `working_dir` on purpose:
+  // `working_dir` is the ask turn's cwd (a conversation notion), while a
+  // review without `working_dir` used to fall through to the HOST PROCESS's
+  // cwd — silently reviewing the wrong repository. Set this, or pass
+  // working_dir per call.
+  const reviewWorkingDir =
+    typeof config.review_working_dir === 'string' && config.review_working_dir !== ''
+      ? config.review_working_dir
+      : undefined;
+  const reviewNoWeb = config.review_no_web !== false;
+  const reviewMaxRounds =
+    Number.isInteger(config.review_max_rounds) && config.review_max_rounds > 0
+      ? config.review_max_rounds
+      : 35;
+  const reviewMaxDurationSecs =
+    Number.isInteger(config.review_max_duration_secs) && config.review_max_duration_secs > 0
+      ? config.review_max_duration_secs
+      : 900;
+  // CodingPlan quota refresh interval. 0 disables the extra `/command status`
+  // call entirely; the panel then reports that quota display is switched off.
+  const quotaRefreshSecs =
+    Number.isInteger(config.quota_refresh_secs) && config.quota_refresh_secs >= 0
+      ? config.quota_refresh_secs
+      : 60;
+  // How long to wait for a spawned daemon to answer /health before giving up.
+  // Also the budget the ask path spends when it has to start the daemon itself.
+  const daemonStartTimeoutSecs =
+    Number.isInteger(config.daemon_start_timeout_secs) && config.daemon_start_timeout_secs >= 0
+      ? config.daemon_start_timeout_secs
+      : 30;
+  /** The start poll ticks every 1.5s; a 0s budget spawns without waiting. */
+  const daemonStartAttempts = Math.max(0, Math.ceil((daemonStartTimeoutSecs * 1000) / 1500));
+  // Cooldown before a FAILED auto-start is retried. Without this the shared
+  // start promise is a permanent tombstone: the first failure (binary not yet
+  // installed, daemon wedged) would silence auto-start for the whole mount,
+  // even after the user fixed the machine. With it, a panel poll after the
+  // cooldown tries again. 0 = retry on the very next poll.
+  const daemonRetrySecs =
+    Number.isInteger(config.daemon_retry_secs) && config.daemon_retry_secs >= 0
+      ? config.daemon_retry_secs
+      : 60;
+
+  const binaryEnv =
+    typeof process.env.ATOMCODE_BIN === 'string' && process.env.ATOMCODE_BIN !== ''
+      ? process.env.ATOMCODE_BIN
+      : undefined;
+
+  return {
+    port,
+    autoStart,
+    binary,
+    approvalMode,
+    defaultWorkingDir,
+    defaultProvider,
+    reviewDefaultProvider,
+    askMaxRounds,
+    authoredApprovalMode,
+    authoredWorkingDir,
+    authoredAskMaxRounds,
+    sessionKeyPrefix,
+    statePath,
+    reviewWorkingDir,
+    reviewNoWeb,
+    reviewMaxRounds,
+    reviewMaxDurationSecs,
+    quotaRefreshSecs,
+    daemonStartTimeoutSecs,
+    daemonStartAttempts,
+    daemonRetrySecs,
+    binaryEnv,
+  };
+}
+
+export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
+  // Resolved once, here, and passed down as locals with the SAME names they
+  // had when this block lived inline — a move that also renamed things would be
+  // two changes in one commit, and the diff below would stop being readable as
+  // proof that nothing else changed.
+  const {
+    port,
+    autoStart,
+    binary,
+    approvalMode,
+    defaultWorkingDir,
+    defaultProvider,
+    reviewDefaultProvider,
+    askMaxRounds,
+    authoredApprovalMode,
+    authoredWorkingDir,
+    authoredAskMaxRounds,
+    sessionKeyPrefix,
+    statePath,
+    reviewWorkingDir,
+    reviewNoWeb,
+    reviewMaxRounds,
+    reviewMaxDurationSecs,
+    quotaRefreshSecs,
+    daemonStartTimeoutSecs,
+    daemonStartAttempts,
+    daemonRetrySecs,
+    binaryEnv,
+  } = readConfig(rawConfig);
+
   // `log` lives before its other uses so the store's observer can share the one
   // `[atomcode-bridge]` prefix instead of re-typing it (and so a second logger
   // call site cannot drift from it).
@@ -352,71 +479,6 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
     if (configured) return { name: configured, source: 'config', picks };
     return { name: '', source: 'atomcode', picks };
   };
-  // Review's default repo root. Kept SEPARATE from `working_dir` on purpose:
-  // `working_dir` is the ask turn's cwd (a conversation notion), while a
-  // review without `working_dir` used to fall through to the HOST PROCESS's
-  // cwd — silently reviewing the wrong repository. Set this, or pass
-  // working_dir per call.
-  const reviewWorkingDir =
-    typeof config.review_working_dir === 'string' && config.review_working_dir !== ''
-      ? config.review_working_dir
-      : undefined;
-  const reviewNoWeb = config.review_no_web !== false;
-  const reviewMaxRounds =
-    Number.isInteger(config.review_max_rounds) && config.review_max_rounds > 0
-      ? config.review_max_rounds
-      : 35;
-  const reviewMaxDurationSecs =
-    Number.isInteger(config.review_max_duration_secs) && config.review_max_duration_secs > 0
-      ? config.review_max_duration_secs
-      : 900;
-  // CodingPlan quota refresh interval. 0 disables the extra `/command status`
-  // call entirely; the panel then reports that quota display is switched off.
-  const quotaRefreshSecs =
-    Number.isInteger(config.quota_refresh_secs) && config.quota_refresh_secs >= 0
-      ? config.quota_refresh_secs
-      : 60;
-  // How long to wait for a spawned daemon to answer /health before giving up.
-  // Also the budget the ask path spends when it has to start the daemon itself.
-  const daemonStartTimeoutSecs =
-    Number.isInteger(config.daemon_start_timeout_secs) && config.daemon_start_timeout_secs >= 0
-      ? config.daemon_start_timeout_secs
-      : 30;
-  /** The start poll ticks every 1.5s; a 0s budget spawns without waiting. */
-  const daemonStartAttempts = Math.max(0, Math.ceil((daemonStartTimeoutSecs * 1000) / 1500));
-  /**
-   * Hard deadline for the daemon's liveness and metadata probes. Loopback
-   * answers in single-digit milliseconds when healthy, so real elapsed time
-   * here means the daemon is wedged half-open. Every other wait in this plugin
-   * has a budget (`runCommand`'s internal timeout, `streamChat`'s timeoutMs,
-   * the review wall-clock fuse, the panel's client-side deadline) — the two
-   * calls that decide whether the daemon is alive AT ALL were the only ones
-   * without one, which left `daemon_start_timeout_secs` (a budget built on
-   * "each poll fails fast") silently ineffective in exactly the wedged state
-   * it was configured for.
-   */
-  const DAEMON_PROBE_TIMEOUT_MS = 5_000;
-  /**
-   * Budget for the quota `POST /command status` call — the one daemon call that
-   * runs on the PANEL's schedule (every `quota_refresh_secs`) rather than the
-   * ask path's. Selected under the panel's client deadline so both sides agree
-   * on "the daemon is wedged" at roughly the same moment; see `readQuota`.
-   */
-  const DAEMON_COMMAND_TIMEOUT_MS = 3_500;
-  // Cooldown before a FAILED auto-start is retried. Without this the shared
-  // start promise is a permanent tombstone: the first failure (binary not yet
-  // installed, daemon wedged) would silence auto-start for the whole mount,
-  // even after the user fixed the machine. With it, a panel poll after the
-  // cooldown tries again. 0 = retry on the very next poll.
-  const daemonRetrySecs =
-    Number.isInteger(config.daemon_retry_secs) && config.daemon_retry_secs >= 0
-      ? config.daemon_retry_secs
-      : 60;
-
-  const binaryEnv =
-    typeof process.env.ATOMCODE_BIN === 'string' && process.env.ATOMCODE_BIN !== ''
-      ? process.env.ATOMCODE_BIN
-      : undefined;
 
   // Probe review CLI availability at mount time (best-effort: no live spawn).
   const reviewProvision = checkReviewProvision();
