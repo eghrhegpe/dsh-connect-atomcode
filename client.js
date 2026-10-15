@@ -164,11 +164,14 @@
           width: '100%',
         },
         selectOff: { opacity: 0.55 },
+        // Sits INLINE in a card title now, so it is sized to be an annotation on that
+        // title rather than a standalone badge.
         pill: {
-          fontSize: '12px',
+          fontSize: '11px',
           fontWeight: 600,
-          padding: '2px 10px',
-          borderRadius: '6px',
+          padding: '1px 8px',
+          borderRadius: '5px',
+          lineHeight: '16px',
         },
         metrics: { display: 'flex', gap: '14px', flexWrap: 'wrap' },
         metric: { display: 'flex', flexDirection: 'column', gap: '2px' },
@@ -1215,99 +1218,23 @@
             h(
               'div',
               { style: S.grid },
-              // CodingPlan 额度. NOT `cardFull` any more: spanning every column made
-              // the 6px progress bar 1180px wide — a bar whose whole job is to show a
-              // PROPORTION, drawn so long that the filled part is a hairline. It now
-              // takes one ordinary track (~380px), where 0% and 100% are both legible.
-              h(
-                'div',
-                { style: S.card },
-                h('p', { style: S.cardTitle }, 'CodingPlan 额度'),
-                !quota.available
-                  ? h('p', { style: S.error }, quota.reason || '额度不可用（daemon 未运行或命令不可用）')
-                  : quotaPct == null && !quota.plan
-                    ? h(
-                        'div',
-                        null,
-                        h('p', { style: S.key }, quota.reason || '未能从 status 文本中识别出额度'),
-                        quota.raw && quota.raw.usageLine
-                          ? h('p', { style: S.key }, quota.raw.usageLine)
-                          : null,
-                        quota.raw && quota.raw.planLine
-                          ? h('p', { style: S.key }, quota.raw.planLine)
-                          : null
-                      )
-                    : h(
-                        'div',
-                        // No extra inner wrapper: the card itself is already a
-                        // `flex-direction: column` with `gap: 6px`. Nesting another
-                        // `gap: 8px` column made THIS card's rhythm differ from every
-                        // neighbour, so its rows sat further apart and the card grew
-                        // taller than the ones beside it.
-                        null,
-                        // ONE headline number plus one clarifying clause — not two peer
-                        // gauges. `0%` is a RATIO and `1h26m` is a DURATION; rendering
-                        // both at 18px/700 side by side asked the reader to compare two
-                        // different quantities as if they were the same kind of fact.
-                        // The countdown is supporting detail, so it follows the number
-                        // in the label line at normal weight.
-                        quotaPct == null
-                          ? h(
-                              'div',
-                              { style: S.metric },
-                              h('span', { style: S.metricLabel }, quota.reason || '额度读数不可用')
-                            )
-                          : h(
-                              'div',
-                              { style: S.metric },
-                              h(
-                                'span',
-                                { style: { ...S.metricNum, color: quotaColor(quotaPct, quota.limited) } },
-                                pctLabel(quotaPct)
-                              ),
-                              h(
-                                'span',
-                                { style: S.metricLabel },
-                                '当前时间窗口用量' +
-                                  (liveResetSecs == null ? '' : ' · ' + fmtCountdown(liveResetSecs) + ' 后重置')
-                              )
-                            ),
-                        quotaPct == null
-                          ? null
-                          : h(
-                              'div',
-                              {
-                                style: {
-                                  height: '6px',
-                                  borderRadius: '3px',
-                                  border: '1px solid var(--dsw-alias-border-l1)',
-                                  overflow: 'hidden',
-                                },
-                              },
-                              h('div', {
-                                style: {
-                                  height: '100%',
-                                  width: barWidth(quotaPct) + '%',
-                                  background: quotaColor(quotaPct, quota.limited),
-                                },
-                              })
-                            ),
-                        h(Row, { label: '套餐' }, quota.plan || '—'),
-                        h(Row, { label: '到期' }, quotaExpiry || '—'),
-                        h(Row, { label: '重置于' }, quota.resetAt || '—'),
-                        quota.limited
-                          ? h('p', { style: S.error }, '当前 5 小时窗口已用尽，回合会被限流')
-                          : null
-                      )
-              ),
+              // Card order is by how often a user READS each one, not by how the code
+              // happens to be written: 启动情况 / 运行环境 / 回合边界 are setup facts you
+              // check once, while CodingPlan 额度 is the figure that decides whether a
+              // turn will be throttled. See the note on the 额度 card below.
               // 启动情况
               h(
                 'div',
                 { style: S.card },
-                h('p', { style: S.cardTitle }, '启动情况'),
+                // The status pill rides in the TITLE row, not on a data row of its own.
+                // It is a state of the card, not a field of it: giving it a full row
+                // (with the same layout as 监听端口) made one badge occupy as much
+                // vertical space as a labelled value, and left a visibly empty line
+                // under the heading.
                 h(
-                  'div',
-                  { style: { ...S.row, justifyContent: 'flex-start', gap: '10px' } },
+                  'p',
+                  { style: { ...S.cardTitle, display: 'flex', alignItems: 'center', gap: '8px' } },
+                  '启动情况',
                   h(StatusPill, { up: !!d.up })
                 ),
                 h(Row, { label: '监听端口' }, String(d.port)),
@@ -1420,7 +1347,88 @@
                 h(Row, { label: 'ask 平均耗时' }, fmtDuration(askAvg)),
                 h(Row, { label: 'review 平均耗时' }, fmtDuration(reviewAvg))
               )
-            )
+            ),
+              h(
+                'div',
+                { style: S.card },
+                h('p', { style: S.cardTitle }, 'CodingPlan 额度'),
+                !quota.available
+                  ? h('p', { style: S.error }, quota.reason || '额度不可用（daemon 未运行或命令不可用）')
+                  : quotaPct == null && !quota.plan
+                    ? h(
+                        'div',
+                        null,
+                        h('p', { style: S.key }, quota.reason || '未能从 status 文本中识别出额度'),
+                        quota.raw && quota.raw.usageLine
+                          ? h('p', { style: S.key }, quota.raw.usageLine)
+                          : null,
+                        quota.raw && quota.raw.planLine
+                          ? h('p', { style: S.key }, quota.raw.planLine)
+                          : null
+                      )
+                    : h(
+                        'div',
+                        // No extra inner wrapper: the card itself is already a
+                        // `flex-direction: column` with `gap: 6px`. Nesting another
+                        // `gap: 8px` column made THIS card's rhythm differ from every
+                        // neighbour, so its rows sat further apart and the card grew
+                        // taller than the ones beside it.
+                        null,
+                        // ONE headline number plus one clarifying clause — not two peer
+                        // gauges. `0%` is a RATIO and `1h26m` is a DURATION; rendering
+                        // both at 18px/700 side by side asked the reader to compare two
+                        // different quantities as if they were the same kind of fact.
+                        // The countdown is supporting detail, so it follows the number
+                        // in the label line at normal weight.
+                        quotaPct == null
+                          ? h(
+                              'div',
+                              { style: S.metric },
+                              h('span', { style: S.metricLabel }, quota.reason || '额度读数不可用')
+                            )
+                          : h(
+                              'div',
+                              { style: S.metric },
+                              h(
+                                'span',
+                                { style: { ...S.metricNum, color: quotaColor(quotaPct, quota.limited) } },
+                                pctLabel(quotaPct)
+                              ),
+                              h(
+                                'span',
+                                { style: S.metricLabel },
+                                '当前时间窗口用量' +
+                                  (liveResetSecs == null ? '' : ' · ' + fmtCountdown(liveResetSecs) + ' 后重置')
+                              )
+                            ),
+                        quotaPct == null
+                          ? null
+                          : h(
+                              'div',
+                              {
+                                style: {
+                                  height: '6px',
+                                  borderRadius: '3px',
+                                  border: '1px solid var(--dsw-alias-border-l1)',
+                                  overflow: 'hidden',
+                                },
+                              },
+                              h('div', {
+                                style: {
+                                  height: '100%',
+                                  width: barWidth(quotaPct) + '%',
+                                  background: quotaColor(quotaPct, quota.limited),
+                                },
+                              })
+                            ),
+                        h(Row, { label: '套餐' }, quota.plan || '—'),
+                        h(Row, { label: '到期' }, quotaExpiry || '—'),
+                        h(Row, { label: '重置于' }, quota.resetAt || '—'),
+                        quota.limited
+                          ? h('p', { style: S.error }, '当前 5 小时窗口已用尽，回合会被限流')
+                          : null
+                      )
+              )
           );
         }
 
