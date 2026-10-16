@@ -54,6 +54,25 @@ export interface ProviderBranch {
   review?: ProviderSlot | null;
 }
 
+/** The `daemon` branch of the stats snapshot. */
+export interface DaemonBranch {
+  up?: boolean;
+  port?: number | null;
+  autoStart?: boolean;
+  starting?: boolean;
+  spawnTried?: boolean;
+  spawnFailures?: number;
+  /**
+   * WHY it is down, ALREADY WORDED by the host (`describeDaemonDown`), and `''`
+   * while up. Render it; never re-derive it. The tool errors carry the same
+   * sentence from the same function, and a panel that words its own version is
+   * how one port ends up with two stories — the failure mode this whole branch
+   * was collapsed into before (`up: false` for four different causes, all of
+   * them reported to the user as "未监听").
+   */
+  downMessage?: string | null;
+}
+
 /** The `quota` branch, as the renderer consumes it. */
 export interface QuotaBranch {
   available?: boolean;

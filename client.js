@@ -450,6 +450,23 @@
 //#endregion
 //#region src/client/rows.ts
 /**
+	* The one line the panel puts on the bundle card about daemon liveness.
+	*
+	* `downMessage` is worded by the HOST (`describeDaemonDown`), and the tool errors
+	* quote that same function — so the page and the model are handed one sentence,
+	* not two translations of one fact. Re-deriving the cause here would put the
+	* cause in two places with two independent chances to drift, which is precisely
+	* how "未监听" came to be said about four different failures.
+	*
+	* An older host sends no `downMessage` at all. Say that, rather than leaving the
+	* port standing where a reason belongs.
+	*/
+	function daemonStatusLine(daemon, daemonVersion) {
+		const d = daemon && typeof daemon === "object" ? daemon : {};
+		if (d.up) return "daemon 运行中" + (typeof daemonVersion === "string" && daemonVersion !== "" ? " " + daemonVersion : "");
+		return `daemon 未运行（${typeof d.downMessage === "string" && d.downMessage !== "" ? d.downMessage : "原因未记录（宿主较旧）"}${d.autoStart ? "；可自动拉起" : ""}）`;
+	}
+	/**
 	* The "回合边界" card's rows — a pure function so the honesty rule below is
 	* testable without a browser.
 	*
@@ -655,7 +672,8 @@
 				providerRows,
 				providerSelectModel,
 				turnBoundaryRows,
-				isLoopbackEndpoint: isLoopbackBaseUrl
+				isLoopbackEndpoint: isLoopbackBaseUrl,
+				daemonStatusLine
 			};
 			async function postProvider(slotName, value) {
 				try {
@@ -974,7 +992,7 @@
 				if (error || !data) return h("span", { style: S.provLabel }, "状态未知");
 				const d = data.daemon || {};
 				const cfg = data.config || {};
-				const parts = [d.up ? "daemon 运行中" + (data.protocol && data.protocol.daemonVersion ? " " + data.protocol.daemonVersion : "") : d.autoStart ? "daemon 未运行（可自动拉起）" : "daemon 未运行", "端口 " + (d.port == null ? "—" : d.port)];
+				const parts = [daemonStatusLine(d, data.protocol && data.protocol.daemonVersion), "端口 " + (d.port == null ? "—" : d.port)];
 				if (cfg.reviewAvailable === false) parts.push("评审不可用");
 				return h("span", {
 					style: S.provLabel,
@@ -1037,7 +1055,7 @@
 						display: "flex",
 						alignItems: "center",
 						gap: "8px"
-					} }, "启动情况", h(StatusPill, { up: !!d.up })), h(Row, { label: "监听端口" }, String(d.port)), h(Row, { label: "自动启动" }, d.autoStart ? "开启" : "关闭"), h(Row, { label: "拉起状态" }, spawnNote), h(Row, { label: "daemon 版本" }, proto.daemonVersion || (d.up ? "未知" : "—")), !d.up && d.spawnFailures > 1 ? h(Row, { label: "拉起重试" }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "运行环境"), h(Row, { label: "AtomCode" }, binPath), h("div", { style: S.provGrid }, providerRows(cfg).map((row) => h(ProviderSelectRow, {
+					} }, "启动情况", h(StatusPill, { up: !!d.up })), h(Row, { label: "监听端口" }, String(d.port)), h(Row, { label: "自动启动" }, d.autoStart ? "开启" : "关闭"), h(Row, { label: "拉起状态" }, spawnNote), !d.up && !d.starting ? h(Row, { label: "未就绪原因" }, d.downMessage || "未上报（宿主较旧）") : null, h(Row, { label: "daemon 版本" }, proto.daemonVersion || (d.up ? "未知" : "—")), !d.up && d.spawnFailures > 1 ? h(Row, { label: "拉起重试" }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "运行环境"), h(Row, { label: "AtomCode" }, binPath), h("div", { style: S.provGrid }, providerRows(cfg).map((row) => h(ProviderSelectRow, {
 						key: "provider-" + row.slotName,
 						label: row.label,
 						slotName: row.slotName,

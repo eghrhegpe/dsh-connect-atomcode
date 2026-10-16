@@ -157,12 +157,59 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
     const info = await healthInfo(fake.port);
     assert.equal(info.up, true);
     assert.equal(info.version, '5.2.3');
+    assert.equal(info.reason, '', 'a serving daemon has no failure to name');
   });
 
-  it('healthInfo reports down with an empty version when nothing listens', async () => {
-    const info = await healthInfo(45993);
+  // `up: false` used to be ONE bit for four different causes, and every caller
+  // that reported an outage worded all four the same way — "未监听". That is
+  // true of exactly one of them, and it is the one with the least to do: the
+  // other three sent the reader hunting for a stopped process while the port
+  // was, in fact, held by something else. Each cause gets its own assertion
+  // because a classification nobody checks is a classification that drifts.
+  it('names the cause: a stranger on the port is NOT "nothing listening"', async () => {
+    const fake = await startFakeDaemon((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ hello: 'not atomcode' }));
+    });
+    open.push(fake);
+    const info = await healthInfo(fake.port);
+    assert.equal(info.up, false);
+    assert.equal(info.reason, 'not-atomcode', 'the port IS served; "未监听" would be a lie');
+  });
+
+  it('names the cause: an unparseable 2xx body is its own failure', async () => {
+    const fake = await startFakeDaemon((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('pong');
+    });
+    open.push(fake);
+    const info = await healthInfo(fake.port);
+    assert.equal(info.up, false);
+    assert.equal(info.reason, 'unreadable');
+  });
+
+  it('names the cause: a non-2xx answer from a live port', async () => {
+    const fake = await startFakeDaemon((req, res) => {
+      res.writeHead(503);
+      res.end();
+    });
+    open.push(fake);
+    const info = await healthInfo(fake.port);
+    assert.equal(info.up, false);
+    assert.equal(info.reason, 'http-error');
+  });
+
+  it('names the cause: a refusal is a REFUSAL, and nothing else', async () => {
+    // Bind, learn the port, release it — so "nothing listens" is a fact about
+    // THIS port rather than an assumption about a hardcoded one that some other
+    // process on the machine is free to take.
+    const fake = await startFakeDaemon(() => {});
+    const deadPort = fake.port;
+    await new Promise((resolve) => fake.server.close(resolve));
+    const info = await healthInfo(deadPort);
     assert.equal(info.up, false);
     assert.equal(info.version, '');
+    assert.equal(info.reason, 'refused', 'the one cause "未监听" was ever true of');
   });
 });
 

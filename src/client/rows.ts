@@ -10,12 +10,43 @@
 import type {
   BoundaryRow,
   ConfigBranch,
+  DaemonBranch,
   ProviderBranch,
   ProviderRow,
   ProviderSelectModel,
   ProviderSlotName,
 } from './types.ts';
 import { isLoopbackBaseUrl } from '../shared/loopback.ts';
+
+// ── 启动情况（daemon 存活） ───────────────────────────────────────────────
+
+/**
+ * The one line the panel puts on the bundle card about daemon liveness.
+ *
+ * `downMessage` is worded by the HOST (`describeDaemonDown`), and the tool errors
+ * quote that same function — so the page and the model are handed one sentence,
+ * not two translations of one fact. Re-deriving the cause here would put the
+ * cause in two places with two independent chances to drift, which is precisely
+ * how "未监听" came to be said about four different failures.
+ *
+ * An older host sends no `downMessage` at all. Say that, rather than leaving the
+ * port standing where a reason belongs.
+ */
+export function daemonStatusLine(
+  daemon: DaemonBranch | null | undefined,
+  daemonVersion?: string | null,
+): string {
+  const d: DaemonBranch = daemon && typeof daemon === 'object' ? daemon : {};
+  if (d.up) {
+    const version = typeof daemonVersion === 'string' && daemonVersion !== '' ? ' ' + daemonVersion : '';
+    return 'daemon 运行中' + version;
+  }
+  const why =
+    typeof d.downMessage === 'string' && d.downMessage !== ''
+      ? d.downMessage
+      : '原因未记录（宿主较旧）';
+  return `daemon 未运行（${why}${d.autoStart ? '；可自动拉起' : ''}）`;
+}
 
 // ── 回合边界 ──────────────────────────────────────────────────────────────
 

@@ -40,12 +40,12 @@ import {
   DEFAULT_PORT,
   TOOLS_CAP,
   askChat,
-  health,
   healthInfo,
   listModels,
   runCommand,
   spawnDaemon,
 } from './daemon.ts';
+import type { HealthFailure } from './daemon.ts';
 import { createSessionStore, defaultStatePath } from './sessions.ts';
 import { createProviderStore, PROVIDER_SLOTS, normalizeProviderName } from './provider-store.ts';
 import { runReview, checkReviewProvision, selectReviewProvider, probeLocalEndpoint } from './review.ts';
@@ -125,6 +125,48 @@ export function detectProfileKey(argv: string[] = process.argv) {
   return '';
 }
 
+/**
+ * Say WHY the daemon is not reachable — one cause per sentence, and NO port.
+ *
+ * Every one of these used to read "未监听", and that is true of exactly one of
+ * them. A port held by a different service, a daemon that accepted the
+ * connection and then stopped answering, and a port nobody is listening on look
+ * identical from here and share nothing as problems: one needs the process
+ * started, one needs the other service moved, one needs the daemon looked at. A
+ * message that names the wrong cause costs the reader exactly the time they came
+ * here to save, so an unclassified shape says so rather than picking the
+ * plausible one.
+ *
+ * The port is left to the caller, because its callers disagree about where it
+ * goes: the tool errors embed it in the address they quote, while the panel
+ * prints it on its own line and would otherwise say it twice.
+ *
+ * @param reason - from `healthInfo`; `''` means the daemon is up (callers do not
+ *   ask for a sentence then) or that no probe has finished yet.
+ */
+function describeDaemonDown(reason: HealthFailure): string {
+  switch (reason) {
+    case 'refused':
+      return '没有任何进程在监听';
+    case 'timeout':
+      return `有进程在监听，但 ${DAEMON_PROBE_TIMEOUT_MS}ms 内无应答`;
+    case 'http-error':
+      return '端口上有服务，但 /health 返回非 2xx';
+    case 'unreadable':
+      return '端口上有服务，但应答不是可解析的 JSON';
+    case 'not-atomcode':
+      return '端口被非 AtomCode 服务占用（/health 未声明 atomcode-daemon）';
+    case 'unreachable':
+      return '探活失败，原因未能归类';
+    case '':
+      // Down, but no probe has finished yet — the panel can ask before the
+      // mount's first probe resolves. Not a failure, and not worth inventing one.
+      return '尚未探活';
+    default:
+      return '探活失败，原因未能归类';
+  }
+}
+
 /** Snapshot body consumed by the plugin detail-page client. */
 function buildStatsBody(stats: Record<string, any>, quota: any) {
   return {
@@ -144,6 +186,11 @@ function buildStatsBody(stats: Record<string, any>, quota: any) {
       // "starting…" instead of "failed" for the first half-minute.
       starting: stats.daemonStarting,
       lastCheckedAt: stats.lastHealthAt,
+      // The named cause, already worded, and `''` while up. Sent as a sentence
+      // rather than a code for the renderer to translate: the tool errors say the
+      // same thing from the same function, and a panel that re-derived its own
+      // wording is how the two halves end up telling the user two stories.
+      downMessage: stats.daemonUp ? '' : describeDaemonDown(stats.daemonDownReason),
     },
     binary: {
       configured: stats.binaryConfigured,
@@ -591,6 +638,9 @@ function createRuntime({
     reviewEndpoints: reviewProvision.endpoints || {},
     daemonUp: false,
     daemonVersion: '',
+    // Which probe failure put `daemonUp` at false (`''` while up). One flag for
+    // four different causes was the whole problem — see describeDaemonDown.
+    daemonDownReason: '' as HealthFailure,
     spawnTried: false,
     spawnAttempts: 0,
     spawnFailures: 0,
@@ -627,6 +677,9 @@ function createRuntime({
     try {
       const info = await healthInfo(port, AbortSignal.timeout(DAEMON_PROBE_TIMEOUT_MS));
       stats.daemonUp = info.up;
+      // Carry the CAUSE alongside the flag. Down is one bit; why it is down is
+      // what the error reply and the panel actually need (see describeDaemonDown).
+      stats.daemonDownReason = info.reason;
       // Surface which daemon protocol generation we are talking to (the panel
       // shows it; an unknown major is the plugin's earliest drift signal).
       if (info.version && info.version !== stats.daemonVersion) {
@@ -636,7 +689,10 @@ function createRuntime({
         }
       }
     } catch {
+      // `healthInfo` is contractually non-throwing, so this only fires if that
+      // contract breaks. Say so rather than borrowing a cause we did not observe.
       stats.daemonUp = false;
+      stats.daemonDownReason = 'unreachable';
     }
     stats.lastHealthAt = Date.now();
     return stats.daemonUp;
@@ -864,7 +920,7 @@ function createRuntime({
     if (!stats.daemonUp) {
       stats.modelCatalog = null;
       stats.modelCatalogAt = 0;
-      stats.modelCatalogError = `daemon 未在线（127.0.0.1:${port} 未监听），列不出档位`;
+      stats.modelCatalogError = `daemon 未在线（127.0.0.1:${port}：${describeDaemonDown(stats.daemonDownReason)}），列不出档位`;
       return;
     }
     try {
@@ -1330,7 +1386,7 @@ function mountAskTool({
         return empty(
           exec?.signal?.aborted
             ? '已取消：调用方在等待 AtomCode daemon 就绪期间中止了本次调用'
-            : `AtomCode daemon 不可用（http://127.0.0.1:${port} 未监听${autoStart ? '，自动拉起也失败' : ''}）`,
+            : `AtomCode daemon 不可用（http://127.0.0.1:${port}：${describeDaemonDown(stats.daemonDownReason)}${autoStart ? '，自动拉起也失败' : ''}）`,
         );
       }
       const timeoutMs =

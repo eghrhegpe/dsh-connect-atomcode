@@ -161,6 +161,7 @@ async function snapshotThenRender(configLines, panelPick) {
     const client = await loadClient();
     return {
       body: res.body,
+      client,
       model: client.providerSelectModel(res.body.provider, 'review', REVIEW_FALLBACK),
     };
   } finally {
@@ -233,5 +234,26 @@ describe('snapshot contract — host snapshot read by the client reader', () => 
     const { model } = await snapshotThenRender(['# no providers at all'], null);
     assert.equal(model.disabled, true);
     assert.notEqual(model.reason, '', 'a disabled dropdown must say why (红线 3)');
+  });
+
+  it('the host names WHY the daemon is down, and the panel renders THAT sentence', async () => {
+    // The joint this branch was missing. `daemon.up` used to be one bit for four
+    // causes — nothing listening, a stranger holding the port, a daemon that went
+    // silent, a non-2xx answer — and every reader, panel and tool error alike,
+    // was told the same thing: "未监听". True of one of them. The host now names
+    // the cause and words the sentence; the renderer's job is to show it, not to
+    // translate it into a second version that can drift.
+    //
+    // This fixture IS a refusal: CLOSED_PORT has nothing on it.
+    const { body, client } = await snapshotThenRender(['# no providers at all'], null);
+    assert.equal(body.daemon.up, false);
+    assert.equal(
+      body.daemon.downMessage,
+      '没有任何进程在监听',
+      'the host must name the refusal it actually observed',
+    );
+    const line = client.daemonStatusLine(body.daemon, null);
+    assert.match(line, /没有任何进程在监听/, "the panel must show the host's sentence");
+    assert.doesNotMatch(line, /未监听/, 'and must not restore the blanket cause it replaced');
   });
 });

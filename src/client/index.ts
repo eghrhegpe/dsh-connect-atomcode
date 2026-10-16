@@ -35,7 +35,7 @@ import {
   quotaView,
   panelStyle,
 } from './quota.ts';
-import { providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint } from './rows.ts';
+import { providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint, daemonStatusLine } from './rows.ts';
 
 // The loader hands the factory an untyped `require`; the host resolves
 // `react` from the web boot's seed table.
@@ -116,6 +116,7 @@ const REGISTRATION = {
       providerSelectModel,
       turnBoundaryRows,
       isLoopbackEndpoint,
+      daemonStatusLine,
     };
 
     async function postProvider(slotName: ProviderSlotName, value: string) {
@@ -586,7 +587,7 @@ const REGISTRATION = {
       const d = data.daemon || {};
       const cfg = data.config || {};
       const parts = [
-        d.up ? 'daemon 运行中' + (data.protocol && data.protocol.daemonVersion ? ' ' + data.protocol.daemonVersion : '') : d.autoStart ? 'daemon 未运行（可自动拉起）' : 'daemon 未运行',
+        daemonStatusLine(d, data.protocol && data.protocol.daemonVersion),
         '端口 ' + (d.port == null ? '—' : d.port),
       ];
       if (cfg.reviewAvailable === false) parts.push('评审不可用');
@@ -729,6 +730,13 @@ const REGISTRATION = {
               h(Row, { label: '监听端口' }, String(d.port)),
               h(Row, { label: '自动启动' }, d.autoStart ? '开启' : '关闭'),
               h(Row, { label: '拉起状态' }, spawnNote),
+              // WHY it is down, only when it is down. A cause is the one thing
+              // "未运行" cannot tell you, and the three causes behind it (nothing
+              // listening / a different service holding the port / accepting then
+              // going silent) have nothing in common but the symptom.
+              !d.up && !d.starting
+                ? h(Row, { label: '未就绪原因' }, d.downMessage || '未上报（宿主较旧）')
+                : null,
               // Which daemon build the bridged (private, unversioned) protocol
               // is being spoken against — the earliest drift signal.
               h(Row, { label: 'daemon 版本' }, proto.daemonVersion || (d.up ? '未知' : '—')),

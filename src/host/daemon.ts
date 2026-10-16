@@ -86,24 +86,82 @@ export function readToken(port: number, home: string = homedir()) {
 }
 
 /**
+ * Why a probe came back `up: false`. Named one at a time rather than collapsed
+ * into the flag, because every caller that reports an outage used to say the
+ * same thing — "未监听" — for all of these, and that is true of exactly one.
+ *
+ * A port occupied by something that is not AtomCode, a daemon that accepted the
+ * connection and then stopped answering, and a port nobody is listening on are
+ * three different problems with three different fixes. A message that names the
+ * wrong one sends the reader to the wrong place — and the failure it describes
+ * is precisely the one where a wrong guess costs the most time.
+ *
+ * `unreachable` is the deliberate catch-all: when the cause is not a shape we
+ * can name with confidence, say that much and no more.
+ */
+export type HealthFailure =
+  | '' // serving
+  | 'refused' // nothing accepted the connection
+  | 'timeout' // the probe's own budget elapsed before an answer
+  | 'http-error' // something answered, with a non-2xx status
+  | 'unreadable' // something answered 2xx, with a body we could not parse
+  | 'not-atomcode' // a service answered, but it is not the AtomCode daemon
+  | 'unreachable'; // the fetch failed for a reason we do not classify
+
+/**
+ * Classify a rejected `fetch`. Only shapes we can name with confidence get a
+ * name. undici wraps the operating-system cause one level down in
+ * `error.cause`, so a bare `error.code` is usually empty — check both.
+ */
+function probeFailure(error: any): HealthFailure {
+  const code = (error && error.cause && error.cause.code) || (error && error.code) || '';
+  if (code === 'ECONNREFUSED') return 'refused';
+  const name = error && error.name;
+  if (
+    name === 'AbortError' ||
+    name === 'TimeoutError' ||
+    code === 'UND_ERR_ABORTED' ||
+    code === 'ABORT_ERR'
+  ) {
+    // The production probe always passes `AbortSignal.timeout(...)`, so an abort
+    // here means its budget elapsed. (A caller-supplied cancellation signal is
+    // handled by the caller, which knows it aborted on purpose.)
+    return 'timeout';
+  }
+  return 'unreachable';
+}
+
+/**
  * GET /health with the daemon version, so the plugin can surface which
  * protocol generation it is talking to instead of guessing.
+ *
+ * `reason` names WHY the probe failed — see `HealthFailure`. It is `''` when up.
+ *
  * @param {number} port
  * @param {AbortSignal} [signal]
- * @returns {Promise<{up:boolean, version:string}>}
+ * @returns {Promise<{up:boolean, version:string, reason:HealthFailure}>}
  */
 export async function healthInfo(port: number = DEFAULT_PORT, signal?: AbortSignal) {
+  let res: Response;
   try {
-    const res = await fetch(`${baseUrl(port)}/health`, { method: 'GET', signal });
-    if (!res.ok) return { up: false, version: '' };
-    const body = await res.json();
-    return {
-      up: !!(body && body.service === 'atomcode-daemon'),
-      version: body && typeof body.version === 'string' ? body.version : '',
-    };
-  } catch {
-    return { up: false, version: '' };
+    res = await fetch(`${baseUrl(port)}/health`, { method: 'GET', signal });
+  } catch (error: any) {
+    return { up: false, version: '', reason: probeFailure(error) };
   }
+  if (!res.ok) return { up: false, version: '', reason: 'http-error' as HealthFailure };
+  let body: any;
+  try {
+    body = await res.json();
+  } catch {
+    // A 2xx whose body is not JSON: something is serving this port, it just is
+    // not the daemon. Saying "未监听" here would send the reader hunting for a
+    // stopped process while the port is held by something else.
+    return { up: false, version: '', reason: 'unreadable' as HealthFailure };
+  }
+  if (!body || body.service !== 'atomcode-daemon') {
+    return { up: false, version: '', reason: 'not-atomcode' as HealthFailure };
+  }
+  return { up: true, version: typeof body.version === 'string' ? body.version : '', reason: '' as HealthFailure };
 }
 
 /**

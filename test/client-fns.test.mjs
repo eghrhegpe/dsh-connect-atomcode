@@ -71,7 +71,7 @@ async function loadClient(fakeRequire) {
 }
 
 const mod = await loadClient();
-const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint } = mod.__test;
+const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint, daemonStatusLine } = mod.__test;
 
 describe('client __test — the formatters are exposed', () => {
   it('exports every pure helper the panel renders through', () => {
@@ -87,9 +87,36 @@ describe('client __test — the formatters are exposed', () => {
       quotaView,
       providerRows,
       providerSelectModel,
+      daemonStatusLine,
     })) {
       assert.equal(typeof fn, 'function', `${name} must be callable from tests`);
     }
+  });
+});
+
+describe('daemonStatusLine — the panel shows the HOST\'s cause, never its own', () => {
+  it('an up daemon carries its version and no cause', () => {
+    assert.equal(daemonStatusLine({ up: true }, '5.2.3'), 'daemon 运行中 5.2.3');
+    assert.equal(daemonStatusLine({ up: true }, ''), 'daemon 运行中');
+  });
+
+  it('a down daemon shows the sentence the host worded', () => {
+    // The sentence is composed by the host (`describeDaemonDown`) and quoted
+    // verbatim by the tool errors. Re-wording it here is what let one port get
+    // four different causes all reported as "未监听".
+    const line = daemonStatusLine({ up: false, downMessage: '端口被非 AtomCode 服务占用（/health 未声明 atomcode-daemon）', autoStart: true });
+    assert.match(line, /端口被非 AtomCode 服务占用/);
+    assert.match(line, /可自动拉起/);
+    assert.doesNotMatch(line, /未监听/);
+  });
+
+  it('an OLDER host that sends no cause says so instead of blaming the port', () => {
+    const line = daemonStatusLine({ up: false }, null);
+    assert.match(line, /原因未记录（宿主较旧）/, 'a missing reason must be named, not silently blank');
+  });
+
+  it('auto-start off is not advertised as recoverable', () => {
+    assert.doesNotMatch(daemonStatusLine({ up: false, downMessage: '没有任何进程在监听', autoStart: false }, null), /可自动拉起/);
   });
 });
 
