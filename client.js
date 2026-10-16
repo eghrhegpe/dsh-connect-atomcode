@@ -697,6 +697,123 @@
 	}
 
 //#endregion
+//#region src/client/status-section.ts
+/**
+	* Build the status panel component.
+	*
+	* @param {StatusSectionDeps} deps
+	* @returns {(props: any) => ReactElement} the `StatusSection` component.
+	*/
+	function createStatusSection(deps) {
+		const { h, useStats, SummaryLine, StatusPill, Row, Metric, CallStat, ProviderSelectRow } = deps;
+		return function StatusSection(props) {
+			const view = props && props.view;
+			const subject = props && props.subject;
+			if (!(view === "summary" || view === "page")) {
+				if ((subject && subject.kind === "bundle" ? subject.pkg && subject.pkg.name : void 0) !== "dsh-connect-atomcode") return null;
+			}
+			if (view === "summary") return h(SummaryLine, null);
+			const { data, error, updatedAt, reload } = useStats();
+			let body;
+			if (error) body = h("div", { style: S.notice }, h("p", { style: S.error }, "统计信息加载失败：" + error));
+			else if (!data) body = h("div", { style: S.notice }, "加载中…");
+			else {
+				const d = data.daemon || {};
+				const bin = data.binary || {};
+				const cfg = data.config || {};
+				const quota = data.quota || {};
+				const ask = data.ask || {
+					calls: 0,
+					ok: 0,
+					err: 0,
+					msTotal: 0,
+					tokens: 0
+				};
+				const review = data.review || {
+					calls: 0,
+					ok: 0,
+					err: 0,
+					msTotal: 0
+				};
+				const proto = data.protocol || {};
+				const protoNotice = protocolDriftNotice(proto);
+				const prov = data.provider || null;
+				const retryNote = cfg.daemonRetrySecs > 0 ? cfg.daemonRetrySecs + "s" : "每次轮询";
+				const liveResetSecs = liveRemaining(quota.resetInSecs, quota.fetchedAt, Date.now());
+				const quotaPct = typeof quota.usagePercent === "number" ? quota.usagePercent : null;
+				const quotaExpiry = [quota.expires, quota.planWindow].filter(Boolean).join(" · ");
+				const askAvg = ask.calls > 0 ? Math.round(ask.msTotal / ask.calls) : 0;
+				const reviewAvg = review.calls > 0 ? Math.round(review.msTotal / review.calls) : 0;
+				const binPath = bin.configured || bin.env || "自动探测（PATH）";
+				const spawnNote = d.up ? d.spawnTried ? "已自动拉起" : "运行中" : d.starting ? "正在拉起…" : d.spawnTried ? "自动拉起失败" : "未触发自动拉起";
+				body = h("div", { style: S.wrap }, h("div", { style: S.titleRow }, h("h3", { style: S.title }, "运行统计"), h("span", { style: error ? {
+					...S.live,
+					...S.liveStale
+				} : S.live }, error ? "已断开" : "实时"), updatedAt ? h("span", {
+					style: S.updated,
+					title: error || ""
+				}, (error ? "最后更新 " : "更新于 ") + new Date(updatedAt).toLocaleTimeString("zh-CN")) : null, error ? h("span", {
+					style: {
+						...S.updated,
+						...S.staleReason
+					},
+					title: error
+				}, error) : null), proto.quotaTextDrift ? h("div", { style: S.notice }, "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。") : null, protoNotice ? h("div", { style: S.notice }, protoNotice) : null, cfg.reviewAvailable ? null : h("div", { style: S.notice }, "代码评审（atomcode_review）当前不可用：" + (cfg.reviewReason || "本机 AtomCode 配置没有可用的直连 provider") + "。侧边咨询（atomcode_ask）不受影响。"), h("div", { style: S.grid }, h("div", { style: S.card }, h("p", { style: {
+					...S.cardTitle,
+					display: "flex",
+					alignItems: "center",
+					gap: "8px"
+				} }, "启动情况", h(StatusPill, { up: !!d.up })), h(Row, { label: "监听端口" }, String(d.port)), h(Row, { label: "自动启动" }, d.autoStart ? "开启" : "关闭"), h(Row, { label: "拉起状态" }, spawnNote), !d.up && !d.starting ? h(Row, { label: "未就绪原因" }, d.downMessage || "未上报（宿主较旧）") : null, h(Row, { label: "daemon 版本" }, proto.daemonVersion || (d.up ? "未知" : "—")), !d.up && d.spawnFailures > 1 ? h(Row, { label: "拉起重试" }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "运行环境"), h(Row, { label: "AtomCode" }, binPath), h("div", { style: S.provGrid }, providerRows(cfg).map((row) => h(ProviderSelectRow, {
+					key: "provider-" + row.slotName,
+					label: row.label,
+					slotName: row.slotName,
+					provider: prov,
+					fallbackLabel: row.fallback,
+					title: row.title,
+					reload
+				}))), cfg.reviewAvailable ? null : h(Row, { label: "评审可用性" }, h("span", { style: S.error }, "不可用 — 改用 atomcode_ask"))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "回合边界"), turnBoundaryRows(cfg).map((row) => h(Row, {
+					key: "bound-" + row.label,
+					label: row.label
+				}, h("span", { title: row.title }, row.text)))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "侧边会话"), h("div", { style: S.metrics }, h(Metric, {
+					num: data.sessions && data.sessions.tracked || 0,
+					label: "已跟踪会话"
+				})), h(Row, { label: "运行时长" }, fmtDuration(data.uptimeMs)), data.sessions && data.sessions.error ? h("p", { style: S.error }, "会话续接已降级（回复不受影响）：" + data.sessions.error) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "工具调用统计"), h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
+					num: ask.calls,
+					label: "调用"
+				}), h(CallStat, {
+					num: ask.ok,
+					label: "成功",
+					color: ask.ok ? "var(--dsw-alias-state-success-primary)" : void 0
+				}), h(CallStat, {
+					num: ask.err,
+					label: "失败",
+					color: ask.err ? "var(--dsw-alias-state-error-primary)" : void 0
+				})), h("div", { style: {
+					...S.callGroup,
+					borderRight: "none",
+					paddingRight: 0
+				} }, h("span", { style: S.callGroupLabel }, "atomcode_review"), h(CallStat, {
+					num: review.calls,
+					label: "调用"
+				}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)), h(Row, { label: "review 平均耗时" }, fmtDuration(reviewAvg))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "CodingPlan 额度"), !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", null, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", null, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
+					...S.metricNum,
+					color: quotaColor(quotaPct, quota.limited)
+				} }, pctLabel(quotaPct)), h("span", { style: S.metricLabel }, "当前时间窗口用量" + (liveResetSecs == null ? "" : " · " + fmtCountdown(liveResetSecs) + " 后重置"))), quotaPct == null ? null : h("div", { style: {
+					height: "6px",
+					borderRadius: "3px",
+					border: "1px solid var(--dsw-alias-border-l1)",
+					overflow: "hidden"
+				} }, h("div", { style: {
+					height: "100%",
+					width: barWidth(quotaPct) + "%",
+					background: quotaColor(quotaPct, quota.limited)
+				} })), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 " + windowLabel(quota.planWindow) + " 窗口已用尽，回合会被限流") : null))));
+			}
+			return body;
+		};
+	}
+
+//#endregion
 //#region src/client/index.ts
 	const REGISTRATION = {
 		id: "dsh-connect-atomcode",
@@ -1058,111 +1175,16 @@
 					title: parts.join(" · ")
 				}, parts.join(" · "));
 			}
-			function StatusSection(props) {
-				const view = props && props.view;
-				const subject = props && props.subject;
-				if (!(view === "summary" || view === "page")) {
-					if ((subject && subject.kind === "bundle" ? subject.pkg && subject.pkg.name : void 0) !== "dsh-connect-atomcode") return null;
-				}
-				if (view === "summary") return h(SummaryLine, null);
-				const { data, error, updatedAt, reload } = useStats();
-				let body;
-				if (error) body = h("div", { style: S.notice }, h("p", { style: S.error }, "统计信息加载失败：" + error));
-				else if (!data) body = h("div", { style: S.notice }, "加载中…");
-				else {
-					const d = data.daemon || {};
-					const bin = data.binary || {};
-					const cfg = data.config || {};
-					const quota = data.quota || {};
-					const ask = data.ask || {
-						calls: 0,
-						ok: 0,
-						err: 0,
-						msTotal: 0,
-						tokens: 0
-					};
-					const review = data.review || {
-						calls: 0,
-						ok: 0,
-						err: 0,
-						msTotal: 0
-					};
-					const proto = data.protocol || {};
-					const protoNotice = protocolDriftNotice(proto);
-					const prov = data.provider || null;
-					const retryNote = cfg.daemonRetrySecs > 0 ? cfg.daemonRetrySecs + "s" : "每次轮询";
-					const liveResetSecs = liveRemaining(quota.resetInSecs, quota.fetchedAt, Date.now());
-					const quotaPct = typeof quota.usagePercent === "number" ? quota.usagePercent : null;
-					const quotaExpiry = [quota.expires, quota.planWindow].filter(Boolean).join(" · ");
-					const askAvg = ask.calls > 0 ? Math.round(ask.msTotal / ask.calls) : 0;
-					const reviewAvg = review.calls > 0 ? Math.round(review.msTotal / review.calls) : 0;
-					const binPath = bin.configured || bin.env || "自动探测（PATH）";
-					const spawnNote = d.up ? d.spawnTried ? "已自动拉起" : "运行中" : d.starting ? "正在拉起…" : d.spawnTried ? "自动拉起失败" : "未触发自动拉起";
-					body = h("div", { style: S.wrap }, h("div", { style: S.titleRow }, h("h3", { style: S.title }, "运行统计"), h("span", { style: error ? {
-						...S.live,
-						...S.liveStale
-					} : S.live }, error ? "已断开" : "实时"), updatedAt ? h("span", {
-						style: S.updated,
-						title: error || ""
-					}, (error ? "最后更新 " : "更新于 ") + new Date(updatedAt).toLocaleTimeString("zh-CN")) : null, error ? h("span", {
-						style: {
-							...S.updated,
-							...S.staleReason
-						},
-						title: error
-					}, error) : null), proto.quotaTextDrift ? h("div", { style: S.notice }, "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。") : null, protoNotice ? h("div", { style: S.notice }, protoNotice) : null, cfg.reviewAvailable ? null : h("div", { style: S.notice }, "代码评审（atomcode_review）当前不可用：" + (cfg.reviewReason || "本机 AtomCode 配置没有可用的直连 provider") + "。侧边咨询（atomcode_ask）不受影响。"), h("div", { style: S.grid }, h("div", { style: S.card }, h("p", { style: {
-						...S.cardTitle,
-						display: "flex",
-						alignItems: "center",
-						gap: "8px"
-					} }, "启动情况", h(StatusPill, { up: !!d.up })), h(Row, { label: "监听端口" }, String(d.port)), h(Row, { label: "自动启动" }, d.autoStart ? "开启" : "关闭"), h(Row, { label: "拉起状态" }, spawnNote), !d.up && !d.starting ? h(Row, { label: "未就绪原因" }, d.downMessage || "未上报（宿主较旧）") : null, h(Row, { label: "daemon 版本" }, proto.daemonVersion || (d.up ? "未知" : "—")), !d.up && d.spawnFailures > 1 ? h(Row, { label: "拉起重试" }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "运行环境"), h(Row, { label: "AtomCode" }, binPath), h("div", { style: S.provGrid }, providerRows(cfg).map((row) => h(ProviderSelectRow, {
-						key: "provider-" + row.slotName,
-						label: row.label,
-						slotName: row.slotName,
-						provider: prov,
-						fallbackLabel: row.fallback,
-						title: row.title,
-						reload
-					}))), cfg.reviewAvailable ? null : h(Row, { label: "评审可用性" }, h("span", { style: S.error }, "不可用 — 改用 atomcode_ask"))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "回合边界"), turnBoundaryRows(cfg).map((row) => h(Row, {
-						key: "bound-" + row.label,
-						label: row.label
-					}, h("span", { title: row.title }, row.text)))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "侧边会话"), h("div", { style: S.metrics }, h(Metric, {
-						num: data.sessions && data.sessions.tracked || 0,
-						label: "已跟踪会话"
-					})), h(Row, { label: "运行时长" }, fmtDuration(data.uptimeMs)), data.sessions && data.sessions.error ? h("p", { style: S.error }, "会话续接已降级（回复不受影响）：" + data.sessions.error) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "工具调用统计"), h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
-						num: ask.calls,
-						label: "调用"
-					}), h(CallStat, {
-						num: ask.ok,
-						label: "成功",
-						color: ask.ok ? "var(--dsw-alias-state-success-primary)" : void 0
-					}), h(CallStat, {
-						num: ask.err,
-						label: "失败",
-						color: ask.err ? "var(--dsw-alias-state-error-primary)" : void 0
-					})), h("div", { style: {
-						...S.callGroup,
-						borderRight: "none",
-						paddingRight: 0
-					} }, h("span", { style: S.callGroupLabel }, "atomcode_review"), h(CallStat, {
-						num: review.calls,
-						label: "调用"
-					}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)), h(Row, { label: "review 平均耗时" }, fmtDuration(reviewAvg))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "CodingPlan 额度"), !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", null, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", null, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
-						...S.metricNum,
-						color: quotaColor(quotaPct, quota.limited)
-					} }, pctLabel(quotaPct)), h("span", { style: S.metricLabel }, "当前时间窗口用量" + (liveResetSecs == null ? "" : " · " + fmtCountdown(liveResetSecs) + " 后重置"))), quotaPct == null ? null : h("div", { style: {
-						height: "6px",
-						borderRadius: "3px",
-						border: "1px solid var(--dsw-alias-border-l1)",
-						overflow: "hidden"
-					} }, h("div", { style: {
-						height: "100%",
-						width: barWidth(quotaPct) + "%",
-						background: quotaColor(quotaPct, quota.limited)
-					} })), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 " + windowLabel(quota.planWindow) + " 窗口已用尽，回合会被限流") : null))));
-				}
-				return body;
-			}
+			const StatusSection = createStatusSection({
+				h,
+				useStats,
+				SummaryLine,
+				StatusPill,
+				Row,
+				Metric,
+				CallStat,
+				ProviderSelectRow
+			});
 			function apply(ctx) {
 				let mounted = false;
 				const mount = (seat, options) => {
