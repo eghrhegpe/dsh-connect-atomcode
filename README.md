@@ -69,7 +69,7 @@ bundle 形式（与本机 `dsh-connect-*` 同品类），三种装法任选：
 
 1. **npm 包**（普通用户，已发 registry）：
    `dsh plugin add dsh-connect-atomcode`，或在 `plugin_manager` 里 `install_bundle` 且 `target` 填 `dsh-connect-atomcode`
-2. **GitHub 直装**（走 git dep，装 `main`）：`dsh plugin add Yinyuan34513/dsh-atomcode-bridge`
+2. **GitHub 直装**（走 git dep，装 `main`）：`dsh plugin add eghrhegpe/dsh-connect-atomcode`
 3. **本地开发**：开发目录 `~/.dsh/plugins/dsh-atomcode-bridge`（pnpm `link:` 依赖）→ profile `package.json` 的 `dependencies` 加 `"dsh-connect-atomcode": "link:..."`，`dsh.profile.bundles` 追加包名，`pnpm install`
 
 bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行与全部配置项，无需再写 profile patch。**装完重启 DSH 进程**——patch 在启动时读取、Host 半边只在启动时加载一次；只改 `client.js` 刷新浏览器即可。

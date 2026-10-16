@@ -258,7 +258,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
   **发版打 git tag**：`git tag v<package.json version>`（两处手改 + `npm run build` 产物落定后再打）。
   「某版本是哪次提交」回看 `git tag`，行为史靠 `CHANGELOG.md` + `git log --date=short`。
   发布形态与兄弟插件同款：`package.json` 的 `prepack: npm run build` + `files` 白名单 + `publishConfig.access`；
-  市场投稿见 `docs/submission/Yinyuan34513__dsh-atomcode-bridge.yml`——复制到 awesome-dsh-plugin 的
+  市场投稿见 `docs/submission/eghrhegpe__dsh-connect-atomcode.yml`——复制到 awesome-dsh-plugin 的
   `data/plugins/` 后开 PR，别加 `npm:` 字段、别在 yml 里放截图（市场读仓库根 `screenshots.json`）。
 - **`upstream/atomcode-open-api`** 是参照件（第三方 AtomCode OpenAPI 实现，自带 `.git`），
   已被 `.gitignore` 的 `/upstream/` 排除、**故意不在仓库历史里**（见「工作目录与装载方式」那条）。

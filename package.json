@@ -13,13 +13,13 @@
   ],
   "type": "module",
   "author": "Yinyuan34513",
-  "homepage": "https://github.com/Yinyuan34513/dsh-atomcode-bridge",
+  "homepage": "https://github.com/eghrhegpe/dsh-connect-atomcode",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Yinyuan34513/dsh-atomcode-bridge.git"
+    "url": "git+https://github.com/eghrhegpe/dsh-connect-atomcode.git"
   },
   "bugs": {
-    "url": "https://github.com/Yinyuan34513/dsh-atomcode-bridge/issues"
+    "url": "https://github.com/eghrhegpe/dsh-connect-atomcode/issues"
   },
   "license": "MIT",
   "engines": {

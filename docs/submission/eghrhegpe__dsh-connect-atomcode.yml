@@ -1,6 +1,6 @@
 # Submission draft for awesome-dsh-plugin.
 #
-# Copy this file to `data/plugins/Yinyuan34513__dsh-atomcode-bridge.yml` in a fork of
+# Copy this file to `data/plugins/eghrhegpe__dsh-connect-atomcode.yml` in a fork of
 # awesome-dsh-plugin/awesome-dsh-plugin and open a PR that adds only it. Do not edit that
 # repository's READMEs — both are generated from data/plugins/. Do not add an `npm:` field
 # (market CI rejects it); do not add screenshots here (the market reads this repo's root
@@ -23,8 +23,8 @@
 #   "each tool names its own model default" — two SEPARATE knobs in cordis.patch.yml
 #     (default_provider for ask, review_default_provider for review): the ask path takes a model
 #     PROFILE name ("AtomGit-glm5.3-flash") while review takes a direct [providers.<name>] entry.
-url: https://github.com/Yinyuan34513/dsh-atomcode-bridge
-name: Yinyuan34513/dsh-atomcode-bridge
+url: https://github.com/eghrhegpe/dsh-connect-atomcode
+name: eghrhegpe/dsh-connect-atomcode
 category: tool
 description:
   en: 'Bridges the AtomCode terminal AI coding assistant already signed in on this machine into DeepSeek Harness as two side tools: atomcode_ask (a side-conversation relay with per-working-directory session continuity) and atomcode_review (a one-shot, bounded code review with structured findings). No API key to configure and no model takeover — the settings card just adds a read-only CodingPlan quota read-out, and each tool names its own model default.'
