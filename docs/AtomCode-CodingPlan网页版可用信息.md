@@ -1,3 +1,6 @@
+> 网页素材（ai.atomgit.com 的 CodingPlan 页面），**2026-10-14 抓取**。促销文案（限时免费 / 30 天有效 / 限量 2000 人/日）会过期——
+> 当前状态以网页版为准，本篇只作当时的快照。同批抓取的额度卡 DOM 见 `AtomCode-CodingPlan网页版额度卡片.md`。
+
 AtomCode CodingPlan
 全新上线
 免费领取 CodingPlan 权益，系统自动发放当前可获得的最高权益；调用额度按 5 小时滚动窗口计量 ·AtomCode 入门课程

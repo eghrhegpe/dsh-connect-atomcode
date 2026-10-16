@@ -348,7 +348,8 @@ ATOMCODE_LIVE_TURNS=1 npm run test:live
 自洽（不需要 daemon、不需要网络、不烧 token）：
 
 ```bash
-npm test           # 链的名单就是 package.json 的 scripts.test：daemon-parse + daemon-stream + review + review-select + wiring + client-id + client-fns + build-gate + ask-glue + stats-route + quota + protocol
+npm test           # 链的名单 = package.json 的 scripts.test；名单只在那里维护，本文不抄——抄了就会过期
+                    # （这行此前就漏过 snapshot-contract）；规则见 docs/README.md「写文档的纪律」
                    # 计数自己量：npm test 2>&1 | Select-String '^ℹ tests'（写死数字上次 13 分钟就过期了，见 AGENTS.md）
 ```
 

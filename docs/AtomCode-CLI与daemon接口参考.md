@@ -328,6 +328,9 @@ AtomCode error: missing base URL: pass --base-url, set $ATOMCODE_BASE_URL, or ad
 
 ## 6. 本插件实际用到的子集
 
+> ⚠️ 下表 `lib/*.js` 是**构建产物**（真源在 `src/`，`npm run build` 生成；见 `AGENTS.md` 头注与 `tsdown.config.mjs` 头注）。
+> 本表用来**读符号定位置**；改行为一律改 `src/` 再构建，改 `lib/` 下次的构建就没了。
+
 | AtomCode 面 | 插件里的位置 |
 |---|---|
 | `GET /health` | `lib/daemon.js: health()` —— 存活探测与拉起轮询 |

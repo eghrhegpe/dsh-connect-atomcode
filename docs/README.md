@@ -58,6 +58,7 @@
 | [`../scripts/probes/`](../scripts/probes/) | 要复现上面那些实测 | 探针脚本（**含成本标注**：哪个零额度、哪个花一个真实回合）。结论在 docs/，脚本是结论的出处 |
 | [`../test/`](../test) | 改测试前 | 离线 + live 套件。**套件头注就是契约**，不是附件；名单以 `package.json` 的 `scripts.test` 为准 |
 | [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) | 要确认来源与许可 | 上游移植来源、本机参照的本地代理、运行时依赖的官方二进制，三者的许可与出处 |
+| [`submission/`](./submission/) | 要向市场投稿 / 改过 description 后 | 市场投稿草稿 `eghrhegpe__dsh-connect-atomcode.yml`：头注逐个名词锚定了证据出处；投放步骤见 `RELEASING.md` §10 |
 
 ## 写文档的纪律
 

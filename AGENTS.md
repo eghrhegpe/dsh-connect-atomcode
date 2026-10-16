@@ -250,13 +250,14 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 - **没有 `docs/PITFALLS.md` 与 `docs/ARCHITECTURE.md`**——本插件没有兄弟插件那套事故史账本；
   三条事实 + 8 条红线 + `docs/DECISIONS.md` 就是全部的判断依据。别照抄一份空的出来占位。
   （事故卷宗只有一份，按主题拆在 `docs/AtomGit-网关与-review-通路.md` 里。）
-- **发版手册在 `docs/RELEASING.md`**（动作顺序 + 本仓库特有坑）。核心纪律：版本号**两处手改**：
+- **发版手册在 `docs/RELEASING.md`**（状态判定表 + 不可逆点 + 动作顺序 + 本仓库特有坑，含 npm 内容核验与 GitHub Release 步骤）。核心纪律：版本号**两处手改**：
   `package.json` 的 `version`
   与 `src/host/index.ts` 里 stats body 的 `version`。两处必须一致，断言在 `test/wiring.test.mjs`
   （产物 `lib/index.js` 由构建生成，手改它等于没改）。
   **2026-10-16 补上这条断言**：此前这条纪律只写在文档里，而 `build-gate` 只比 `lib/` 与 `src/`、
   从不看 manifest——「只改一处」就是那样能悄悄漂开的。`cordis.patch.yml` 没有 version 字段。
-  **发版打 git tag**：`git tag v<package.json version>`（两处手改 + `npm run build` 产物落定后再打）。
+  **发版打 git tag**：`git tag v<package.json version>`（两处手改 + `npm run build` 产物落定后再打；
+  推荐先等 push master 的 CI 绿了再打 tag，顺序见 `docs/RELEASING.md` §6.1）。
   「某版本是哪次提交」回看 `git tag`，行为史靠 `CHANGELOG.md` + `git log --date=short`。
   发布形态与兄弟插件同款：`package.json` 的 `prepack: npm run build` + `files` 白名单 + `publishConfig.access`；
   **npm 发布要钉 `registry.npmjs.org`**——本机 `~/.npmrc` 的 registry 是只读镜像
