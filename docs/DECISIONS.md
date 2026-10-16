@@ -24,6 +24,7 @@
 - **面板布局**：`1180px` + `repeat(auto-fit, minmax(320px, 1fr))`
 - **i18n**：`locale/{en,zh}.json` + `files[]` 含 `locale`
 - **工具统计格式**：两组带标签，不摊平成一排
+- **`atomcode_review` 是「经标准 OpenAI 兼容端点的有界一次性评审」，不承诺 Atom 原生通路**。Atom 官方网关（`llm-api.atomgit.com`）对推理端点强制 AtomCode 专有签名，review CLI（`atomcodex`）不会签 → 结构性够不着官方网关，只能走标准直连端点或本地 sidecar 后门。两条「稳定」轴要分开看：**网关/额度轴**上，Atom 原生登录用户的稳定评审通路是 `atomcode_ask` 里的原生 `code_review`（签名 daemon、滚动窗口额度）；**有界性轴**（轮数 + 墙钟双保险丝、`--json` findings、可复现）CLI 更强。工具描述已按此定位改写（2026-10-16）
 
 > 机制层的硬约束（为什么不做 provider 接管、额度为什么只能靠文本解析、三条私有无版本协议怎么办）
 > 写在 `../AGENTS.md` 的「三条事实」——那里是给改代码的人的入口，本文件不重复。
@@ -35,3 +36,4 @@
 - **`GET` 触发 spawn** 保留。只读轮询拉起后台进程是一个设计张力点，但"打开面板即有数据"是有意的权衡（README 已如实描述）。
 - **会话键是 per-working_dir 而非 per-对话**。DSH 不暴露稳定的对话 id，这是合理妥协；现在**在工具描述里写明**了，免得模型误以为 `continue` 续的是自己这条对话。
 - **`diff_text` 的临时文件**仍在系统 tempdir，被 SIGKILL 时会残留。单用户开发机风险低。
+- **默认注册尚未按 provision 门控（未决，暂不做）**。候选方案：仅当存在**健康**的标准直连 provider 时才注册 `atomcode_review`（AtomGit-only 机器上工具直接消失，只留 ask）。暂不做的理由：① 机器级不可用已由「挂载期降级描述 + 执行期拒绝 + 面板 reviewReason」三处"调用前告知"兜住（红线 1 哲学：留着被降级的工具比凭空消失更有信息量）；② 「健康」判定需要活池探针（sidecar 条目配置层可用 ≠ 月度池有量），是另一独立工作项；③ 改默认注册要连带改面板/stats/测试。待 ask-native 收口立项时一并定。
