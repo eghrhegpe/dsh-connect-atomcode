@@ -433,7 +433,14 @@ export function createRuntime({
     } else {
       stats.quotaDriftSeen = false;
     }
-    quotaCache = { at: now, value };
+    // A timeout or transport failure is a fact about ONE ATTEMPT, not about the
+    // daemon: the next panel poll (5s later) may well succeed. Caching it for
+    // the whole TTL froze the panel on "daemon 卡住" for a full minute over a
+    // 3.5s hiccup, and once cached the negative is indistinguishable from a
+    // genuinely unusable quota. Only a settled answer is worth keeping — same
+    // rule the daemon-down branch above already applies to a spawn in flight.
+    const transient = outcome.kind === 'timeout' || outcome.kind === 'transport';
+    if (!transient) quotaCache = { at: now, value };
     return value;
   }
 
