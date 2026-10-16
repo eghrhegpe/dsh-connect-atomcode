@@ -80,17 +80,25 @@ export function panelStyle(
 // ── readout model ─────────────────────────────────────────────────────────
 
 /**
- * The chip's tooltip text, as a LIST of facts.
+ * The chip's panel text, as a LIST of facts.
  *
  * Split rather than pre-joined so the panel can lay each row out on its
  * own line; `null` entries are dropped, which is what lets a partially-known
  * quota show the rows it has instead of a ragged sentence with holes.
+ *
+ * These rows sit UNDER a header that already says "CodingPlan 额度" next to a
+ * large percent and a progress bar, so two facts are deliberately NOT here:
+ *   - the product name (the header says it; "CodingPlan Lite-体验版" said it
+ *     twice inside a 264px panel) — the plan row carries the PLAN alone;
+ *   - "窗口已用 N%" (the big number and the bar are the same fact).
+ * A row that repeats the surface above it is not a fact, it is noise. What is
+ * left is what the header CANNOT show: the plan tier, the window/expiry, and
+ * the live countdown.
  */
-export function quotaFacts(quota: QuotaBranch, pct: number, liveSecs: number | null): string[] {
+export function quotaFacts(quota: QuotaBranch, liveSecs: number | null): string[] {
   return [
-    (quota.plan ? 'CodingPlan ' + quota.plan : 'CodingPlan'),
+    quota.plan || null,
     [quota.expires, quota.planWindow].filter(Boolean).join(' · '),
-    '窗口已用 ' + pct + '%',
     liveSecs === null ? null : '约 ' + fmtCountdown(liveSecs) + ' 后重置',
   ].filter(Boolean) as string[];
 }
@@ -134,7 +142,7 @@ export function quotaView(quota: QuotaBranch | null | undefined, nowMs: number):
     color: limited || (quota!.usagePercent as number) >= 100
       ? 'var(--dsw-alias-state-error-primary)'
       : 'var(--dsw-alias-label-tertiary)',
-    facts: quotaFacts(quota!, pct, liveSecs),
+    facts: quotaFacts(quota!, liveSecs),
     barWidth: barWidth(pct),
   };
 }

@@ -189,8 +189,13 @@ export const S = {
     overflow: 'hidden',
     margin: '0 0 8px',
   },
-  panelFact: { margin: '0 0 2px', fontSize: '11.5px', lineHeight: '17px', color: 'var(--dsw-alias-label-tertiary)' },
-  panelFactLead: { margin: '0 0 2px', fontSize: '11.5px', lineHeight: '17px', color: 'var(--dsw-alias-label-secondary)' },
+  // Fact rows are the panel's CONTENT, not an ambient strip: they read at
+  // `label-secondary` (the host ContextMeter panel body color). `tertiary` is
+  // reserved for the dock chip, which really is ambient — using it here too
+  // made the smallest text the dimmest text, which is what "字体有点暗" was.
+  // The lead row differs from the rest by position alone, not by weight.
+  panelFact: { margin: '0 0 2px', fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
+  panelFactLead: { margin: '0 0 2px', fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
   // Copied field-for-field from the host's own ContextMeter panel
   // (`.JObwrW_panel` in dsh-client-ui-conversation): the same
   // `z-index:1100`, `--dsw-specific-menu` fill, `--dsw-radius-lg`,
@@ -214,7 +219,10 @@ export const S = {
     boxShadow: 'var(--dsw-elevation-prominent)',
     '--dsw-elevation-stroke-color': 'var(--dsw-alias-border-l1)',
     border: 0,
-    color: 'var(--dsw-alias-label-secondary)',
+    // `label-primary`, matching the shell's own `body` color: the panel is a
+    // surface that REPLACES a tooltip, so it must not be dimmer than the text
+    // around it.
+    color: 'var(--dsw-alias-label-primary)',
     cursor: 'default',
     padding: '12px',
     width: 'min(264px, 100vw - 24px)',

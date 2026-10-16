@@ -210,32 +210,44 @@ describe('quotaFacts — the panel rows', () => {
   };
 
   it('renders one row per fact, in reading order', () => {
-    assert.deepEqual(quotaFacts(full, 18, 3 * 3600 + 22 * 60), [
-      'CodingPlan Lite-体验版',
+    assert.deepEqual(quotaFacts(full, 3 * 3600 + 22 * 60), [
+      'Lite-体验版',
       '2026-10-19 · 5d / 共 7d',
-      '窗口已用 18%',
       '约 3h22m 后重置',
     ]);
   });
 
-  it('falls back to the bare product name when the plan is unknown', () => {
-    const [lead] = quotaFacts({}, 0, null);
-    assert.equal(lead, 'CodingPlan', 'never render an empty first row');
+  it('does not repeat a fact the panel header already shows', () => {
+    // The panel header renders "CodingPlan 额度" + the big percent + the bar.
+    // A row saying the product name or "窗口已用 N%" is the same fact twice
+    // inside 264px, which is what the user reported as clutter.
+    const rows = quotaFacts(full, 3 * 3600 + 22 * 60);
+    for (const row of rows) {
+      assert.ok(!/^CodingPlan/.test(row), `the header already says CodingPlan: ${row}`);
+      assert.ok(!row.includes('窗口已用'), `the big percent already says the usage: ${row}`);
+    }
   });
 
   it('drops an unknown row instead of leaving a hole in a sentence', () => {
     // This is what replaced the joined `title` string: a missing expiry must
-    // not produce "CodingPlan Lite ·  · 已用 18%".
-    const rows = quotaFacts({ plan: 'Lite' }, 18, null);
-    assert.deepEqual(rows, ['CodingPlan Lite', '窗口已用 18%']);
+    // not produce "Lite ·  · 5d / 共 7d".
+    const rows = quotaFacts({ plan: 'Lite' }, null);
+    assert.deepEqual(rows, ['Lite']);
     for (const row of rows) {
       assert.ok(!row.includes(' · ·'), `row must not contain an empty segment: ${row}`);
       assert.ok(row.trim() !== '', 'no blank rows');
     }
   });
 
+  it('omits the plan row entirely when the plan is unknown', () => {
+    // No "CodingPlan" placeholder row: the header carries the product name, so
+    // an unknown plan is an absent row, not a fallback string.
+    const rows = quotaFacts({}, null);
+    assert.deepEqual(rows, [], 'an all-unknown quota contributes no rows');
+  });
+
   it('never invents a countdown when the snapshot cannot support one', () => {
-    const rows = quotaFacts({ plan: 'Lite' }, 18, null);
+    const rows = quotaFacts({ plan: 'Lite' }, null);
     assert.ok(!rows.some((row) => row.includes('后重置')), 'no reset row without a countdown');
   });
 });
