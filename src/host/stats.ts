@@ -3,9 +3,14 @@
  *
  * Extracted from `src/host/index.ts` (v0.4.3 split). Mirrors the
  * dsh-connect-sensenova-token-plan snapshot route contract so the plugin
- * detail-page client can poll live startup/usage stats. All four functions are
+ * detail-page client can poll live startup/usage stats. Every function here is
  * pure: they take plain values and return plain values, so a caller can build a
  * snapshot body from a stats bag + a quota report without touching the network.
+ *
+ * `createStatsBag` lives HERE, next to its only reader (`buildStatsBody`), and
+ * that placement is the point: the field names and the one function that reads
+ * them are on one screen, so a rename cannot land on one end only. See
+ * `StatsBag` for what that replaced.
  *
  * The `version` literal is passed in rather than hardcoded here: the release
  * discipline pins `package.json` and `src/host/index.ts` (the assembly point)
@@ -86,17 +91,199 @@ export function describeDaemonDown(reason: HealthFailure): string {
 }
 
 /**
+ * One row of the ask dropdown: the model PROFILE name the dropdown sends, and
+ * whether AtomCode itself treats it as the default. Only what the panel
+ * consumes — `refreshModelCatalog` deliberately maps nothing else in.
+ */
+export interface ModelCatalogEntry {
+  provider: string;
+  isDefault: boolean;
+}
+
+/**
+ * The live runtime bag — every field name `buildStatsBody` reads, as a TYPE.
+ *
+ * This is the same answer `config.ts` gave `HostConfig`, applied to the one
+ * place that did not have it. The bag was `Record<string, any>`: nested
+ * counters, caches, per-branch state, forty-five top-level names written by
+ * eight closures in `runtime.ts`, `routes.ts`, `tools.ts` and `index.ts`, and
+ * read by exactly one function. The runtime's own header named the disease
+ * ("a closure is an INVISIBLE dependency… the type system had nothing to say
+ * about those writes either") and the configuration was locked with a derived
+ * type in the SAME release — so a mistyped field here was a silently empty
+ * panel card (红线 3's forbidden shape), not a compile error.
+ *
+ * What it buys, concretely:
+ *
+ *  - a write of a field nobody declared is TS2339 (`stats.daemonUpX = true`);
+ *  - a read in `buildStatsBody` of a field the bag never declared is TS2339;
+ *  - a writer that assigns the WRONG shape to a declared field is caught too,
+ *    which the old `any` could not do: `daemonDownReason` is `HealthFailure`,
+ *    so `stats.daemonDownReason = 'not-responding'` no longer typechecks against
+ *    the same union `describeDaemonDown` switches on.
+ *
+ * The fields are grouped in the order `buildStatsBody` reports them, so the
+ * reader can walk both without a search.
+ */
+export interface StatsBag {
+  // ── identity / uptime ─────────────────────────────────────────────────────
+  startedAt: number;
+  /** The hand-edited literal in `src/host/index.ts`, passed in at mount. */
+  pluginVersion: string;
+  // ── the mount's resolved configuration, mirrored for the panel ────────────
+  port: number;
+  autoStart: boolean;
+  binaryConfigured: boolean;
+  binaryEnv: string | undefined;
+  approvalMode: string;
+  defaultWorkingDir: string | null;
+  reviewWorkingDir: string | null;
+  defaultProvider: string | null;
+  reviewDefaultProvider: string | null;
+  // ── the panel's own state: its picks, and what the NEXT call will use ──────
+  panelProvider: { ask: string | null; review: string | null };
+  panelStorePath: string;
+  panelStoreError: string;
+  panelStoreForeign: boolean;
+  effectiveAsk: string | null;
+  /** 'panel' | 'config' | 'atomcode' — see `resolveProvider`. */
+  effectiveAskSource: string;
+  effectiveReview: string | null;
+  /** 'panel' | 'config' | 'auto' — NOT 'atomcode' (红线 8). */
+  effectiveReviewSource: string;
+  modelCatalog: ModelCatalogEntry[] | null;
+  modelCatalogAt: number;
+  modelCatalogError: string;
+  reviewCatalog: string[];
+  reviewEndpoints: Record<string, string>;
+  // ── daemon liveness + the auto-start bookkeeping ──────────────────────────
+  daemonUp: boolean;
+  daemonVersion: string;
+  /** WHY it is down; `''` while up. Drives both `describeDaemonDown` readers. */
+  daemonDownReason: HealthFailure;
+  spawnTried: boolean;
+  spawnAttempts: number;
+  spawnFailures: number;
+  lastSpawnAt: number;
+  daemonStarting: boolean;
+  lastHealthAt: number;
+  reviewAvailable: boolean;
+  reviewReason: string;
+  // ── session glue ──────────────────────────────────────────────────────────
+  sessionsTracked: number;
+  /** Why session glue is degraded right now (`''` when healthy). */
+  sessionsError: string;
+  // ── the two patch-only knobs, plus which of them the user authored ────────
+  askRounds: number;
+  retrySecs: number;
+  authored: { approvalMode: boolean; workingDir: boolean; askMaxRounds: boolean };
+  defaults: { approvalMode: string; askMaxRounds: number };
+  // ── drift signals ─────────────────────────────────────────────────────────
+  quotaDriftSeen: boolean;
+  /** A UNION across the mount, never replaced — see `askChat`. */
+  protocolUnknownTypes: string[];
+  // ── counters. `ask` carries tokens; `review` has no such reading ──────────
+  ask: { calls: number; ok: number; err: number; msTotal: number; tokens: number };
+  review: { calls: number; ok: number; err: number; msTotal: number };
+}
+
+/**
+ * The mount-time facts the bag is seeded with. Everything NOT here starts at its
+ * empty value inside `createStatsBag` — which is the useful split: this list is
+ * "what the mount resolved", and reading it is how a caller sees at a glance
+ * which panel numbers come from configuration and which are runtime readings.
+ */
+export interface StatsSeed {
+  pluginVersion: string;
+  port: number;
+  autoStart: boolean;
+  binaryConfigured: boolean;
+  binaryEnv: string | undefined;
+  approvalMode: string;
+  defaultWorkingDir: string | null;
+  reviewWorkingDir: string | null;
+  defaultProvider: string | null;
+  reviewDefaultProvider: string | null;
+  panelStorePath: string;
+  reviewCatalog: string[];
+  reviewEndpoints: Record<string, string>;
+  reviewAvailable: boolean;
+  reviewReason: string;
+  askRounds: number;
+  retrySecs: number;
+  authored: { approvalMode: boolean; workingDir: boolean; askMaxRounds: boolean };
+  defaults: { approvalMode: string; askMaxRounds: number };
+}
+
+/**
+ * Build the live stats bag. One construction site, total: every field is
+ * initialized here, so there is no such thing as a bag that is half-built, and
+ * no field exists only as a write some closure performs later.
+ *
+ * @param {StatsSeed} seed - the mount-resolved values (see `StatsSeed`).
+ */
+export function createStatsBag(seed: StatsSeed): StatsBag {
+  return {
+    startedAt: Date.now(),
+    pluginVersion: seed.pluginVersion,
+    port: seed.port,
+    autoStart: seed.autoStart,
+    binaryConfigured: seed.binaryConfigured,
+    binaryEnv: seed.binaryEnv,
+    approvalMode: seed.approvalMode,
+    defaultWorkingDir: seed.defaultWorkingDir,
+    reviewWorkingDir: seed.reviewWorkingDir,
+    defaultProvider: seed.defaultProvider,
+    reviewDefaultProvider: seed.reviewDefaultProvider,
+    panelProvider: { ask: null, review: null },
+    panelStorePath: seed.panelStorePath,
+    panelStoreError: '',
+    panelStoreForeign: false,
+    effectiveAsk: null,
+    effectiveAskSource: 'atomcode',
+    effectiveReview: null,
+    effectiveReviewSource: 'auto',
+    modelCatalog: null,
+    modelCatalogAt: 0,
+    modelCatalogError: '',
+    reviewCatalog: seed.reviewCatalog,
+    reviewEndpoints: seed.reviewEndpoints,
+    daemonUp: false,
+    daemonVersion: '',
+    daemonDownReason: '',
+    spawnTried: false,
+    spawnAttempts: 0,
+    spawnFailures: 0,
+    lastSpawnAt: 0,
+    daemonStarting: false,
+    lastHealthAt: 0,
+    reviewAvailable: seed.reviewAvailable,
+    reviewReason: seed.reviewReason,
+    sessionsTracked: 0,
+    sessionsError: '',
+    askRounds: seed.askRounds,
+    retrySecs: seed.retrySecs,
+    authored: seed.authored,
+    defaults: seed.defaults,
+    quotaDriftSeen: false,
+    protocolUnknownTypes: [],
+    ask: { calls: 0, ok: 0, err: 0, msTotal: 0, tokens: 0 },
+    review: { calls: 0, ok: 0, err: 0, msTotal: 0 },
+  };
+}
+
+/**
  * Snapshot body consumed by the plugin detail-page client.
  *
  * The reported version is read off `stats.pluginVersion`, which the assembly
  * point (`src/host/index.ts`) declares as the hand-edited literal that
  * `test/wiring.test.mjs` pins against `package.json`.
  *
- * @param {Record<string, any>} stats - the live runtime bag.
+ * @param {StatsBag} stats - the live runtime bag.
  * @param {any} quota - the quota report from `buildQuotaReport`, or null to
  *   report "not collected yet".
  */
-export function buildStatsBody(stats: Record<string, any>, quota: any) {
+export function buildStatsBody(stats: StatsBag, quota: any) {
   return {
     ok: true,
     name: 'dsh-connect-atomcode',

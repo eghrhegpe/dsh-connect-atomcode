@@ -9,10 +9,13 @@
  * This block used to be declared inline in `apply()`, ~420 lines of closures.
  * Length was the lesser problem:
  *
- *  - A closure is an INVISIBLE dependency. Six of these functions write the
+ *  - A closure is an INVISIBLE dependency. Several of these functions write the
  *    same `stats` bag, and the rest of `apply()` could read any of them with no
- *    parameter in sight. The bag is `Record<string, any>`, so the type system
- *    had nothing to say about those writes either.
+ *    parameter in sight. The BAG half of that is now closed — `StatsBag`
+ *    (stats.ts) types all forty-five field names, so the writes below are
+ *    checked — while the closure half is raised, not solved, by this file
+ *    existing: the readers are still implicit, they are simply now visible in
+ *    one screen instead of scattered across `apply()`.
  *  - The declaration ORDER encoding a real constraint was recorded only in a
  *    comment: the session store's error observer writes `stats.sessionsError`,
  *    so the store must not fire it before the bag exists. It is safe today
@@ -33,7 +36,6 @@ import {
   runCommand,
   spawnDaemon,
 } from './daemon.ts';
-import type { HealthFailure } from './daemon.ts';
 import { createSessionStore } from './sessions.ts';
 import { createProviderStore } from './provider-store.ts';
 import { checkReviewProvision } from './review.ts';
@@ -45,20 +47,29 @@ import {
   DEFAULT_ASK_MAX_ROUNDS,
 } from './config.ts';
 import type { HostConfig } from './config.ts';
-import { describeDaemonDown } from './stats.ts';
+import { describeDaemonDown, createStatsBag } from './stats.ts';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 /**
  * Everything the plugin accumulates while it is mounted, in one object.
+ *
+ * @param {{ config: HostConfig, log: (message: any) => void, pluginVersion: string }} deps
+ *   `pluginVersion` is the hand-edited literal from the assembly point, passed
+ *   IN rather than written onto the bag afterwards (which is how it used to
+ *   arrive). A bag field that only exists once a caller remembers to graft it on
+ *   is the exact "invisible dependency" this file's header complains about, and
+ *   the type cannot require what the constructor does not ask for.
  * @returns {Runtime}
  */
 export function createRuntime({
   config,
   log,
+  pluginVersion,
 }: {
   config: HostConfig;
   log: (message: any) => void;
+  pluginVersion: string;
 }) {
   const {
     port,
@@ -162,13 +173,17 @@ export function createRuntime({
    * read-only `/api/atomcode-bridge/stats` route. Counters accumulate for the
    * life of the plugin mount; `daemonUp`/`lastHealthAt` are refreshed on each
    * stats poll (5s cache) and on every ask dispatch.
+   *
+   * The shape lives in `stats.ts` as `StatsBag`, and `createStatsBag` — the one
+   * construction site — sits in the SAME file as `buildStatsBody`, its only
+   * reader. This used to be a `Record<string, any>` declared right here: eight
+   * closures wrote forty-five names into it and the type system had nothing to
+   * say about any of those writes, so a renamed field was a silently empty
+   * panel card instead of a compile error. See `StatsBag` for the full account;
+   * every field this file writes below is now checked against its declaration.
    */
-  // A mutable bag assembled across the mount and read by the module-level
-  // `buildStatsBody`. Deliberately a plain record: the fields are written
-  // incrementally by several closures (health, catalogue, counters), and the
-  // snapshot's shape is asserted by the offline suites rather than inferred here.
-  const stats: Record<string, any> = {
-    startedAt: Date.now(),
+  const stats = createStatsBag({
+    pluginVersion,
     port,
     autoStart,
     binaryConfigured: !!binary,
@@ -178,65 +193,24 @@ export function createRuntime({
     reviewWorkingDir: reviewWorkingDir ?? null,
     defaultProvider: defaultProvider ?? null,
     reviewDefaultProvider: reviewDefaultProvider ?? null,
-    // The panel's own picks (provider.json) and the model catalogue the dropdown
-    // lists. `modelCatalog === null` means "not fetched yet or the daemon is
-    // down" — the client renders a reason instead of an empty dropdown.
-    panelProvider: { ask: null, review: null },
     panelStorePath: providerStore.path(),
-    panelStoreError: '',
-    panelStoreForeign: false,
-    effectiveAsk: null,
-    // 'panel' | 'config' | 'atomcode' — who is actually answering for the next
-    // ask call. The review slot uses 'auto' instead of 'atomcode' because that is
-    // what leaving it empty really means there (红线 8).
-    effectiveAskSource: 'atomcode',
-    effectiveReview: null,
-    effectiveReviewSource: 'auto',
-    modelCatalog: null,
-    modelCatalogAt: 0,
-    modelCatalogError: '',
     reviewCatalog: reviewProvision.providers || [],
     reviewEndpoints: reviewProvision.endpoints || {},
-    daemonUp: false,
-    daemonVersion: '',
-    // Which probe failure put `daemonUp` at false (`''` while up). One flag for
-    // four different causes was the whole problem — see describeDaemonDown.
-    daemonDownReason: '' as HealthFailure,
-    spawnTried: false,
-    spawnAttempts: 0,
-    spawnFailures: 0,
-    lastSpawnAt: 0,
-    daemonStarting: false,
-    lastHealthAt: 0,
     reviewAvailable: reviewProvision.available,
     reviewReason: reviewProvision.reason,
-    sessionsTracked: 0,
-    // Why session glue is degraded right now ('' when healthy) — see the
-    // session store's onError observer. Surfaced on the panel so a state file
-    // that cannot be written is visible rather than merely logged.
-    sessionsError: '',
     askRounds: askMaxRounds,
     retrySecs: daemonRetrySecs,
     // Which patch-only knobs the user authored, and our built-in fallbacks. Both
-    // live on `stats` (not read from the mount closure) because buildStatsBody is
-    // module-level — the panel's "（已改）/（插件默认）" tags must come from the host
-    // rather than a client-side guess at what the default is.
+    // are seeded onto the bag (not read from the mount closure) because
+    // buildStatsBody is module-level — the panel's "（已改）/（插件默认）" tags must
+    // come from the host rather than a client-side guess at what the default is.
     authored: {
       approvalMode: authoredApprovalMode,
       workingDir: authoredWorkingDir,
       askMaxRounds: authoredAskMaxRounds,
     },
     defaults: { approvalMode: DEFAULT_APPROVAL_MODE, askMaxRounds: DEFAULT_ASK_MAX_ROUNDS },
-    quotaDriftSeen: false,
-    // SSE event types the daemon sent that we did not recognize. Accumulated as
-    // a UNION across every ask turn of this mount: the fact worth keeping is
-    // "has this ever been seen", and letting a later clean turn erase the
-    // evidence would make a one-off (or an intermittent) drift invisible on the
-    // panel — the very silent degradation red line 3 forbids.
-    protocolUnknownTypes: [] as string[],
-    ask: { calls: 0, ok: 0, err: 0, msTotal: 0, tokens: 0 },
-    review: { calls: 0, ok: 0, err: 0, msTotal: 0 },
-  };
+  });
 
   /** Refresh daemon liveness with a short cache (used by both ask + stats). */
   async function refreshHealth(force = false) {

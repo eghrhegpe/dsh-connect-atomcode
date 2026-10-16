@@ -8,7 +8,7 @@
  *
  *   - `./config.ts`    readConfig() + the shared tuning constants
  *   - `./runtime.ts`   createRuntime() — the stats bag + daemon lifecycle + quota
- *   - `./stats.ts`     writeJson/sameOrigin/describeDaemonDown/buildStatsBody
+ *   - `./stats.ts`     writeJson/sameOrigin/describeDaemonDown/createStatsBag/buildStatsBody
  *   - `./routes.ts`    mountRoutes() — the two HTTP routes, disposed as one unit
  *   - `./tools.ts`     mountAskTool() + mountReviewTool() — the two tools
  *
@@ -68,10 +68,12 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
   // state stores, daemon liveness and spawning, the quota cache and the
   // panel-facing state — lives in one object rather than as ~420 lines of
   // closures declared right here.
-  const runtime = createRuntime({ config, log });
-  // The version literal is declared here (see the wiring test) so the snapshot
-  // can report it without stats.ts importing the manifest.
-  runtime.stats.pluginVersion = PLUGIN.version;
+  //
+  // The version literal is declared in THIS file (see the wiring test) and handed
+  // IN as a seed, so the snapshot can report it without `stats.ts` importing the
+  // manifest — and so the bag is complete at construction instead of being
+  // patched from here afterwards.
+  const runtime = createRuntime({ config, log, pluginVersion: PLUGIN.version });
 
   const tools = ctx.get('tools');
   if (tools === undefined) return; // inject declares it; belt and braces.
