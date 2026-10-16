@@ -48,7 +48,7 @@ import {
 import type { HealthFailure } from './daemon.ts';
 import { createSessionStore, defaultStatePath } from './sessions.ts';
 import { createProviderStore, PROVIDER_SLOTS, normalizeProviderName } from './provider-store.ts';
-import { runReview, checkReviewProvision, selectReviewProvider, probeLocalEndpoint } from './review.ts';
+import { runReview, checkReviewProvision, selectReviewProvider, probeLocalEndpoint, PROVIDER_FIX } from './review.ts';
 import { isLoopbackBaseUrl } from '../shared/loopback.ts';
 import { buildQuotaReport } from './quota.ts';
 import { homedir } from 'node:os';
@@ -1740,8 +1740,7 @@ function mountReviewTool({
             error:
               `atomcode_review: local provider endpoint ${selection.baseUrl} (provider "${selection.provider}") ` +
               `is not responding (${probe.detail}; tried ${probe.tried.join(', ') || 'no URL'}). ` +
-              'It looks like a local OpenAI-compatible sidecar — start it (e.g. run `atomcode-open-api`) ' +
-              'or point the provider at a live base_url in ~/.atomcode/config.toml. ' +
+              `${PROVIDER_FIX} ` +
               'Daemon-side atomcode_ask is unaffected (it does not go through this endpoint).',
             exit_code: -1,
             duration_ms: 0,
