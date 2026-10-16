@@ -1,15 +1,43 @@
 # 变更记录
 
-## 先说清这份文件的边界
+## 这份文件只记什么
+
+**唯一判断标准：「用户打开插件之后，界面 / 工具输出 / 行为哪里不一样了」**。答不上来就不进本文件。
+一条 bullet 的目标粒度：**用户 40 字能读完**。四件事一起塞（用户看到什么 / 之前是什么 / 为什么 / 别的选路）算长，
+要按下面的表拆到不同文件。
+
+| 该记什么 | 去哪 |
+|---|---|
+| 用户可见的新增能力、破坏性改动、重要修复 | **本文件** |
+| 内部重构（`apply()` 拆分、`loopback` 判据合并、state-file 层共用） | `git log` |
+| 测试与工程（断言加强、mock 修正、快照脚本、文档索引调整） | `git log`；文档纪律见 `AGENTS.md` |
+| 设计决策与取舍（为什么这么定、不选哪条路） | `docs/DECISIONS.md` |
+| Bug 根因档案（"为什么之前测试是绿的"这类机制细节） | `docs/<主题>.md`（如 `docs/AtomGit-网关与-review-通路.md`） |
+
+## 写作示例（各一条，都取自本文件）
+
+**收：**
+> **被截断的 tools 数组不再冒充完整**（`2ebc38d`）：超过上限就挂牌 `tools_truncated`，而不是静默截断。
+
+用户 40 字读完：tools 超限 → 挂牌。行为变了。留。
+
+**不收**（应去 git log / DECISIONS / 根因档案）：
+> **`apply()` 四段拆分**：`readConfig`、`createRuntime`、`mountRoutes`、两件工具各自 mount。`apply()` 从 1206 行降到约 60 行；三段以「搬走的文本与原件逐字一致 + 工具定义快照 md5 不变」为证据——13 个套件盖的是行为，盖不住两段中文描述的逐字拼接。
+
+用户可见变化：零。内部重构 + 测试策略 + 证据方法。去 `git log`（提交 `9f60e4e`..`c265e7c`）。
+
+## 其他边界
 
 - **发版打 git tag**（`git tag v<package.json version>`），与 `package.json` / `src/host/index.ts` 两处版本号同号。
   「某一版是哪次提交」也可靠这里的日期 + `git log --date=short` 回查；行为史以本文件为准。
 - **版本号有两处，都是手改**：`package.json` 的 `version`，与 `src/host/index.ts` 里 stats body 的 `version`
   （产物 `lib/index.js` 由构建生成，不许手改）。两处必须一起改，`test/wiring.test.mjs` 有断言守着。
-- **每条只记行为变化。** 实现细节、逐条修复表在 `git log` 里（条数会涨，不写死；信息写得比这里细）。
 - ⚠️ **0.3 / 0.4 的边界在 git log 里是混的**：`c834070`（10-14）一个提交同时写着 v0.4/v0.4.1，
   `0.4.1` 这个号直到 `7434249`（10-15）才真正对齐进文件。所以下面按**主题**分组，
   不假装能精确切到某个版本号上——存疑的地方就写出来。
+- ⚠️ **本节标准 2026-10-16 收紧**：历史条目（v0.4.0 及更早）里仍有违反新尺子的长条目（内部重构、
+  测试策略、"为什么之前测试是绿的"叙事），**保留原样**作为决策档案——回改历史等于改历史，
+  代价大于收益。新条目按新尺子写。
 
 ---
 
@@ -17,23 +45,21 @@
 
 ### 修复
 
-- **成功回合携带未知 SSE 类型时不再静默**：`askChat` 原有两道具名闸门都要求回合**失败**、或**没产出任何内容**，
-  于是第三种漂移形态——事件照常、只多了一个本插件不认识的类型——被当成正常回合丢掉证据。
-  危险处在于**轮数熔断靠计数 `tool_start` 生效**：被改名的若正是它，`round_count` 会恒为 0，
-  熔断从此刻起永不触发，而每一层界面都还在报成功（红线 3 最忌讳的形态）。
-  现在这种回合照常成功，但把观测带出来：工具输出多一个 `protocol_unknown_types`
-  （**恒有本字段**，空数组 = 词汇表未变，所以「没看到漂移」与「没检查漂移」不会混；已列入 `required`，
-  与 `tools_truncated` 同一纪律——可省略的标记不算契约）。渲染层同时说出类型名与「熔断可能已失效」，
-  面板则由 `protocol.unknownTypes` 常驻提示（与 `quotaTextDrift` 同族，按**并集**累积，后续干净回合不抹除）。
+- **成功回合携带未知 SSE 类型时不再静默**：工具输出多一个 `protocol_unknown_types` 字段（**恒有**，空数组 = 词汇表未变），面板 `protocol.unknownTypes` 常驻提示。此前这种情况被当成正常回合丢掉证据；危险处在于若被改名的正是 `tool_start`，轮数熔断会静默失效。
 
 ### 变更 / 工程
 
-- **装配边界的配置类型不再被擦除**：三个装配函数的 `config` 参数原为 `Record<string, any>`，
-  30 个字段的解构在此处全部退化为 `any`。实测：解构一个 `readConfig` 从不返回的键，`tsc` 零报错通过。
-  危害不是理论的——字段都有类型兜底，拼错拿到的 `undefined` 会被静默吞掉（如 `daemonStartAttempts` 变 `undefined`
-  则轮询零次、daemon 再也不起来且无任何报错）。现改为 `type HostConfig = ReturnType<typeof readConfig>`，拼错即 `TS2339`。
-- **`noUnusedLocals` / `noUnusedParameters` 开启**：6083 行源码只暴露 2 处死导入（`client/index.ts` 的 `CSSProperties`、
-  `review.ts` 的 `resolve`），已清。未使用检查从"靠自觉"变成编译期强制。
+- **文档索引全部指向 `scripts/test.mjs` 的自动发现语义**（4 处过时指引修正）：`README.md` / `AGENTS.md` /
+  `docs/README.md` / `docs/RELEASING.md` 原先都指"看 `package.json` 的 `scripts.test` 链的名单"，但该字段
+  已经是 `node scripts/test.mjs`（不再硬编码 `&&` 链）——指引与字段脱节。顺带把 README 里两条自证批注
+  与双写的"130 行 / 490 行"数字去掉（违反项目自己的"会变的计数不写文档"）。
+- **代码地图补齐 + 由新测试守着**：`docs/README.md` §代码地图 v0.4.3 之后新增了 6 个 `src/host/*.ts` 与整个
+  `src/shared/` 从未进图。现在补齐，并新建 `test/docs-code-map.test.mjs`（6 条断言：源文件→图、图上映射→磁盘产物、
+  `lib/*.js`→图 双向钉死）。
+- **配置字段拼错从静默吞掉变成编译期报错**：装配层 `config` 参数原来退化为 `any`，拼错键拿到 `undefined` 会被字段兜底
+  静默吞掉（如 `daemonStartAttempts` 变 `undefined` 则轮询零次、daemon 再也不起来且无任何报错）。现改为
+  `type HostConfig = ReturnType<typeof readConfig>`，拼错即 `TS2339`；`noUnusedLocals` / `noUnusedParameters` 同时开启，
+  未使用检查从"靠自觉"变成编译期强制。（开发体验，用户感知不到；机制细节去 `git log`）
 
 ---
 
@@ -128,6 +154,7 @@
   治理记录 → 本文件 + `docs/DECISIONS.md`。
 - 探针脚本从仓库根归位到 `scripts/probes/`（含成本标注）——结论与脚本一起入库，证据链可复现。
 - `scripts.test` 链里的套件数与 test 数**不写进任何文档**（写死过一次，13 分钟后就过期了）。
+  后续 `scripts/test.mjs` 自动发现 `test/*.test.mjs`，把"新套件没挂进链"这条纪律从代码层消掉。
 
 ---
 
