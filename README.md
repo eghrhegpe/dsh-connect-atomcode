@@ -86,8 +86,7 @@ provider（本机实测通路是本地代理），否则插件会在调用前就
 | 插件为此做了什么（静态探测 / 自动选择 / 回环探活） | 同上，§插件对此的处理 |
 | 该代理的许可与出处 | [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) |
 
-> 这一节原先就是 README 里的 130 行长文（占当时 490 行的 27%）。2026-10-16 拆出去：
-> README 是「装 / 配 / 用」的手册，那些是事故卷宗，两类读者不该被同一段长文互相挡住。
+> 这一节原先占 README 主体约四分之一。2026-10-16 拆出去：README 是「装 / 配 / 用」的手册，那些是事故卷宗，两类读者不该被同一段长文互相挡住。
 
 ## 配置（patch 行 `config:`）
 
@@ -188,7 +187,7 @@ data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-f
 
 | 命令 | 消耗 CodingPlan 额度？ |
 |---|---|
-| `npm test` | ❌ **零消耗**。链里每个 test 都走假 daemon / 假 spawn / 纯函数，不碰真模型（**test 数不写死在这**：`npm test 2>&1 \| Select-String '^ℹ tests'` 自己量，理由见 `AGENTS.md`「验证」） |
+| `npm test` | ❌ **零消耗**。每个 test 都走假 daemon / 假 spawn / 纯函数，不碰真模型（**test 数不写死在这**：`npm test 2>&1 \| Select-String '^ℹ tests'` 自己量，理由见 `AGENTS.md`「验证」） |
 | `npm run test:live` | ❌ **默认也零消耗**。只跑只读检查（health / token / 模型目录），真实回合被跳过 |
 | `ATOMCODE_LIVE_TURNS=1 npm run test:live` | ✅ **消耗**。`daemon-live` 会打 **7 个真实模型回合**（2× `streamChat` + 5× `askChat`），`review-live` 再花 1 个评审回合 |
 
@@ -205,16 +204,15 @@ ATOMCODE_LIVE_TURNS=1 npm run test:live
 
 不加这个变量时 live 套件会打印原因并跳过推理块——**默认安全**。
 
-> **用词更正（v0.4）**：`npm test` 输出的是 node:test 的 **test 数**（每个 test 内含多条 `assert`），不是"断言条数"。v0.3 把 118 写成"条断言"是笔误——在一个以「出处与验证程度如实标注」为卖点的文档里，这种用词不一致是真实减分项。
+> **用词更正（v0.4）**：`npm test` 输出的是 node:test 的 **test 数**（每个 test 内含多条 `assert`），不是"断言条数"。
 
 ### 离线套件
 
 自洽（不需要 daemon、不需要网络、不烧 token）：
 
 ```bash
-npm test           # 链的名单 = package.json 的 scripts.test；名单只在那里维护，本文不抄——抄了就会过期
-                    # （这行此前就漏过 snapshot-contract）；规则见 docs/README.md「写文档的纪律」
-                   # 计数自己量：npm test 2>&1 | Select-String '^ℹ tests'（写死数字上次 13 分钟就过期了，见 AGENTS.md）
+npm test           # 离线套件由 scripts/test.mjs 自动发现（排除 *-live.test.mjs），本文不抄名单
+                   # 计数自己量：npm test 2>&1 | Select-String '^ℹ tests'（写死数字会过期，见 AGENTS.md）
 ```
 
 各套件用本机 `node:http` 起**假 daemon**（或纯函数），所以把过去只有 live 套件覆盖（而没有 daemon 就直接跳过）的路径全部变成离线可测：

@@ -159,14 +159,16 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 
 - **本文件不写套件数与 test 数。** 上一次写死"175"之后 **13 分钟**，并行会话就往链里加了
   `review-select`，数字当场过期。要计数自己量：
-  `npm test 2>&1 | Select-String '^ℹ pass' | Measure-Object`（行数=链内套件数）；
-  链的名单看 `package.json` 的 `scripts.test`。**只看自己域的增减**，别去对总数。
+  `npm test 2>&1 | Select-String '^ℹ tests'`（一行，node:test 的聚合摘要）。
+  套件由 [`scripts/test.mjs`](scripts/test.mjs) 自动发现 `test/*.test.mjs` 且排除 `*-live.test.mjs`，
+  `package.json` 里不再有硬编码的 `scripts.test` 链——**所以新套件只要落盘就跑，不会再漏挂**（这是把
+  "新套件写好了但没挂进链里"这类失误从代码层消掉，而不是靠纪律）。**只看自己域的增减**，别去对总数。
 - `npm test` **不消耗额度**、不联网：全部用假 daemon / 假 spawn / 纯函数。
 - `test:live` 默认也**不消耗额度**——只有 `ATOMCODE_LIVE_TURNS=1` 才会跑真实回合。
 - **动了契约/接缝文件，跑全量**：`src/**`、`cordis.patch.yml`、`package.json`。消费者不可枚举——按域裁剪会漏掉跨域契约。
 - **改了 `src/` 就跑 `npm run typecheck` + `npm run build` + `npm test`**（构建纪律见「工作目录与装载方式」）。
-- **改了 `package.json` 的 `scripts.test` 链要连带核对磁盘**：仓库里有过"新套件写好了但没挂进链里"，
-  于是 `npm test` 全绿而它一次没跑。挂链时顺手确认 `test/` 下每个 `*.test.mjs` 都在链里。
+- **改动 `test/*.test.mjs` 后跑全量 `npm test`**：套件由 `scripts/test.mjs` 自动发现，
+  新文件落盘就参跑——过去"新套件没挂进链"的失误从代码层消掉了（见上一节）。
 
 ## 红线（违反任一都会炸到用户机器）
 

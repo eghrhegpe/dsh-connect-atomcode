@@ -93,7 +93,7 @@ npm test
 
 - `npm test` 不联网、不耗额度（假 daemon / 假 spawn / 纯函数）。
 - `test/build-gate.test.mjs` 用真 `tsdown.config.mjs` 重跑构建，要求与提交的产物**逐字节**相同。
-- 改了 `scripts.test` 链要连带核对 `test/` 下每个 `*.test.mjs` 都挂进链里。
+- 改动 `test/*.test.mjs` 后跑全量 `npm test`：套件由 `scripts/test.mjs` 自动发现，落盘即参跑——过去"新套件没挂进链"的失误从代码层消掉了。
 
 ## 6. 提交与打 tag
 

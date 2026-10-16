@@ -39,7 +39,7 @@
 
 3. **`npm test` 不消耗额度，`npm run test:live` 默认也不消耗。**
    离线链全部用假 daemon / 假 spawn / 纯函数。live 套件里的**真实模型回合**需要显式 `ATOMCODE_LIVE_TURNS=1` 才会跑。
-   套件名单看 [`../package.json`](../package.json) 的 `scripts.test`——**本文不抄计数，理由见下**。
+   套件由 [`../scripts/test.mjs`](../scripts/test.mjs) 自动发现 `test/*.test.mjs` 且排除 `*-live.test.mjs`——**本文不抄计数也不抄名单，理由见下**。
 
 ## 文档索引
 
@@ -57,7 +57,7 @@
 | [`CodingPlan-额度显示.md`](./CodingPlan-额度显示.md) | 额度不显示 / 位置不对 / 面板为什么长这样 | **机制档案**：daemon 拉起的四个约束与空闲自杀、`POST /command` 唯一来源与坑、两种解析拒绝行、槽位选择（`composer.dock`）与弹窗决策 |
 | [`../cordis.patch.yml`](../cordis.patch.yml) | 要加配置字段 | bundle 声明与**全部配置项的注释**——字段的注释真源 |
 | [`../scripts/probes/`](../scripts/probes/) | 要复现上面那些实测 | 探针脚本（**含成本标注**：哪个零额度、哪个花一个真实回合）。结论在 docs/，脚本是结论的出处 |
-| [`../test/`](../test) | 改测试前 | 离线 + live 套件。**套件头注就是契约**，不是附件；名单以 `package.json` 的 `scripts.test` 为准 |
+| [`../test/`](../test) | 改测试前 | 离线 + live 套件。**套件头注就是契约**，不是附件；离线链由 [`../scripts/test.mjs`](../scripts/test.mjs) 自动发现 |
 | [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) | 要确认来源与许可 | 上游移植来源、本机参照的本地代理、运行时依赖的官方二进制，三者的许可与出处 |
 | [`submission/`](./submission/) | 要向市场投稿 / 改过 description 后 | 市场投稿草稿 `eghrhegpe__dsh-connect-atomcode.yml`：头注逐个名词锚定了证据出处；投放步骤见 `RELEASING.md` §10 |
 
@@ -80,16 +80,37 @@
 改完必须 `npm run build` 再提交源码 + 产物（`test/build-gate.test.mjs` 逐字节守着这件事）。
 
 ```
-src/host/index.ts   → lib/index.js      Cordis 插件本体：注册两个工具 + /api/atomcode-bridge/stats 统计路由
-                                        + /provider 面板偏好路由 + 额度缓存 + daemon 拉起策略
-src/host/daemon.ts  → lib/daemon.js     纯 daemon HTTP 客户端（/health /models /command /chat SSE），零宿主依赖
-src/host/review.ts  → lib/review.js     `atomcode review` CLI 包装（argv 构造 + 有界熔断 + 可用性静态探针）
-src/host/quota.ts   → lib/quota.js      CodingPlan 额度文本解析（纯函数，按结构而非措辞）
+# host —— 一个源码文件对应一个 lib/*.js（v0.4.3 拆分 God module 后的完整清单）
+src/host/index.ts           → lib/index.js           apply() 装配点：注册两个工具 + /stats + /provider 路由 +
+                                                       额度缓存 + daemon 拉起策略；stats body 的 version 是版本号真源之一
+src/host/config.ts          → lib/config.js          readConfig：30 个配置字段的类型兜底 + detectProfileKey（多 profile 隔离）
+src/host/runtime.ts         → lib/runtime.js         挂载期状态容器：daemon / 额度 / 熔断 / 错误观察者，被 apply() 组装
+src/host/routes.ts          → lib/routes.js          /stats 只读 + /provider 只写面板偏好（同源门禁 + 4KB body 上限）
+src/host/tools.ts           → lib/tools.js           两个工具的挂载与描述（description 里写出本机可用性、优先级顺序）
+src/host/daemon.ts          → lib/daemon.js          纯 daemon HTTP 客户端（/health /models /command /chat SSE），零宿主依赖
+src/host/review.ts          → lib/review.js          `atomcode review` CLI 包装（argv 构造 + 有界熔断 + checkReviewProvision
+                                                       静态探针 + selectReviewProvider 自动选择 + probeLocalEndpoint 回环探活）
+src/host/quota.ts           → lib/quota.js           CodingPlan 额度文本解析（纯函数，按结构而非措辞；解析失败带 reason 不编数字）
 src/host/sessions.ts        → lib/sessions.js        侧边会话映射（read-modify-write，跨 profile 键前缀隔离）
 src/host/provider-store.ts  → lib/provider-store.js  面板选的模型档位/直连条目（provider.json：版本化、
-                                                     损坏保留旁路、拒覆盖更新版本）
-src/client/*.ts     → client.js         渲染端半身：详情页统计卡片 + 模型下拉 + 输入框下方 dock 行的紧凑额度读数
+                                                       损坏保留旁路、拒覆盖更新版本）
+src/host/state-file.ts      → lib/state-file.js      state JSON 文件读写层，被 sessions / provider-store 共用
+src/host/stats.ts           → lib/stats.js           buildStatsBody：把 daemon / binary / config / provider / protocol /
+                                                       quota / sessions / ask / review 拼成一份 /stats 快照
+
+# shared —— 被两半同时读的模块（"这个 base_url 是不是本机端点" / "这份快照的字段契约" 是同一个事实）
+src/shared/loopback.ts      → lib/loopback.js        isLoopbackBaseUrl：host 决定要不要探活，client 写那句"代理一停 review 立刻断"
+src/shared/stats.ts         (inlined both sides)     StatsSnapshot 及其分支的共享类型契约（只有类型，无运行时产物）
+
+# client —— 渲染端半身，多个源文件被 bundle 成一个 IIFE
+src/client/*.ts             → client.js              index.ts 是 entry，quota.ts / rows.ts / styles.ts / types.ts 打包进同一个
+                                                       IIFE：详情页统计卡片 + 模型下拉 + 输入框下方 dock 行的紧凑额度读数
 ```
+
+> 每个 `src/host/*.ts` 都在图上，且每条 `src/host/*.ts → lib/*.js` 都对应一个实际存在的产物——由
+> [`../test/docs-code-map.test.mjs`](../test/docs-code-map.test.mjs) 守着。改图前先看
+> [`../tsdown.config.mjs`](../tsdown.config.mjs) 的 entry 表，那是产物命名的真源；这份图是给读者的
+> 第二眼，不是构建配置本身。
 
 ## 许可
 
