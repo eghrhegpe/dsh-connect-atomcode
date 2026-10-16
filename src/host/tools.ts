@@ -27,6 +27,23 @@ import type { Runtime } from './runtime.ts';
 import { resolve } from 'node:path';
 
 /**
+ * The active DSH session's working directory as exposed by the host on the
+ * tool-call context — a READY-TO-USE auto-fill hook.
+ *
+ * The DSH host does not pass the session's cwd to plugin tools yet, so this
+ * returns `undefined` today and the fallback ladders below behave exactly as
+ * before (tests pass `exec = {}`, so it stays a no-op there). The moment the
+ * host exposes that cwd on the tool-call context (this reads `exec.cwd`; the
+ * field name is the one to align with the host), `working_dir` auto-fills with
+ * the repo the user actually has open. Safe for BOTH tools: it is the user's
+ * repo, not the host process's launch directory — 红线 8 only excludes the
+ * host cwd, never the session cwd.
+ */
+function hostSessionCwd(exec: any): string | undefined {
+  return exec && typeof exec.cwd === 'string' && exec.cwd.trim() !== '' ? exec.cwd : undefined;
+}
+
+/**
  * `atomcode_ask` — one full autonomous daemon turn, with side-conversation
  * continuity.
  *
@@ -102,7 +119,7 @@ export function mountAskTool({
         session_id: { type: 'string', description: '可选：显式接续某个 AtomCode 会话（优先于 continue）' },
         reset_session: { type: 'boolean', description: '可选：清掉本工作目录记录的侧边会话（续线接到一条已过期的 daemon 会话、或想彻底开新线时用；不影响本回合）' },
         provider: { type: 'string', description: '可选：点名 AtomCode 模型档位，传它就换本次回合用的模型。名字以 daemon GET /models 的 provider 字段为准（如 "AtomGit-glm5.3-flash"），不要传裸模型 id（"glm5.3-flash"）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
-        working_dir: { type: 'string', description: '可选：回合的工作目录，同时是侧边对话的会话键；缺省用插件配置' },
+        working_dir: { type: 'string', description: '可选：回合的工作目录，同时是侧边对话的会话键。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 插件配置 working_dir > 宿主 home 兜底' },
         timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800' },
         max_rounds: { type: 'number', description: '可选：工具调用轮数上限（按 daemon SSE 的 tool_start 事件计数；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数。默认取插件配置，当前 ' + askMaxRounds + '；传 0 关掉本端熔断，交回 daemon 自带治理）。超限只中止本端等待并返回错误，不保证停掉 daemon 侧回合' },
       },
@@ -225,10 +242,12 @@ export function mountAskTool({
         protocol_unknown_types: [],
         error,
       });
+      // Repo ladder: explicit arg > host session cwd (ready-to-use hook) > plugin
+      // config `working_dir` > (nothing -> the daemon's own home fallback).
       const workDir =
         typeof args.working_dir === 'string' && args.working_dir.trim() !== ''
           ? args.working_dir
-          : defaultWorkingDir;
+          : hostSessionCwd(exec) ?? defaultWorkingDir;
       // Normalise the working directory so that `C:\Repo`, `c:\repo` and
       // `C:\repo\` all map to the SAME session key. `resolve` on Windows
       // uppercases the drive letter and collapses trailing slashes; on
@@ -392,7 +411,7 @@ export function mountReviewTool({
   const reviewBaseDesc =
     '让本机 AtomCode（官方二进制）对一次代码变更做 one-shot 代码评审：默认评未提交改动；也可给 base 分支 / GitHub PR / diff 文本 / 自定义任务。' +
     '有界的一次性 agent 运行（轮数 + 墙钟双保险丝，默认关 web 搜索），完成时 report 里是 CLI 的 --json 原始文本（findings JSON，可能夹带日志行），需自己读出结论并转达用户。' +
-    '注意 working_dir 缺省是插件配置的目录，插件也没配时是宿主进程的 cwd——评某个仓库务必显式传 working_dir。' +
+    '注意 working_dir 缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 插件配置 review_working_dir；都没有则直接拒绝（绝不回落宿主进程 cwd）——评某个仓库请显式传 working_dir。' +
     '可能数分钟。';
   const reviewUsableProviders = reviewProvision.providers || [];
   // Four different things can be named here and the model must not confuse them:
@@ -429,7 +448,7 @@ export function mountReviewTool({
     parameters: {
       type: 'object',
       properties: {
-        working_dir: { type: 'string', description: '仓库根目录（--repo）。必填（或用插件配置的 review_working_dir）——不传会报错而不是悄悄评错仓库' },
+        working_dir: { type: 'string', description: '仓库根目录（--repo）。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 插件配置 review_working_dir；都没有则报错（绝不回落宿主进程 cwd）而不是悄悄评错仓库' },
         task: { type: 'string', description: '可选：自定义任务文本，替代 diff 评审（问题/目标代码/上下文都写进来）' },
         base: { type: 'string', description: '可选：base git ref，评审 <base>...HEAD；缺省评未提交改动' },
         staged: { type: 'boolean', description: '可选：只评已暂存改动（git diff --staged）' },
@@ -473,10 +492,14 @@ export function mountReviewTool({
       // mistake, and reporting it beats both reviewing the wrong tree and
       // burying it under a config diagnostic. The host process cwd is an
       // implementation detail of how DSH was launched, never the user's repo.
+      // Same ladder as ask, different tail: explicit arg > host session cwd
+      // (ready-to-use hook) > plugin config `review_working_dir` > REFUSE.
+      // The host process cwd stays excluded (红线 8); the session cwd is the
+      // repo the user has open, so auto-filling it is never a blind guess.
       const workDir =
         typeof args.working_dir === 'string' && args.working_dir.trim() !== ''
           ? args.working_dir
-          : reviewWorkingDir;
+          : hostSessionCwd(exec) ?? reviewWorkingDir;
       if (!workDir) {
         stats.review.calls += 1;
         stats.review.err += 1;
