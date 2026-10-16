@@ -82,12 +82,27 @@ function startFakeDaemon(state) {
   });
 }
 
-/** Mount the plugin against a fake daemon and return its atomcode_ask tool. */
+/**
+ * Mount the plugin against a fake daemon and return its atomcode_ask tool.
+ *
+ * The fake logger DOES NOT swallow what the plugin says: warnings and errors
+ * are collected on `ask.mountWarnings`. The plugin degrades silently by design
+ * when a state file cannot be written (红线 3 says it must still be NAMED), and
+ * a mock logger with no-op methods was throwing that name away — which is why
+ * this suite's one flake (three profile cases reading a sessions.json that was
+ * never written) surfaced as a bare ENOENT that pointed at the symptom and hid
+ * the cause. Capturing the name here is what lets `readState` report it.
+ */
 async function mountAsk(mod, { statePath, port, keyPrefix, config = {} }) {
   const tools = [];
+  const mountWarnings = [];
   const ctx = {
     get: (name) => (name === 'tools' ? { register: (def) => { tools.push(def); return () => {}; } } : undefined),
-    logger: { warn() {}, error() {}, info() {} },
+    logger: {
+      warn: (m) => mountWarnings.push(String(m)),
+      error: (m) => mountWarnings.push(String(m)),
+      info() {},
+    },
     fiber: { entry: { options: { id: 'dsh-atomcode-bridge' } } },
     inject() {},
     effect() {},
@@ -102,10 +117,49 @@ async function mountAsk(mod, { statePath, port, keyPrefix, config = {} }) {
   });
   const ask = tools.find((t) => t.name === 'atomcode_ask');
   assert.ok(ask, 'atomcode_ask must be registered');
+  ask.mountWarnings = mountWarnings;
   return ask;
 }
 
-const readState = (p) => JSON.parse(readFileSync(p, 'utf8'));
+/**
+ * Read the on-disk session map, and — when it cannot be read — say WHY in the
+ * failure itself. A missing file is the one flake this suite has ever produced;
+ * `ENOENT` alone names the symptom and buries the cause. Passing `ask` here
+ * lets the error carry whatever the plugin said while mounting, so the next
+ * occurrence debugs itself instead of costing another bisect.
+ */
+const readState = (p, ask) => {
+  try {
+    return JSON.parse(readFileSync(p, 'utf8'));
+  } catch (error) {
+    const said = ask && Array.isArray(ask.mountWarnings) && ask.mountWarnings.length
+      ? `\n  the plugin named this at mount time:\n    ${ask.mountWarnings.join('\n    ')}`
+      : '\n  (the plugin named nothing at mount time)';
+    throw new Error(`readState(${p}) failed: ${error.message}${said}`);
+  }
+};
+
+/**
+ * Assert a turn SUCCEEDED, and when it did not, say why.
+ *
+ * Tests that assert on the state file read it AFTER a turn; if that turn failed
+ * (a daemon that never answered), the absence of a file is what they see —
+ * `ENOENT`, which names the symptom and discards the cause the turn itself had
+ * already reported in `r.error`. That is the shape of this suite's one flake:
+ * three cases failed as a missing file with the real error buried in an
+ * ignored return value. Assert the success FIRST so the two cannot be confused.
+ */
+function execOk(r, ask) {
+  const ext = ask && Array.isArray(ask.mountWarnings) && ask.mountWarnings.length
+    ? ` mountWarnings=${JSON.stringify(ask.mountWarnings)}`
+    : '';
+  assert.equal(
+    r.ok,
+    true,
+    `the turn must succeed before its bookkeeping is asserted; r.error=${JSON.stringify(r.error)}${ext}`,
+  );
+}
+
 const tempState = () => join(mkdtempSync(join(tmpdir(), 'atomcode-glue-')), 'sessions.json');
 const WORKDIR = 'C:\\repo';
 
@@ -140,7 +194,7 @@ describe('atomcode_ask — session continuity glue', () => {
     // the model never has to carry it. Asserted against the wire value rather
     // than a hardcoded id, so the test does not depend on daemon call order.
     assert.equal(
-      readState(statePath)[WORKDIR].sessionId,
+      readState(statePath, ask)[WORKDIR].sessionId,
       r.session_id,
       'the assigned id must be persisted under the working_dir key',
     );
@@ -150,7 +204,7 @@ describe('atomcode_ask — session continuity glue', () => {
     const statePath = tempState();
     const ask = await mountAsk(mod, { statePath, port: fake.port });
     await ask.execute({ message: 'first', working_dir: WORKDIR }, {});
-    const recorded = readState(statePath)[WORKDIR].sessionId;
+    const recorded = readState(statePath, ask)[WORKDIR].sessionId;
     const second = await ask.execute({ message: 'second', continue: true, working_dir: WORKDIR }, {});
     assert.equal(second.continued, true);
     assert.equal(
@@ -186,7 +240,7 @@ describe('atomcode_ask — session continuity glue', () => {
     const statePath = tempState();
     const ask = await mountAsk(mod, { statePath, port: fake.port });
     await ask.execute({ message: 'first', working_dir: WORKDIR }, {});
-    const recorded = readState(statePath)[WORKDIR].sessionId;
+    const recorded = readState(statePath, ask)[WORKDIR].sessionId;
     assert.ok(recorded, 'the successful turn must have recorded a session');
 
     state.mode = 'error';
@@ -208,7 +262,7 @@ describe('atomcode_ask — session continuity glue', () => {
     // The daemon still announced a session; persisting it on a failed turn would
     // silently re-point the line at a turn that never completed.
     assert.equal(
-      readState(statePath)[WORKDIR].sessionId,
+      readState(statePath, ask)[WORKDIR].sessionId,
       recorded,
       'a failed turn must leave the previously recorded session intact',
     );
@@ -218,9 +272,9 @@ describe('atomcode_ask — session continuity glue', () => {
     const statePath = tempState();
     const ask = await mountAsk(mod, { statePath, port: fake.port });
     await ask.execute({ message: 'repo a', working_dir: WORKDIR }, {});
-    const firstId = readState(statePath)[WORKDIR].sessionId;
+    const firstId = readState(statePath, ask)[WORKDIR].sessionId;
     await ask.execute({ message: 'repo b', working_dir: 'C:\\other' }, {});
-    const saved = readState(statePath);
+    const saved = readState(statePath, ask);
     assert.ok(saved['C:\\other'], 'the second working_dir must get its own key');
     assert.equal(saved[WORKDIR].sessionId, firstId, 'the first key is untouched');
     assert.notEqual(saved['C:\\other'].sessionId, firstId);
@@ -241,7 +295,7 @@ describe('atomcode_ask — session continuity glue', () => {
     const statePath = tempState();
     const ask = await mountAsk(mod, { statePath, port: fake.port });
     await ask.execute({ message: 'first', working_dir: WORKDIR }, {});
-    const stale = readState(statePath)[WORKDIR].sessionId;
+    const stale = readState(statePath, ask)[WORKDIR].sessionId;
     assert.ok(stale);
 
     const r = await ask.execute({ message: 'start over', continue: true, reset_session: true, working_dir: WORKDIR }, {});
@@ -252,7 +306,7 @@ describe('atomcode_ask — session continuity glue', () => {
       'the stale session id must NOT be replayed to the daemon',
     );
     // …and the new turn's own session takes its place.
-    const saved = readState(statePath)[WORKDIR];
+    const saved = readState(statePath, ask)[WORKDIR];
     assert.equal(saved.sessionId, r.session_id);
     assert.notEqual(saved.sessionId, stale);
   });
@@ -267,7 +321,7 @@ describe('atomcode_ask — session continuity glue', () => {
     );
     assert.equal(r.continued, true);
     assert.equal(state.requests.at(-1).session_id, 'fresh-9');
-    assert.equal(readState(statePath)[WORKDIR].sessionId, 'fresh-9');
+    assert.equal(readState(statePath, ask)[WORKDIR].sessionId, 'fresh-9');
   });
 
   it('reset_session on a key that was never recorded is a no-op, not an error', async () => {
@@ -395,8 +449,8 @@ describe('session_key_prefix — profile detection', () => {
     process.env.DSH_PROFILE = 'web';
     try {
       const ask = await mountAsk(mod, { statePath, port: fake.port });
-      await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
-      const keys = Object.keys(readState(statePath));
+      execOk(await ask.execute({ message: 'hi', working_dir: WORKDIR }, {}), ask);
+      const keys = Object.keys(readState(statePath, ask));
       assert.ok(
         keys.some((k) => k.startsWith('web::')),
         `expected a web::-prefixed key from DSH_PROFILE; got ${JSON.stringify(keys)}`,
@@ -413,8 +467,8 @@ describe('session_key_prefix — profile detection', () => {
     process.env.DSH_PROFILE = 'web'; // must lose to the explicit value
     try {
       const ask = await mountAsk(mod, { statePath, port: fake.port, keyPrefix: 'custom' });
-      await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
-      const keys = Object.keys(readState(statePath));
+      execOk(await ask.execute({ message: 'hi', working_dir: WORKDIR }, {}), ask);
+      const keys = Object.keys(readState(statePath, ask));
       assert.ok(
         keys.some((k) => k.startsWith('custom::')),
         `an explicit prefix must win over DSH_PROFILE; got ${JSON.stringify(keys)}`,
@@ -434,8 +488,8 @@ describe('session_key_prefix — profile detection', () => {
       // argv in this process holds the test file path, which matches neither
       // profile, so detection resolves to '' and keys stay bare.
       const ask = await mountAsk(mod, { statePath, port: fake.port, keyPrefix: '' });
-      await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
-      const keys = Object.keys(readState(statePath));
+      execOk(await ask.execute({ message: 'hi', working_dir: WORKDIR }, {}), ask);
+      const keys = Object.keys(readState(statePath, ask));
       assert.deepEqual(keys, [WORKDIR], `expected the bare working_dir key; got ${JSON.stringify(keys)}`);
     } finally {
       if (saved !== undefined) process.env.DSH_PROFILE = saved;
@@ -545,6 +599,36 @@ describe('atomcode_ask — bookkeeping that cannot be written does not fail the 
       const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
       assert.equal(r.ok, true, 'a broken state path must not turn a good answer into an error');
       assert.match(r.reply, /ok/, 'the reply itself must survive untouched');
+      // …and the degrade is NAMED, not swallowed (红线 3). Degrading silently is
+      // half the bug: a turn that quietly stops recording sessions looks
+      // identical to one that has no sessions to record.
+      assert.ok(
+        ask.mountWarnings.some((w) => w.includes('state path is a directory, not a file')),
+        `the reason must reach the logger; the plugin said ${JSON.stringify(ask.mountWarnings)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The dedupe is by ROOT CAUSE, not by which side failed. A directory at
+  // `state_path` fails the read as EISDIR and the write as EISDIR too; if each
+  // reported its own wording, the panel's per-poll `count()` would alternate
+  // between two messages and log a "fresh" degradation forever — a warning that
+  // never stops is how a real one gets ignored. Same cause, same sentence.
+  it('names that cause ONCE, however many times the store is poked', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-statedir-'));
+    try {
+      const ask = await mountAsk(mod, { statePath: dir, port: fake.port });
+      await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+      const afterFirst = ask.mountWarnings.length;
+      // Re-run and poll: each call reads (EISDIR) then writes (EISDIR) again.
+      await ask.execute({ message: 'again', working_dir: WORKDIR }, {});
+      assert.equal(
+        ask.mountWarnings.length,
+        afterFirst,
+        `a repeated identical failure must not be re-announced; got ${JSON.stringify(ask.mountWarnings)}`,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
