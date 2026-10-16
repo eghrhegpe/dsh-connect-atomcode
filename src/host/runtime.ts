@@ -18,9 +18,10 @@
  *    one screen instead of scattered across `apply()`.
  *  - The declaration ORDER encoding a real constraint was recorded only in a
  *    comment: the session store's error observer writes `stats.sessionsError`,
- *    so the store must not fire it before the bag exists. It is safe today
- *    because the observer can only run from get/set/drop/count, all of which
- *    happen long after the mount — see the note at the store below.
+ *    so the store must not fire it before the bag exists. That constraint is now
+ *    STRUCTURAL — `sessions` is constructed after `createStatsBag`, so no
+ *    rearrangement can reopen the window in which the observer runs before its
+ *    target exists. See the note at the store.
  *
  * Nothing here is a behaviour change: same code, same order, moved. Whether the
  * observer should keep leaning on that ordering is a separate question, and a
@@ -92,20 +93,6 @@ export function createRuntime({
     binaryEnv,
   } = config;
 
-  // Session glue degrades rather than throws (sessions.ts), and every
-  // degradation is NAMED here instead of swallowed (红线 3): a state file this
-  // process cannot write is a fact about the mount, not a reason to hand a
-  // finished turn back as an error. `''` means recovered — same channel.
-  // The observer writes `stats`, which is declared further down: safe because it
-  // can only fire from get/set/drop/count, and every one of those runs long
-  // after the mount finished. Nothing between here and the declaration may call
-  // the store, or this becomes a temporal-dead-zone throw at mount.
-  const sessions = createSessionStore(statePath, sessionKeyPrefix, {
-    onError: (error) => {
-      stats.sessionsError = error;
-      if (error) log(`会话续接已降级（本轮回复不受影响）：${error}`);
-    },
-  });
   // The panel's model choice, in the SAME directory so one `state_path` knob
   // governs both files. Read PER CALL (like sessions, and like the review probe)
   // so a pick made in the panel applies to the very next turn — no host restart.
@@ -210,6 +197,27 @@ export function createRuntime({
       askMaxRounds: authoredAskMaxRounds,
     },
     defaults: { approvalMode: DEFAULT_APPROVAL_MODE, askMaxRounds: DEFAULT_ASK_MAX_ROUNDS },
+  });
+
+  // Session glue degrades rather than throws (sessions.ts), and every
+  // degradation is NAMED here instead of swallowed (红线 3): a state file this
+  // process cannot write is a fact about the mount, not a reason to hand a
+  // finished turn back as an error. `''` means recovered — same channel.
+  //
+  // DECLARED AFTER `stats` ON PURPOSE. The observer writes `stats.sessionsError`,
+  // and `stats` is a `const` binding: a store that fired the observer during
+  // construction (an unwritable state path, say) would hit a temporal-dead-zone
+  // throw and take the whole mount down. This used to sit above `createStatsBag`
+  // with that constraint recorded only in a comment — "nothing between here and
+  // the declaration may call the store" — i.e. one rearrangement away from a
+  // mount-time crash with no test that could catch it. Ordering it after the bag
+  // makes the constraint structural: the window in which the observer could run
+  // before its target exists no longer exists, so the comment cannot rot.
+  const sessions = createSessionStore(statePath, sessionKeyPrefix, {
+    onError: (error) => {
+      stats.sessionsError = error;
+      if (error) log(`会话续接已降级（本轮回复不受影响）：${error}`);
+    },
   });
 
   /** Refresh daemon liveness with a short cache (used by both ask + stats). */
