@@ -35,7 +35,7 @@
 
 2. **额度显示是从本地化文本解析出来的。**
    AtomCode 没有额度 HTTP 接口，唯一来源是 `POST /command {"command":"status"}` 返回的 `text`。
-   解析不出来时**绝不编数字**，而是原样显示原文。数据链路见 [`../README.md`](../README.md) 的额度一节。
+   解析不出来时**绝不编数字**，而是原样显示原文。机制与实测档案（数据链路、解析拒绝表、面板座位）在 [`CodingPlan-额度显示.md`](./CodingPlan-额度显示.md)。
 
 3. **`npm test` 不消耗额度，`npm run test:live` 默认也不消耗。**
    离线链全部用假 daemon / 假 spawn / 纯函数。live 套件里的**真实模型回合**需要显式 `ATOMCODE_LIVE_TURNS=1` 才会跑。
@@ -54,6 +54,7 @@
 | [`AtomCode-CLI与daemon接口参考.md`](./AtomCode-CLI与daemon接口参考.md) | 要调 AtomCode 的命令 / 端点 | **实测速查**：CLI 命令与选项、daemon 全部 HTTP 端点、SSE 词表、`ATOMCODE_SIG_MISSING` 签名门、本插件实际用到的子集。**命令数与选项数一律以本篇实测为准**（本文不转抄） |
 | [`AtomCode-CodingPlan网页版可用信息.md`](./AtomCode-CodingPlan网页版可用信息.md) | 要核对套餐规则 | 网页版（ai.atomgit.com）CodingPlan 页面素材：Lite / Pro 的支持模型与窗口规则 |
 | [`AtomCode-CodingPlan网页版额度卡片.md`](./AtomCode-CodingPlan网页版额度卡片.md) | 要核对额度卡的字段与文案 | ⚠️ **原始 HTML 转储，不是给人读的文档**（单行、无换行）。供人工比对用；可执行的实测载荷在 `../test/quota.test.mjs` |
+| [`CodingPlan-额度显示.md`](./CodingPlan-额度显示.md) | 额度不显示 / 位置不对 / 面板为什么长这样 | **机制档案**：daemon 拉起的四个约束与空闲自杀、`POST /command` 唯一来源与坑、两种解析拒绝行、槽位选择（`composer.dock`）与弹窗决策 |
 | [`../cordis.patch.yml`](../cordis.patch.yml) | 要加配置字段 | bundle 声明与**全部配置项的注释**——字段的注释真源 |
 | [`../scripts/probes/`](../scripts/probes/) | 要复现上面那些实测 | 探针脚本（**含成本标注**：哪个零额度、哪个花一个真实回合）。结论在 docs/，脚本是结论的出处 |
 | [`../test/`](../test) | 改测试前 | 离线 + live 套件。**套件头注就是契约**，不是附件；名单以 `package.json` 的 `scripts.test` 为准 |
