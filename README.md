@@ -11,6 +11,31 @@
 
 > **文档地图**：本文件是**手册**（装 / 配 / 用）；[`docs/`](docs/) 是**索引与实测档案**（含事故卷宗）；[`AGENTS.md`](AGENTS.md) 是给 AI 协作会话的**纪律与红线**；[`CHANGELOG.md`](CHANGELOG.md) 是**变更史**，设计约束在 [`docs/DECISIONS.md`](docs/DECISIONS.md)。
 
+## 前置
+
+- **官方** AtomCode 二进制（v5.x）在 PATH（Windows 实测位：`%LOCALAPPDATA%\AtomCode\atomcode.exe`；也可 `ATOMCODE_BIN` 或 patch 的 `binary` 覆盖）。源码构建无 AtomGit 网关签名，默认网关模型不可用
+- 已登录：`~/.atomcode/auth.toml`（`atomcode status` 可查）
+- 默认模型可用（`~/.atomcode/config.toml` 的 `default_model`，或给工具传 `provider`）
+- ask 需要 daemon：`atomcode daemon --port 13459`（插件默认自动 detached 拉起；`auto_start: false` 则需自启）。实测冷启动约 1.5–4.5s
+
+## 安装
+
+bundle 形式（与本机 `dsh-connect-*` 同品类），三种装法任选：
+
+1. **npm 包**（普通用户，已发 registry）：
+   `dsh plugin add dsh-connect-atomcode`，或在 `plugin_manager` 里 `install_bundle` 且 `target` 填 `dsh-connect-atomcode`
+2. **GitHub 直装**（走 git dep，装 `main`）：`dsh plugin add eghrhegpe/dsh-connect-atomcode`
+3. **本地开发**：开发目录 `~/.dsh/plugins/dsh-atomcode-bridge`（pnpm `link:` 依赖）→ profile `package.json` 的 `dependencies` 加 `"dsh-connect-atomcode": "link:..."`，`dsh.profile.bundles` 追加包名，`pnpm install`
+
+bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行与全部配置项，无需再写 profile patch。**装完重启 DSH 进程**——patch 在启动时读取、Host 半边只在启动时加载一次；只改 `client.js` 刷新浏览器即可。
+
+> 本插件收录于社区精选列表 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（`dsh plugin add` 一键安装的 DSH 插件目录）。
+
+## 使用
+
+- 侧边咨询：对话里说"帮我问 AtomCode：……"，模型调 `atomcode_ask`；"接着刚才那条线再问" → `continue: true`（自动恢复上次的 AtomCode session，不用记 id）。续线接到一条已过期的 daemon 会话时 → `reset_session: true` 重新开线。
+- 代码评审："让 AtomCode 评审一下当前改动 / 主分支到 HEAD 的差异 / 5 号 PR"，模型调 `atomcode_review`，findings 原文在 `report`——**前提是下面「已知限制」里的 provider 已配好，且 `working_dir` 已给或已配 `review_working_dir`**（插件不猜仓库）
+
 ## 定位说明（v0.3 有意去接管）
 
 上游原版（MIT，2026-08-15）还带一个「模型提供商接管」：把 `atomcode` 注册为 DSH 的 LlmAdapter，会话模型可整线切过去。v0.3 **删掉了这条链路**，原因（实测后的机制评估）：
@@ -32,7 +57,7 @@
 
 ## ⚠️ 已知限制：`atomcode_review` 与 AtomGit 网关
 
-**装之前就该知道的一条**：
+**想用 review 就该先知道的一条**：
 
 > **不是「AtomGit 渠道不支持代码评审」，而是「review CLI 这条代码路径不会签 AtomGit 的请求签名」。**
 > 同一个渠道，daemon（`atomcode_ask`）用得好好的，review CLI（`atomcodex`）用不了。
@@ -55,26 +80,6 @@ provider（本机实测通路是本地代理），否则插件会在调用前就
 
 > 这一节原先就是 README 里的 130 行长文（占当时 490 行的 27%）。2026-10-16 拆出去：
 > README 是「装 / 配 / 用」的手册，那些是事故卷宗，两类读者不该被同一段长文互相挡住。
-
-## 前置
-
-- **官方** AtomCode 二进制（v5.x）在 PATH（Windows 实测位：`%LOCALAPPDATA%\AtomCode\atomcode.exe`；也可 `ATOMCODE_BIN` 或 patch 的 `binary` 覆盖）。源码构建无 AtomGit 网关签名，默认网关模型不可用
-- 已登录：`~/.atomcode/auth.toml`（`atomcode status` 可查）
-- 默认模型可用（`~/.atomcode/config.toml` 的 `default_model`，或给工具传 `provider`）
-- ask 需要 daemon：`atomcode daemon --port 13459`（插件默认自动 detached 拉起；`auto_start: false` 则需自启）。实测冷启动约 1.5–4.5s
-
-## 安装
-
-bundle 形式（与本机 `dsh-connect-*` 同品类），三种装法任选：
-
-1. **npm 包**（普通用户，已发 registry）：
-   `dsh plugin add dsh-connect-atomcode`，或在 `plugin_manager` 里 `install_bundle` 且 `target` 填 `dsh-connect-atomcode`
-2. **GitHub 直装**（走 git dep，装 `main`）：`dsh plugin add eghrhegpe/dsh-connect-atomcode`
-3. **本地开发**：开发目录 `~/.dsh/plugins/dsh-atomcode-bridge`（pnpm `link:` 依赖）→ profile `package.json` 的 `dependencies` 加 `"dsh-connect-atomcode": "link:..."`，`dsh.profile.bundles` 追加包名，`pnpm install`
-
-bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行与全部配置项，无需再写 profile patch。**装完重启 DSH 进程**——patch 在启动时读取、Host 半边只在启动时加载一次；只改 `client.js` 刷新浏览器即可。
-
-> 本插件收录于社区精选列表 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（`dsh plugin add` 一键安装的 DSH 插件目录）。
 
 ## 配置（patch 行 `config:`）
 
@@ -142,6 +147,8 @@ data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-f
 
 工具返回里那个 `provider=` 取的是 daemon 报的 `runtime_info`（不是回显插件自己传的参）——**但 daemon 没报 `runtime_info` 时它是回显请求值**，此时输出带 `providerReported: false`，渲染层标注「未经远端证实」。所以**档位名打错不会假装"换成功了"**：要嘛回合直接带错模型跑完（`provider=` 当场露馅），要嘛 daemon 报错；万一 daemon 升级后不再发 `runtime_info`，每个回合都会把这个降级说出来，而不是静默回显。
 
+同一族的还有**协议漂移**：daemon 升级可能改 SSE 事件名。这件事有两道具名闸门（整个词汇表都变了 → 报错并列出观测到的类型；`done` 还在但正文事件被改名 → 空回复降级为失败），但**还有第三种形态**：事件照常、只是多了一个本插件不认识的类型——回合成功、内容完整，于是漂移连同证据一起被当成正常丢掉。危险正在这里：**轮数熔断靠计数 `tool_start` 生效**，一旦被改名的正是它，`round_count` 会恒为 0，熔断从此永不触发，而每一层界面都还在报成功。现在这种回合会带出 `protocol_unknown_types`（空数组 = 词汇表未变；**恒有本字段**，所以「没看到漂移」与「没检查漂移」不会混），渲染层把类型名与「熔断可能已失效」一起说出来，面板则由 `protocol.unknownTypes` 常驻提示。
+
 > **两个坑**
 > 1. 裸模型 id（`glm5.3-flash`）**不是**档位名。按 `/models` 里 `provider` 字段的整名传；传半截名会原样透传给 daemon/CLI（插件不拦，`selectReviewProvider` 对"没见过的名字"也是透传让 CLI 自己判），所以错了就是错在远端。
 > 2. **review 那条路是另一个命名空间**：CLI 的 `--provider` 收 `config.toml` 里 `[providers.<name>]` 的**直连条目名**（那条路上模型由该条目的 `model` 决定），与 daemon `/models` 的档位名互不相通。所以插件侧也是**两个字段**：`default_provider`（ask）与 `review_default_provider`（review），填串了等于让 CLI 去认一个它没有的通道。
@@ -154,11 +161,6 @@ data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-f
 | 某个版本改了什么 | [`CHANGELOG.md`](CHANGELOG.md) |
 | 现在为什么是这样（仍然有效的决策 / 未修与明确不做） | [`docs/DECISIONS.md`](docs/DECISIONS.md) |
 | 为什么不做 provider 接管、额度为什么只能靠文本解析、私有无版本协议怎么办 | [`AGENTS.md`](AGENTS.md) 的「三条事实」 |
-
-## 使用
-
-- 侧边咨询：对话里说"帮我问 AtomCode：……"，模型调 `atomcode_ask`；"接着刚才那条线再问" → `continue: true`（自动恢复上次的 AtomCode session，不用记 id）。续线接到一条已过期的 daemon 会话时 → `reset_session: true` 重新开线。
-- 代码评审："让 AtomCode 评审一下当前改动 / 主分支到 HEAD 的差异 / 5 号 PR"，模型调 `atomcode_review`，findings 原文在 `report`——**前提是上面「已知限制」里的 provider 已配好，且 `working_dir` 已给或已配 `review_working_dir`**（插件不猜仓库）
 
 ## 📊 CodingPlan 额度显示
 
@@ -360,7 +362,7 @@ npm test           # 链的名单 = package.json 的 scripts.test；名单只在
 - `stats-route.test.mjs` — 详情页统计路由（唯一被渲染端调用的接口）：方法门（405）、同源门（403/放行）、快照里面板会解引用的**每一个字段**、二进制来源回退链、`sessions.tracked` 实时读盘且**按 prefix 计数**、**失败后按 `daemon_retry_secs` 重试拉起**、以及额度分支（解析 / 必带 working_dir / 跨轮询缓存 / `0` 关闭 / daemon 不在时不编数字 / 文本漂移标记的置位与复位）。
 - `quota.test.mjs` — 额度文本解析器（真实抓取的载荷 + 英文 + 用尽 100% + 空/畸形输入 + 时长解析）。
 - `client-fns.test.mjs` — **渲染端纯函数**（v0.4 新增）：额度格式化与判定（`fmtDuration` / `fmtCountdown` / `quotaColor` / `liveRemaining` / `pctLabel` / `barWidth` / `quotaFacts` / `panelStyle` / `quotaView`）加模型档位与回合边界（`providerRows` / `providerSelectModel` / `turnBoundaryRows`）。v0.3 只测了客户端的**注册契约**（id / inject / 槽位座位），而这些真正会算出错误数字的边界——0ms、负倒计时、null 额度、770% 的进度条、两种目录形状、无证据时的"已改"标签——一条都没测。**名单以 `client.js` 的 `TESTABLE` 为准**，这里只是索引，不追着它改。
-- `protocol.test.mjs` — **漂移钉子**（v0.4 新增）：daemon 用完全陌生的 SSE 词汇应答时必须**响亮报错**（而不是含糊的 "ended before done"）、加性未知事件**不得**让健康回合失败、`healthInfo` 暴露 daemon 版本、额度文本改词后不编数字、TOML provider 解析的引号名与全引号段名。
+- `protocol.test.mjs` — **漂移钉子**（v0.4 新增）：daemon 用完全陌生的 SSE 词汇应答时必须**响亮报错**（而不是含糊的 "ended before done"）、加性未知事件**不得**让健康回合失败**但也不得静默**（类型必须带出，否则轮数熔断可静默失效）、`healthInfo` 暴露 daemon 版本、额度文本改词后不编数字、TOML provider 解析的引号名与全引号段名。
 
 Live 套件需要真环境，**缺前置条件时自述原因并跳过**（不会静默变红）：
 
