@@ -24,6 +24,8 @@
 - **面板布局**：`1180px` + `repeat(auto-fit, minmax(320px, 1fr))`
 - **i18n**：`locale/{en,zh}.json` + `files[]` 含 `locale`
 - **工具统计格式**：两组带标签，不摊平成一排
+- **配置字段的语义只写在 `cordis.patch.yml` 一处**（字段文档真源，`test/wiring.test.mjs` 钉着它）。`src/host/config.ts` **不复述**字段含义/空值语义/归属哪条路径，只写解析层才知道的事：`0` 为什么是显式值而不是缺失值、`authored` 为什么不能是 key-presence 判定、内置常量为什么是这个数。理由：同一份「为什么」写两处，第二处必然漂移——2026-10-17 实测，24 个字段的注释在两处逐字段重复，而只有 patch.yml 那份有测试看着
+- **profile 键的自动判定（`session_key_prefix` 为空时）**：`$DSH_PROFILE` 是权威、**过不过 allowlist**——曾因一个三词白名单把合法值丢掉、回落到猜测；argv 回退要求 `dsh` 是真调用**且** profile 词独占一个参数——曾因对拼接 argv 跑正则而跨参数边界命中（`/opt/dsh-tools/webpack.config.js` 满足过 `web` 分支）。判定不出来就返回 `''`，由挂载点具名告警（红线 3），**绝不猜**：错误的前缀会静默合并或拆错会话，比没有前缀更糟
 - **`atomcode_review` 是「经标准 OpenAI 兼容端点的有界一次性评审」，不承诺 Atom 原生通路**。Atom 官方网关（`llm-api.atomgit.com`）对推理端点强制 AtomCode 专有签名，review CLI（`atomcodex`）不会签 → 结构性够不着官方网关，只能走标准直连端点或本地 sidecar 后门。两条「稳定」轴要分开看：**网关/额度轴**上，Atom 原生登录用户的稳定评审通路是 `atomcode_ask` 里的原生 `code_review`（签名 daemon、滚动窗口额度）；**有界性轴**（轮数 + 墙钟双保险丝、`--json` findings、可复现）CLI 更强。工具描述已按此定位改写（2026-10-16）
 
 > 机制层的硬约束（为什么不做 provider 接管、额度为什么只能靠文本解析、三条私有无版本协议怎么办）
