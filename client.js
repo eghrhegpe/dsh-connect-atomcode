@@ -802,7 +802,7 @@
 				}, h("span", { title: row.title }, row.text)))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "侧边会话"), h("div", { style: S.metrics }, h(Metric, {
 					num: data.sessions && data.sessions.tracked || 0,
 					label: "已跟踪会话"
-				})), h(Row, { label: "运行时长" }, fmtDuration(data.uptimeMs)), data.sessions && data.sessions.error ? h("p", { style: S.error }, "会话续接已降级（回复不受影响）：" + data.sessions.error) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "工具调用统计"), h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
+				})), data.sessions && typeof data.sessions.oldestAgeMs === "number" ? h(Row, { label: "最旧一条" }, h("span", { title: "这些会话键里最老一条的存活时长。超过插件设定的存活期的键会被丢弃，之后的 continue 会开一条新线（不会静默复用一条死会话）" }, fmtDuration(data.sessions.oldestAgeMs))) : null, h(Row, { label: "运行时长" }, fmtDuration(data.uptimeMs)), data.sessions && data.sessions.error ? h("p", { style: S.error }, "会话续接已降级（回复不受影响）：" + data.sessions.error) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "工具调用统计"), h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
 					num: ask.calls,
 					label: "调用"
 				}), h(CallStat, {
@@ -958,8 +958,20 @@
 				data: null,
 				error: null,
 				fetchedAt: 0,
-				promise: null
+				promise: null,
+				promiseStartedAt: 0
 			};
+			/**
+			* The provider branch adopted from a write's own response, and WHEN.
+			*
+			* A poll that was already in flight when the click landed answers with a
+			* snapshot the server built BEFORE the write reached it. Without re-applying
+			* the adopted branch on top of that answer, the stale one wins the next
+			* `commit()` and the dropdown bounces back anyway — the same bug, one race
+			* narrower. The timestamp is what tells "this answer predates the click"
+			* from "this answer already includes it".
+			*/
+			let adoptedProvider = null;
 			const TESTABLE = {
 				fmtDuration,
 				fmtCountdown,
@@ -975,8 +987,87 @@
 				turnBoundaryRows,
 				isLoopbackEndpoint: isLoopbackBaseUrl,
 				daemonStatusLine,
-				protocolDriftNotice
+				protocolDriftNotice,
+				providerSlotsOf,
+				snapshotWithSlots
 			};
+			/**
+			* Fold a successful write's OWN answer into the shared snapshot, before the
+			* reload that follows it.
+			*
+			* `POST /provider` answers with the recomputed `provider` branch — the value
+			* the server just accepted (`routes.ts`) — and `reload` is `load()`, whose
+			* first line commits the CACHED snapshot while it is still fresh (within
+			* POLL_MS). So without this, the click's own reload re-rendered the panel
+			* from the pre-click snapshot: `ProviderSelectRow`'s `<select>` is
+			* controlled (`value: model.value`), so React snapped the dropdown back to
+			* the old pick and held it there until the next 5s poll — up to five
+			* seconds in which the control looks like it ignored the click, with no
+			* text anywhere saying the write succeeded (the "已选 X" line was removed
+			* deliberately: only a failure needs words). Data already in hand was being
+			* thrown away.
+			*
+			* Replacing `statsCache.data` with a NEW object — rather than mutating it —
+			* is load-bearing: `commit()` calls `setData(statsCache.data)`, and React
+			* bails out of a state update whose value is identical by reference, so an
+			* in-place mutation would publish new content and no re-render.
+			*
+			* @returns {boolean} whether the snapshot actually changed.
+			*/
+			/**
+			* The two provider branches a write's response carries, or null when it
+			* carries none.
+			*
+			* Both are taken, not just the one that was written: the server recomputes
+			* `effective`/`source` for the whole branch, and a pick in one namespace
+			* never changes the other — adopting both keeps the two dropdowns reading
+			* from one freshly-answered snapshot.
+			*/
+			function providerSlotsOf(provider) {
+				if (!provider || typeof provider !== "object") return null;
+				const slots = {};
+				for (const slot of ["ask", "review"]) if (provider[slot] && typeof provider[slot] === "object") slots[slot] = provider[slot];
+				return Object.keys(slots).length > 0 ? slots : null;
+			}
+			/**
+			* One snapshot plus adopted slots in, the NEXT snapshot out — a NEW object.
+			*
+			* "New object" is the whole point: `commit()` calls `setData(statsCache.data)`
+			* and React bails out of a state update whose value is identical by
+			* reference, so mutating the cached snapshot in place would publish new
+			* content and no re-render — the dropdown would stay where it was.
+			*
+			* Kept pure and split from `adoptProviderSnapshot` so it can be asserted
+			* offline: this bug lived between a network round-trip and a React commit,
+			* which is exactly the seam no DOM-free suite could reach before.
+			*/
+			function snapshotWithSlots(current, slots) {
+				if (!current) return null;
+				return {
+					...current,
+					provider: {
+						...current.provider || {},
+						...slots
+					}
+				};
+			}
+			function adoptProviderSnapshot(provider) {
+				const slots = providerSlotsOf(provider);
+				const next = slots ? snapshotWithSlots(statsCache.data, slots) : null;
+				if (!next || !slots) return false;
+				adoptedProvider = {
+					slots,
+					at: Date.now()
+				};
+				statsCache.data = next;
+				return true;
+			}
+			/** Re-apply the adopted branch over an answer a pre-click poll just delivered. */
+			function reapplyAdoptedProvider(startedAt) {
+				if (!adoptedProvider || adoptedProvider.at <= startedAt) return;
+				const next = snapshotWithSlots(statsCache.data, adoptedProvider.slots);
+				if (next) statsCache.data = next;
+			}
 			async function postProvider(slotName, value) {
 				try {
 					const response = await fetch(PROVIDER_PATH, {
@@ -1034,6 +1125,7 @@
 						setNote("保存失败：" + result.error);
 						return;
 					}
+					adoptProviderSnapshot(result.provider);
 					if (typeof reload === "function") reload();
 				};
 				const override = model.note;
@@ -1091,6 +1183,7 @@
 							timedOut = true;
 							if (controller && controller.abort) controller.abort();
 						}, deadlineMs);
+						statsCache.promiseStartedAt = Date.now();
 						statsCache.promise = (async () => {
 							try {
 								const response = await fetch(STATS_PATH, {
@@ -1116,7 +1209,9 @@
 							}
 						})();
 					}
+					const startedAt = statsCache.promiseStartedAt;
 					await statsCache.promise;
+					reapplyAdoptedProvider(startedAt);
 					commit();
 				}, [commit]);
 				useEffect(() => {

@@ -315,6 +315,29 @@ export function createStatusSection(deps: StatusSectionDeps) {
               { style: S.metrics },
               h(Metric, { num: (data.sessions && data.sessions.tracked) || 0, label: '已跟踪会话' })
             ),
+            // How stale the oldest surviving key is. Rendered ONLY when the host
+            // actually knows the age: an unknown age must not print as `0s`,
+            // which reads as "just now". The count above alone could not tell
+            // "one live line" from "nine ids a daemon that exited last week left
+            // behind" — both were `已跟踪会话 9`.
+            //
+            // The lifetime itself is NOT spelled here on purpose: it is a host
+            // constant, and a number in the UI would drift from it silently
+            // (AGENTS.md: 别把会变的计数写进文档).
+            data.sessions && typeof data.sessions.oldestAgeMs === 'number'
+              ? h(
+                  Row,
+                  { label: '最旧一条' },
+                  h(
+                    'span',
+                    {
+                      title:
+                        '这些会话键里最老一条的存活时长。超过插件设定的存活期的键会被丢弃，之后的 continue 会开一条新线（不会静默复用一条死会话）',
+                    },
+                    fmtDuration(data.sessions.oldestAgeMs),
+                  ),
+                )
+              : null,
             h(Row, { label: '运行时长' }, fmtDuration(data.uptimeMs)),
             // Not a constant row: it renders only while the store reports a
             // degradation, and it names the cause. Without it the panel kept
