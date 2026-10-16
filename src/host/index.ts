@@ -423,11 +423,35 @@ function readConfig(rawConfig: Record<string, any>) {
   };
 }
 
-export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
-  // Resolved once, here, and passed down as locals with the SAME names they
-  // had when this block lived inline — a move that also renamed things would be
-  // two changes in one commit, and the diff below would stop being readable as
-  // proof that nothing else changed.
+/**
+ * Everything the plugin accumulates while it is mounted, in one object.
+ *
+ * This block used to be declared inline in `apply()`, ~420 lines of closures.
+ * Length was the lesser problem:
+ *
+ *  - A closure is an INVISIBLE dependency. Six of these functions write the
+ *    same `stats` bag, and the rest of `apply()` could read any of them with no
+ *    parameter in sight. The bag is `Record<string, any>`, so the type system
+ *    had nothing to say about those writes either.
+ *  - The declaration ORDER encoding a real constraint was recorded only in a
+ *    comment: the session store's error observer writes `stats.sessionsError`,
+ *    so the store must not fire it before the bag exists. It is safe today
+ *    because the observer can only run from get/set/drop/count, all of which
+ *    happen long after the mount — see the note at the store below.
+ *
+ * Nothing here is a behaviour change: same code, same order, moved. Whether the
+ * observer should keep leaning on that ordering is a separate question, and a
+ * separate commit.
+ *
+ * @param {{ config: Record<string, any>, log: (message: any) => void }} deps
+ */
+function createRuntime({
+  config,
+  log,
+}: {
+  config: Record<string, any>;
+  log: (message: any) => void;
+}) {
   const {
     port,
     autoStart,
@@ -441,36 +465,13 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
     authoredWorkingDir,
     authoredAskMaxRounds,
     sessionKeyPrefix,
-    sessionKeyPrefixSource,
     statePath,
     reviewWorkingDir,
-    reviewNoWeb,
-    reviewMaxRounds,
-    reviewMaxDurationSecs,
     quotaRefreshSecs,
-    daemonStartTimeoutSecs,
     daemonStartAttempts,
     daemonRetrySecs,
     binaryEnv,
-  } = readConfig(rawConfig);
-
-  // `log` lives before its other uses so the store's observer can share the one
-  // `[atomcode-bridge]` prefix instead of re-typing it (and so a second logger
-  // call site cannot drift from it).
-  const log = (message: any) => ctx.logger?.warn(`[atomcode-bridge] ${message}`);
-
-  // An UNDETERMINED profile is named at mount, not left to be discovered as a
-  // wrong continuation weeks later: with no prefix, both profiles write the same
-  // `default::` key in the shared sessions.json, so a `continue: true` in one
-  // resumes the other's side conversation — a wrong-context answer with no trace
-  // of why. Named here (红线 3), and fixable by the user with one config line.
-  if (sessionKeyPrefixSource === 'none') {
-    log(
-      '无法判定 DSH profile（DSH_PROFILE 未设置，argv 里也没有 dsh 的 web/desktop 子命令）：' +
-        'sessions.json 将不带 profile 前缀。若本机同时跑 web 与 desktop，两侧的会话续接会共用同一个键、互相串线——' +
-        '在插件配置里设 session_key_prefix 可消除歧义。',
-    );
-  }
+  } = config;
 
   // Session glue degrades rather than throws (sessions.ts), and every
   // degradation is NAMED here instead of swallowed (红线 3): a state file this
@@ -891,6 +892,80 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
       log(`model catalog fetch failed: ${reason}`);
     }
   }
+
+  return {
+    stats,
+    sessions,
+    providerStore,
+    resolveProvider,
+    refreshHealth,
+    ensureDaemonStarted,
+    ensureDaemon,
+    readQuota,
+    refreshPanelState,
+    refreshModelCatalog,
+    reviewProvision,
+  };
+}
+
+export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
+  // Resolved once, here, and handed to createRuntime() as the whole `config`
+  // object. Each scope destructures only the names it consumes, so a field that
+  // nobody reads any more disappears from a short list instead of lingering as a
+  // stale binding at the top of a thousand-line function. Same names in both
+  // places, on purpose: a move that also renamed things would stop being readable
+  // as proof that nothing else changed.
+  const config = readConfig(rawConfig);
+  const {
+    port,
+    autoStart,
+    binary,
+    approvalMode,
+    defaultWorkingDir,
+    defaultProvider,
+    reviewDefaultProvider,
+    askMaxRounds,
+    sessionKeyPrefixSource,
+    reviewWorkingDir,
+    reviewNoWeb,
+    reviewMaxRounds,
+    reviewMaxDurationSecs,
+  } = config;
+
+  // `log` lives before its other uses so the store's observer can share the one
+  // `[atomcode-bridge]` prefix instead of re-typing it (and so a second logger
+  // call site cannot drift from it).
+  const log = (message: any) => ctx.logger?.warn(`[atomcode-bridge] ${message}`);
+
+  // An UNDETERMINED profile is named at mount, not left to be discovered as a
+  // wrong continuation weeks later: with no prefix, both profiles write the same
+  // `default::` key in the shared sessions.json, so a `continue: true` in one
+  // resumes the other's side conversation — a wrong-context answer with no trace
+  // of why. Named here (红线 3), and fixable by the user with one config line.
+  if (sessionKeyPrefixSource === 'none') {
+    log(
+      '无法判定 DSH profile（DSH_PROFILE 未设置，argv 里也没有 dsh 的 web/desktop 子命令）：' +
+        'sessions.json 将不带 profile 前缀。若本机同时跑 web 与 desktop，两侧的会话续接会共用同一个键、互相串线——' +
+        '在插件配置里设 session_key_prefix 可消除歧义。',
+    );
+  }
+
+  // Everything that accumulates across the mount now lives in one object rather
+  // than as ~420 lines of closures declared right here.
+  const runtime = createRuntime({ config, log });
+  const {
+    stats,
+    sessions,
+    providerStore,
+    resolveProvider,
+    refreshHealth,
+    ensureDaemonStarted,
+    ensureDaemon,
+    readQuota,
+    refreshPanelState,
+    refreshModelCatalog,
+    reviewProvision,
+  } = runtime;
 
   // Said out loud in BOTH tool descriptions. The most common wrong move against
   // this bridge is assuming `provider` takes a model id — it does not: AtomCode
