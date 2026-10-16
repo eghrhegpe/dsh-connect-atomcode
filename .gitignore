@@ -18,6 +18,9 @@ Thumbs.db
 *.tmp
 *.tmp.*
 
+# 发版核验 scratch：npm pack 解包与 release 正文草稿（docs/RELEASING.md §8/§9）
+/tmp/
+
 # 参考文件
 
 /upstream/

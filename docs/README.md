@@ -48,7 +48,7 @@
 | [`../README.md`](../README.md) | 第一次用 / 要装要配 | 手册：定位、安全姿态、配置表、怎么换模型、额度、测试、已知限制摘要 |
 | [`../AGENTS.md`](../AGENTS.md) | **改代码之前**（人或 AI 都是） | 纪律：任务路由表、宿主 ABI 面、8 条红线、并行会话纪律、去哪查、已知缺口 |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | 想知道「哪个版本改了什么」 | 按主题分组的变更史。版本↔提交回查看 `git tag` |
-| [`RELEASING.md`](./RELEASING.md) | 要发一个新版本 | **发版手册**：版本号两处手改、验证三连、打 tag 推送、npm 发布（钉 npmjs、防镜像劫持）、市场投稿 |
+| [`RELEASING.md`](./RELEASING.md) | 要发一个新版本（断点续发先读它 §1 状态判定表） | **发版手册**：状态判定与不可逆点、版本号两处手改、验证三连、CI 绿后打 tag、npm 发布（钉 npmjs、防镜像劫持）、内容一致性核验、GitHub Release、市场投稿、闭环清单 |
 | [`DECISIONS.md`](./DECISIONS.md) | 想改设计前 / 怀疑「这事是不是忘了做」 | 仍然有效的设计约束 + 明确不做的清单 |
 | [`AtomGit-网关与-review-通路.md`](./AtomGit-网关与-review-通路.md) | review 不通 / 想弄明白签名门 | **事故卷宗**：三条证据 + 两个网关 × 5 种签名形态的对照实验 + 端到端实测的修法 + 残留风险 |
 | [`AtomCode-CLI与daemon接口参考.md`](./AtomCode-CLI与daemon接口参考.md) | 要调 AtomCode 的命令 / 端点 | **实测速查**：CLI 命令与选项、daemon 全部 HTTP 端点、SSE 词表、`ATOMCODE_SIG_MISSING` 签名门、本插件实际用到的子集。**命令数与选项数一律以本篇实测为准**（本文不转抄） |
