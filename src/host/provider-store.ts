@@ -40,7 +40,7 @@
  * would overwrite the newer shape with ours, and the user's pick would vanish on
  * the next upgrade with no trace.
  *
- * @module dsh-atomcode-bridge/provider-store
+ * @module dsh-connect-atomcode/provider-store
  */
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -75,7 +75,7 @@ const MAX_NAME_LEN = 200;
 
 /** @returns {string} default state file, next to sessions.json. */
 export function defaultProviderStatePath(): string {
-  return join(homedir(), '.dsh', 'state', 'dsh-atomcode-bridge', 'provider.json');
+  return join(homedir(), '.dsh', 'state', 'dsh-connect-atomcode', 'provider.json');
 }
 
 /**

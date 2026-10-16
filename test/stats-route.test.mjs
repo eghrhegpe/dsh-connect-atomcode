@@ -39,7 +39,7 @@ function captureRoutes({ statePath, port = CLOSED_PORT, extra = {} }) {
       return undefined;
     },
     logger: { warn() {}, error() {}, info() {} },
-    fiber: { entry: { options: { id: 'dsh-atomcode-bridge' } } },
+    fiber: { entry: { options: { id: 'dsh-connect-atomcode' } } },
     inject() {},
     effect() {},
     on() {},
@@ -137,7 +137,7 @@ describe('stats route — registration and gates', () => {
     assert.equal(r.headers['content-type'], 'application/json; charset=utf-8');
     assert.equal(r.headers['cache-control'], 'no-store');
     assert.equal(r.body.ok, true);
-    assert.equal(r.body.name, 'dsh-atomcode-bridge');
+    assert.equal(r.body.name, 'dsh-connect-atomcode');
   });
 
   it('HEAD is allowed like GET, and carries no body', async () => {
@@ -803,7 +803,7 @@ describe('stats route — auto-start on observation', () => {
         return undefined;
       },
       logger: { warn() {}, error() {}, info() {} },
-      fiber: { entry: { options: { id: 'dsh-atomcode-bridge' } } },
+      fiber: { entry: { options: { id: 'dsh-connect-atomcode' } } },
       inject() {},
       effect() {},
       on() {},

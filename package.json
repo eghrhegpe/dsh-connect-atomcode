@@ -1,5 +1,5 @@
 {
-  "name": "dsh-atomcode-bridge",
+  "name": "dsh-connect-atomcode",
   "displayName": "DSH AtomCode Bridge",
   "icon": "./icon.svg",
   "version": "0.4.2",

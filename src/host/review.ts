@@ -25,7 +25,7 @@
  * unit-tested without a binary (test/review.test.mjs); the live path is
  * covered by test/review-live.test.mjs.
  *
- * @module dsh-atomcode-bridge/review
+ * @module dsh-connect-atomcode/review
  */
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';

@@ -22,7 +22,7 @@
  *   data: {"type":"done","tokens":..,"tool_calls":..,"session_id":..,"stop_reason":..,"stats":{..}}
  *   data: {"type":"error","message":..}
  *
- * @module dsh-atomcode-bridge/daemon
+ * @module dsh-connect-atomcode/daemon
  */
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -382,7 +382,7 @@ export async function* streamChat(opts: StreamChatOptions) {
     // an ADDITIVE unknown type from being read as a protocol change: a stream
     // carrying real `text`/`tool_start`/`tokens` events that merely got cut
     // short (idle kill, network blip, timeout) is a TRUNCATED TURN, not a
-    // renamed protocol — and telling the user to upgrade dsh-atomcode-bridge
+    // renamed protocol — and telling the user to upgrade dsh-connect-atomcode
     // over a network hiccup sends them the wrong way.
     let sawRecognizable = false;
     while (true) {
@@ -427,7 +427,7 @@ export async function* streamChat(opts: StreamChatOptions) {
       if (unknownTypeNames.size > 0 && !sawRecognizable) {
         throw new Error(
           `unrecognized daemon SSE vocabulary (types: ${[...unknownTypeNames].sort().join(', ')}) — ` +
-            'the daemon may have changed its /chat protocol; upgrade dsh-atomcode-bridge (or check the daemon version)',
+            'the daemon may have changed its /chat protocol; upgrade dsh-connect-atomcode (or check the daemon version)',
         );
       }
       throw new Error('atomcode SSE stream ended before done');
@@ -516,14 +516,14 @@ export async function askChat(opts: StreamChatOptions) {
   if (!ok && !sawAnyRecognizable && unknownTypes.size > 0) {
     error =
       `unrecognized daemon SSE vocabulary (types: ${[...unknownTypes].sort().join(', ')}) — ` +
-      'the daemon may have changed its /chat protocol; upgrade dsh-atomcode-bridge (or check the daemon version).';
+      'the daemon may have changed its /chat protocol; upgrade dsh-connect-atomcode (or check the daemon version).';
   }
   if (ok && reply.trim() === '' && usedTools.length === 0 && unknownTypes.size > 0) {
     ok = false;
     const drift =
       `done received but the turn carried no recognizable content (unknown types: ` +
       `${[...unknownTypes].sort().join(', ')}) — the daemon may have renamed its payload ` +
-      'vocabulary; upgrade dsh-atomcode-bridge (or check the daemon version).';
+      'vocabulary; upgrade dsh-connect-atomcode (or check the daemon version).';
     error = error === '' ? drift : `${drift} (observed turn error: ${error})`;
   }
   return {

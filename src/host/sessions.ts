@@ -6,7 +6,7 @@
  * the returned session is recorded here; the next call with
  * `continue: true` resumes it, so the model never has to carry ids itself.
  *
- * State lives at `~/.dsh/state/dsh-atomcode-bridge/sessions.json` (the
+ * State lives at `~/.dsh/state/dsh-connect-atomcode/sessions.json` (the
  * per-plugin DSH home convention, matching sibling plugins). The path is
  * injectable for tests.
  *
@@ -57,7 +57,7 @@
  * string means "recovered", so one channel carries both directions and the
  * caller needs one assignment rather than two branches.
  *
- * @module dsh-atomcode-bridge/sessions
+ * @module dsh-connect-atomcode/sessions
  */
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -74,7 +74,7 @@ export type SessionMap = Record<string, SessionEntry | null>;
 
 /** @returns {string} the default state file path under the DSH home. */
 export function defaultStatePath(): string {
-  return join(homedir(), '.dsh', 'state', 'dsh-atomcode-bridge', 'sessions.json');
+  return join(homedir(), '.dsh', 'state', 'dsh-connect-atomcode', 'sessions.json');
 }
 
 /**

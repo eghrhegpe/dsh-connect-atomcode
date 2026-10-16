@@ -1,4 +1,4 @@
-# dsh-atomcode-bridge — the bundle's own patch layer.
+# dsh-connect-atomcode — the bundle's own patch layer.
 #
 # Mounts the AtomCode bridge plugin into the host Loader tree. The row `name`
 # below MUST equal this package.json's `name` verbatim (and the install
@@ -29,8 +29,8 @@
 # tool description when no usable direct provider exists, so the model is told
 # before it calls, not after it fails.
 - insert:
-    - id: dsh-atomcode-bridge
-      name: dsh-atomcode-bridge
+    - id: dsh-connect-atomcode
+      name: dsh-connect-atomcode
       config:
         # Loopback port for the ask-path daemon. Kept distinct from the
         # AtomCode TUI's default 13456 so the two never collide.
@@ -94,7 +94,7 @@
         # page reports it, and shows （会话工作目录） when this stays empty.
         working_dir: ''
         # Where the side-conversation session map lives. Empty = the DSH home
-        # convention (~/.dsh/state/dsh-atomcode-bridge/sessions.json).
+        # convention (~/.dsh/state/dsh-connect-atomcode/sessions.json).
         # The panel's model picks live in provider.json IN THE SAME DIRECTORY, so
         # this one knob relocates both. That file is the PLUGIN's own state — the
         # plugin never writes ~/.atomcode/config.toml.

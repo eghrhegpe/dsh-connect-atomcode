@@ -31,7 +31,7 @@
  * NOT loopback — returning true there would produce warnings about endpoints
  * nobody can point at.
  *
- * @module dsh-atomcode-bridge/shared/loopback
+ * @module dsh-connect-atomcode/shared/loopback
  */
 
 /** Hostnames that mean "a process on this machine", never a remote host. */

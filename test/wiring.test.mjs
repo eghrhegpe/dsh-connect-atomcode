@@ -47,7 +47,7 @@ function fakeCtx() {
   const ctx = {
     get: (name) => (name === 'tools' ? tools : undefined),
     logger: { warn() {}, error() {}, info() {} },
-    fiber: { entry: { options: { id: 'dsh-atomcode-bridge' } } },
+    fiber: { entry: { options: { id: 'dsh-connect-atomcode' } } },
     inject() {},
     effect(fn) {
       calls.effects += 1;

@@ -34,7 +34,7 @@
  * read→rename window, which this module does NOT close (Node has no portable
  * flock, and a lockfile spin is over-engineering for a few hundred bytes).
  *
- * @module dsh-atomcode-bridge/state-file
+ * @module dsh-connect-atomcode/state-file
  */
 import { mkdirSync, writeFileSync, renameSync, rmSync, readdirSync, statSync } from 'node:fs';
 import { dirname, basename, join } from 'node:path';

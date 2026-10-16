@@ -103,7 +103,7 @@ async function mountAsk(mod, { statePath, port, keyPrefix, config = {} }) {
       error: (m) => mountWarnings.push(String(m)),
       info() {},
     },
-    fiber: { entry: { options: { id: 'dsh-atomcode-bridge' } } },
+    fiber: { entry: { options: { id: 'dsh-connect-atomcode' } } },
     inject() {},
     effect() {},
     on() {},
@@ -368,7 +368,7 @@ describe('atomcode_ask — bounded default and reply truncation', () => {
       const r = await ask.execute({ message: 'say a lot', working_dir: WORKDIR }, {});
       assert.equal(r.ok, true);
       assert.equal(r.truncated, true, 'truncation must be reported, not silent');
-      assert.match(r.reply, /truncated by dsh-atomcode-bridge/, 'the clip point must be marked inline');
+      assert.match(r.reply, /truncated by dsh-connect-atomcode/, 'the clip point must be marked inline');
       assert.match(r.reply, /100 more characters/, 'the lost length must be stated');
     } finally {
       server.close();

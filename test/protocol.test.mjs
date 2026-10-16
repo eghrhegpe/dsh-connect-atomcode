@@ -59,7 +59,7 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
     assert.equal(r.ok, false);
     assert.match(r.error, /unrecognized daemon SSE vocabulary/);
     assert.match(r.error, /llm\.delta/, 'the observed type names must be reported');
-    assert.match(r.error, /upgrade dsh-atomcode-bridge/);
+    assert.match(r.error, /upgrade dsh-connect-atomcode/);
   });
 
   it('stays quiet when an unknown type rides ALONG a valid turn', async () => {
@@ -100,7 +100,7 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
     assert.equal(r.ok, false, 'a done carrying no recognizable content must not report success');
     assert.match(r.error, /no recognizable content/);
     assert.match(r.error, /llm\.delta/, 'the renamed payload type must be named');
-    assert.match(r.error, /upgrade dsh-atomcode-bridge/);
+    assert.match(r.error, /upgrade dsh-connect-atomcode/);
     assert.equal(r.sessionId, 's1', 'the session carried by done is still handed back');
   });
 
@@ -131,7 +131,7 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
     // event type shows up, then the stream dies without a terminal event (idle
     // kill / network blip / timeout). Without the `sawRecognizable` gate the
     // error reads "the daemon may have changed its /chat protocol; upgrade
-    // dsh-atomcode-bridge" — sending the user to upgrade for a network hiccup.
+    // dsh-connect-atomcode" — sending the user to upgrade for a network hiccup.
     const fake = await startFakeDaemon((req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end(sse([
@@ -143,7 +143,7 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
     const r = await askChat({ message: 'hi', port: fake.port, timeoutMs: 10_000 });
     assert.equal(r.ok, false);
     assert.doesNotMatch(r.error, /unrecognized daemon SSE vocabulary/, 'additive drift must not be blamed');
-    assert.doesNotMatch(r.error, /upgrade dsh-atomcode-bridge/, 'no upgrade advice for a truncated turn');
+    assert.doesNotMatch(r.error, /upgrade dsh-connect-atomcode/, 'no upgrade advice for a truncated turn');
     assert.match(r.error, /ended before done/, 'the honest cause is a truncated stream');
     assert.equal(r.reply, 'partial answer', 'the partial answer is still handed back');
   });
@@ -224,7 +224,7 @@ describe('ask render — a completed turn must show its caveat, a clean one must
     const ctx = {
       get: (name) => (name === 'tools' ? { register: (d) => { tools.push(d); return () => {}; } } : undefined),
       logger: { warn() {}, error() {}, info() {} },
-      fiber: { entry: { options: { id: 'dsh-atomcode-bridge' } } },
+      fiber: { entry: { options: { id: 'dsh-connect-atomcode' } } },
       inject() {},
       effect() {},
       on() {},
@@ -396,7 +396,7 @@ describe('review provision is re-read per call, not frozen at mount', () => {
     const ctx = {
       get: (name) => (name === 'tools' ? { register: (d) => { tools.push(d); return () => {}; } } : undefined),
       logger: { warn() {}, error() {}, info() {} },
-      fiber: { entry: { options: { id: 'dsh-atomcode-bridge' } } },
+      fiber: { entry: { options: { id: 'dsh-connect-atomcode' } } },
       inject() {},
       effect() {},
       on() {},

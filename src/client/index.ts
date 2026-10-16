@@ -1,5 +1,5 @@
 /**
- * dsh-atomcode-bridge — Client half (renderer).
+ * dsh-connect-atomcode — Client half (renderer).
  *
  * Registers a `plugins.bundle.config` slot on this plugin's detail page that
  * surfaces live startup/usage statistics, polled over the host's read-only
@@ -12,7 +12,7 @@
  * obtained at factory time via `require("react")` so the same instance the app
  * uses backs every component.
  *
- * @module dsh-atomcode-bridge/client
+ * @module dsh-connect-atomcode/client
  */
 import type { CSSProperties, ReactElement } from 'react';
 import type {
@@ -46,7 +46,7 @@ const REGISTRATION = {
   // MUST equal this package's name verbatim: the Host keys client-module
   // factories by package name and resolves the row as `factories.has(id)`.
   // Any other id loads without registering and fails the web boot audit.
-  id: 'dsh-atomcode-bridge',
+  id: 'dsh-connect-atomcode',
   factory: function (require: LoaderRequire) {
     const react = require('react');
     const h = react.createElement;
@@ -82,7 +82,7 @@ const REGISTRATION = {
 
     const STATS_PATH = '/api/atomcode-bridge/stats';
     // The plugin's OWN write endpoint for the model dropdowns. It persists to
-    // `$DSH_HOME/state/dsh-atomcode-bridge/provider.json` — never to
+    // `$DSH_HOME/state/dsh-connect-atomcode/provider.json` — never to
     // ~/.atomcode/config.toml, which stays read-only for us (AGENTS.md 红线 8).
     const PROVIDER_PATH = '/api/atomcode-bridge/provider';
     const POLL_MS = 5000;
@@ -615,7 +615,7 @@ const REGISTRATION = {
       const keyed = view === 'summary' || view === 'page';
       if (!keyed) {
         const name = subject && subject.kind === 'bundle' ? subject.pkg && subject.pkg.name : undefined;
-        if (name !== 'dsh-atomcode-bridge') return null;
+        if (name !== 'dsh-connect-atomcode') return null;
       }
       // `summary` is the plugin CARD's one-liner, which already renders the bundle
       // description (from locale/*.json) right above us. Repeating the blurb there

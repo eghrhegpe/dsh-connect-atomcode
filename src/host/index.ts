@@ -12,7 +12,7 @@
  *     local AtomCode daemon (`POST /chat`, SSE); the whole autonomous turn
  *     comes back as one answer. `continue: true` resumes the previously
  *     recorded side conversation (session map keyed by working_dir, stored
- *     at ~/.dsh/state/dsh-atomcode-bridge/), so the model never carries ids.
+ *     at ~/.dsh/state/dsh-connect-atomcode/), so the model never carries ids.
  *  2. `atomcode_review` — one-shot code review. Wraps the CLI's
  *     `atomcode review` (git range / PR / diff-file / custom task) with
  *     round + wall-clock fuses and `--no-web` for proxy-gated hosts;
@@ -34,7 +34,7 @@
  * No shell pipelines, no hardcoded accounts, no host LLM dependency — this
  * plugin only consumes the `tools` service.
  *
- * @module dsh-atomcode-bridge
+ * @module dsh-connect-atomcode
  */
 import {
   DEFAULT_PORT,
@@ -170,7 +170,7 @@ function describeDaemonDown(reason: HealthFailure): string {
 function buildStatsBody(stats: Record<string, any>, quota: any) {
   return {
     ok: true,
-    name: 'dsh-atomcode-bridge',
+    name: 'dsh-connect-atomcode',
     displayName: 'DSH AtomCode Bridge',
     version: '0.4.2',
     uptimeMs: Date.now() - stats.startedAt,
@@ -1449,7 +1449,7 @@ function mountAskTool({
       const REPLY_CAP = 200_000;
       const truncated = result.reply.length > REPLY_CAP;
       const reply = truncated
-        ? `${result.reply.slice(0, REPLY_CAP)}\n\n[truncated by dsh-atomcode-bridge: ${
+        ? `${result.reply.slice(0, REPLY_CAP)}\n\n[truncated by dsh-connect-atomcode: ${
             result.reply.length - REPLY_CAP
           } more characters; ask AtomCode to write the full text to a file and read that instead]`
         : result.reply;
@@ -1731,7 +1731,7 @@ function mountReviewTool({
       return {
         ok: result.ok,
         report: truncated
-          ? `${result.report.slice(0, REPORT_CAP)}\n\n[truncated by dsh-atomcode-bridge: ${
+          ? `${result.report.slice(0, REPORT_CAP)}\n\n[truncated by dsh-connect-atomcode: ${
               result.report.length - REPORT_CAP
             } more characters]`
           : result.report,

@@ -431,7 +431,7 @@
 	* NOT loopback — returning true there would produce warnings about endpoints
 	* nobody can point at.
 	*
-	* @module dsh-atomcode-bridge/shared/loopback
+	* @module dsh-connect-atomcode/shared/loopback
 	*/
 	/** Hostnames that mean "a process on this machine", never a remote host. */
 	const LOOPBACK_HOSTS = /* @__PURE__ */ new Set([
@@ -643,7 +643,7 @@
 //#endregion
 //#region src/client/index.ts
 	const REGISTRATION = {
-		id: "dsh-atomcode-bridge",
+		id: "dsh-connect-atomcode",
 		factory: function(require) {
 			const react = require("react");
 			const h = react.createElement;
@@ -1002,7 +1002,7 @@
 				const view = props && props.view;
 				const subject = props && props.subject;
 				if (!(view === "summary" || view === "page")) {
-					if ((subject && subject.kind === "bundle" ? subject.pkg && subject.pkg.name : void 0) !== "dsh-atomcode-bridge") return null;
+					if ((subject && subject.kind === "bundle" ? subject.pkg && subject.pkg.name : void 0) !== "dsh-connect-atomcode") return null;
 				}
 				if (view === "summary") return h(SummaryLine, null);
 				const { data, error, updatedAt, reload } = useStats();

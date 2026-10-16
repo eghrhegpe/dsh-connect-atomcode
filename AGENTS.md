@@ -45,7 +45,7 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 ## 工作目录与装载方式（先搞清你改的东西怎么生效）
 
 - 本目录 `~/.dsh/plugins/dsh-atomcode-bridge` 是**开发副本**；web 端以符号链接载入
-  （`~/.dsh/profiles/web/node_modules/dsh-atomcode-bridge` → 本目录，见 `.package-map.json`）。
+  （`~/.dsh/profiles/web/node_modules/dsh-connect-atomcode` → 本目录，见 `.package-map.json`）。
 - **这里有一条构建纪律，和 qoder / sensenova 同款**：改 `src/` → 跑 `npm run build` →
   **源码与产物一起提交**。浏览器与 Host 执行的是磁盘上的**产物**，所以"只改源码不构建"= 改动不生效，
   "只改产物不改进源码"= 下一次构建就被抹掉。两条都由 `test/build-gate.test.mjs` 拦：
@@ -183,7 +183,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 4. **配置项永不信输入。** 每个字段都要类型兜底（加载器 patch 送来的配置未校验）。
 5. **`ctx.effect(fn)` 的返回值是 cleanup，不是 setup 结果。** 把 disposer 直接在函数体里调用
    会让工具在挂载瞬间就被注销。
-6. **`client.js` 的注册 id 必须是 `package.json` 的 `name` 逐字一致**（`dsh-atomcode-bridge`）。
+6. **`client.js` 的注册 id 必须是 `package.json` 的 `name` 逐字一致**（`dsh-connect-atomcode`）。
    写错不会当场报错，而是"加载成功但没注册"，直到 web boot audit 才炸（`test/client-id.test.mjs` 守着这条）。
 7. **别碰 single 座位的座位，也别按名字猜座位。** `conversation.input.activity` 是 `kind: "single"`
    且已有主人（语音输入插件），硬注册会挤掉它。更常见的错是**按槽位名挑**：

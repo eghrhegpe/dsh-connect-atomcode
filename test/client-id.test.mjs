@@ -183,7 +183,7 @@ async function claimSeats() {
     // POSITION rather than merely "some seat was claimed".
     const panel = claims.find((c) => c.name === 'plugins.bundle.config');
     assert.ok(panel, 'the panel must claim plugins.bundle.config (between description and rows)');
-    assert.equal(panel.key, 'dsh-atomcode-bridge', 'a keyed seat is addressed by the package name');
+    assert.equal(panel.key, 'dsh-connect-atomcode', 'a keyed seat is addressed by the package name');
     assert.equal(panel.id, undefined, 'the keyed seat takes `key`, not `id`');
     assert.ok(
       seats.includes('conversation.composer.dock'),

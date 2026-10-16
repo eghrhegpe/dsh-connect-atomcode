@@ -1,4 +1,4 @@
-# dsh-atomcode-bridge
+# dsh-connect-atomcode
 
 把本机已登录的 [AtomCode](https://atomgit.com/atomgit_atomcode/atomcode)（官方二进制，终端 AI 编程助手）作为**侧边工具台**接入 DeepSeek Harness：
 
@@ -68,9 +68,9 @@ provider（本机实测通路是本地代理），否则插件会在调用前就
 bundle 形式（与本机 `dsh-connect-*` 同品类），三种装法任选：
 
 1. **npm 包**（普通用户，已发 registry）：
-   `dsh plugin add dsh-atomcode-bridge`，或在 `plugin_manager` 里 `install_bundle` 且 `target` 填 `dsh-atomcode-bridge`
+   `dsh plugin add dsh-connect-atomcode`，或在 `plugin_manager` 里 `install_bundle` 且 `target` 填 `dsh-connect-atomcode`
 2. **GitHub 直装**（走 git dep，装 `main`）：`dsh plugin add Yinyuan34513/dsh-atomcode-bridge`
-3. **本地开发**：开发目录 `~/.dsh/plugins/dsh-atomcode-bridge`（pnpm `link:` 依赖）→ profile `package.json` 的 `dependencies` 加 `"dsh-atomcode-bridge": "link:..."`，`dsh.profile.bundles` 追加包名，`pnpm install`
+3. **本地开发**：开发目录 `~/.dsh/plugins/dsh-atomcode-bridge`（pnpm `link:` 依赖）→ profile `package.json` 的 `dependencies` 加 `"dsh-connect-atomcode": "link:..."`，`dsh.profile.bundles` 追加包名，`pnpm install`
 
 bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行与全部配置项，无需再写 profile patch。**装完重启 DSH 进程**——patch 在启动时读取、Host 半边只在启动时加载一次；只改 `client.js` 刷新浏览器即可。
 
@@ -88,7 +88,7 @@ bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行
 | `review_default_provider` | `''` | **review 路径**缺省的**直连条目名**（`[providers.<name>]`，如 `atomcode-local`）。⚠️ 与上一行**不是同一个命名空间**：把 `AtomGit-*` 填这里等于给 CLI 一个它认不出的计费通道。优先级同上（面板的 review 下拉是独立一格）。空 = 沿用自动选择（config.toml 的 `default_provider` 可用则用 → 唯一直连条目顶上 → 多个则要求点名，不猜） |
 | `working_dir` | `''` | ask 回合的缺省工作目录（同时是侧边对话的会话键）。面板**不提供输入框**，只能在 patch 里改；详情页「回合边界」标出你改过没有 |
 | `review_working_dir` | `''` | **review 的缺省仓库根**。空 = review **不猜**，必须由调用传 `working_dir`（见「治理记录」） |
-| `state_path` | `''` | 会话映射文件（缺省 `~/.dsh/state/dsh-atomcode-bridge/sessions.json`）。**面板选的模型档位存在同目录的 `provider.json`**，所以这一个旋钮同时决定两者的位置 |
+| `state_path` | `''` | 会话映射文件（缺省 `~/.dsh/state/dsh-connect-atomcode/sessions.json`）。**面板选的模型档位存在同目录的 `provider.json`**，所以这一个旋钮同时决定两者的位置 |
 | `ask_max_rounds` | `25` | ask 的工具调用次数上限（按 SSE `tool_start` 事件计；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数）；`0` = 不限（交给 daemon 自带治理）。>0 时插件在 SSE 上数 `tool_start`，超限即断开并返回 `atomcode turn aborted: agent exceeded N tool rounds`。**注意**：断的是客户端这条 HTTP 流，daemon 侧的回合不保证随之停止（它可能继续在后台跑完），所以这是"别再等了"的止损，不是远程 kill。面板**不提供输入框**；详情页「回合边界」标出这是默认还是你改过 |
 | `session_key_prefix` | 自动探测 | 会话键前缀，隔离多 profile（web / desktop）共用同一 state 文件；空 = 按 `DSH_PROFILE`/argv 自动判定 |
 | `daemon_retry_secs` | `60` | 自动拉起**失败**后的重试冷却。`0` = 每次轮询都重试；不设则失败会永久禁用本次挂载的自动拉起 |

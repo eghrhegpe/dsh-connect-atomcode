@@ -13,7 +13,7 @@
 
 本仓库是它的移植，这一点写在 `README.md` 的「许可」一节与 `package.json` 的 `repository` 里。
 上游按 MIT 授权，允许此类衍生；本仓库的 `LICENSE` 保留 MIT 全文
-（`Copyright (c) 2026 dsh-atomcode-bridge contributors`）。
+（`Copyright (c) 2026 dsh-connect-atomcode contributors`）。
 
 移植过程中**已全部重写**、原样不可用的部分：`file:///` 绝对导入、`/home/elaina` 硬路径、
 shell+curl+base64 管道、`.agent-presets` 目录式预设。

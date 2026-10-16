@@ -1,4 +1,4 @@
-# dsh-atomcode-bridge — 文档索引
+# dsh-connect-atomcode — 文档索引
 
 把本机已登录的 **AtomCode**（官方二进制，终端 AI 编程助手）作为**侧边工具台**接入 DeepSeek Harness。
 

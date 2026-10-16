@@ -87,7 +87,7 @@ function mountRoutes({ statePath, port = CLOSED_PORT, extra = {} }) {
       return undefined;
     },
     logger: { warn() {}, error() {}, info() {} },
-    fiber: { entry: { options: { id: 'dsh-atomcode-bridge' } } },
+    fiber: { entry: { options: { id: 'dsh-connect-atomcode' } } },
     inject() {},
     effect() {},
     on() {},
