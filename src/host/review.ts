@@ -156,6 +156,42 @@ export const OUTPUT_CAP_BYTES = 4 * 1024 * 1024;
  */
 const STDERR_KEEP_BYTES = 8192;
 
+/**
+ * The AtomGit gateway host — the ONE string every gateway judgement in this file
+ * is derived from.
+ *
+ * It used to be typed out at each site (three regex literals plus two bare
+ * copies inside error prose), so renaming or adding a gateway host meant five
+ * edits with nothing to catch a miss — and a miss here is not cosmetic: the
+ * gateway is the reason `atomcode_review` is unavailable on an AtomGit-login
+ * host (红线 1), so a site that kept the old name would keep reporting a cause
+ * nobody can act on.
+ */
+const GATEWAY_HOST_RE = /llm-api\.atomgit\.com/i;
+
+/**
+ * Is this a provider `base_url` that points at the AtomGit gateway?
+ *
+ * One definition, because two call sites have to agree on it or the plugin
+ * contradicts itself: `listUsableProviders` (which direct providers the CLI can
+ * actually run against) and `checkReviewProvision`'s gateway-only diagnosis
+ * (why none of them can). They are the same question asked from two ends —
+ * "which are usable" and "why is none usable" — and a split definition is
+ * exactly how a panel ends up saying "no usable provider" and "you have three"
+ * in the same card.
+ *
+ * NOTE: this is a question about a base_url. Matching the same host inside a
+ * stderr blob (see the diagnosis in `runReview`) is a DIFFERENT question —
+ * "does this failure mention the gateway" — and it shares this constant rather
+ * than this function.
+ *
+ * @param {string} [baseUrl] - the provider's `base_url`.
+ * @returns {boolean}
+ */
+export function isGatewayUrl(baseUrl?: string | null): boolean {
+  return typeof baseUrl === 'string' && GATEWAY_HOST_RE.test(baseUrl);
+}
+
 /** @type {(bin:string, args:string[], opts:object) => import('node:child_process').ChildProcess} */
 let spawnOverride: Spawner | null = null;
 
@@ -477,7 +513,7 @@ export function checkReviewProvision(configDir?: string): ReviewProvision {
   }
 
   // No usable direct provider: explain the most specific cause we can prove.
-  const gatewayOnly = providers.filter((p) => p.base_url && /llm-api\.atomgit\.com/i.test(p.base_url));
+  const gatewayOnly = providers.filter((p) => isGatewayUrl(p.base_url));
   if (gatewayOnly.length > 0) {
     return verdict(
       false,
@@ -522,9 +558,15 @@ export function checkReviewProvision(configDir?: string): ReviewProvision {
 export function listUsableProviders(raw: string): UsableProvider[] {
   const usable: UsableProvider[] = [];
   for (const p of parseTomlProviders(raw)) {
+    // No base_url at all: an account-resolved entry, which the review CLI cannot
+    // dial (its "missing base URL" failure). Kept as its own guard rather than
+    // folded into `isGatewayUrl` because it is also what narrows `p.base_url` to
+    // a string for the push below — TS2322 here is the proof it is load-bearing.
     if (!p.base_url) continue;
-    // The AtomGit gateway URL: the review CLI refuses to sign against it.
-    if (/llm-api\.atomgit\.com/i.test(p.base_url)) continue;
+    // The AtomGit gateway URL: the review CLI refuses to sign against it. Same
+    // predicate `checkReviewProvision` uses for its gateway-only diagnosis, so
+    // "which providers are usable" and "why none is usable" cannot disagree.
+    if (isGatewayUrl(p.base_url)) continue;
     if (p.api_key || p.model) usable.push({ name: p.name, baseUrl: p.base_url });
   }
   return usable;
@@ -815,7 +857,7 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
     // Gateway-signing diagnosis: the AtomGit gateway base_url is rejected by the
     // review CLI even with a direct [providers.<name>] entry — the CLI runtime
     // cannot authenticate against the AtomGit signing mechanism.
-    if (/llm-api\.atomgit\.com/i.test(detail) || /signing.enforced|atomcodex cannot authenticate/i.test(detail)) {
+    if (GATEWAY_HOST_RE.test(detail) || /signing.enforced|atomcodex cannot authenticate/i.test(detail)) {
       detail += ' — the review CLI cannot sign requests against the AtomGit gateway; use a non-gateway provider (e.g. OpenAI / Ollama) with a direct [providers.<name>] entry and api_key, or use daemon-side atomcode_ask which embeds the signing';
     } else if (/missing base URL/i.test(detail)) {
       detail += ' — the configured default_provider has no base_url; add a direct [providers.<name>] entry with base_url (non-AtomGit) for the review CLI; daemon ask is unaffected';
