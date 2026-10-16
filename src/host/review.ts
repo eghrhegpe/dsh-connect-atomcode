@@ -401,6 +401,40 @@ export function parseTomlProviders(raw: unknown): TomlProvider[] {
  * @returns {{ available: boolean, reason: string, providers: string[] }}
  *   `providers` lists the direct provider names the CLI should be able to use.
  */
+/**
+ * Self-contained remediation text for "no usable direct provider", carried by
+ * the `checkReviewProvision` reasons — which surface in three places: the
+ * mount-time tool description, the execute-time refusal, and the panel's
+ * `reviewReason`.
+ *
+ * This string SHIPS with the plugin to every workspace, where this repository
+ * (its docs/ and the atomcode-open-api checkout under upstream/) does NOT
+ * exist. So it must say where the local option comes from and how to start it,
+ * not just name it — an AI in a fresh workspace has no source docs to fall
+ * back on:
+ *
+ * `atomcode-open-api` (github.com/baimocn/atomcode-open-api, MIT) is an
+ * open-source local sidecar that serves AtomCode's OWN CodingPlan quota as a
+ * standard OpenAI-compatible endpoint: it reads the OAuth token from
+ * ~/.atomcode/auth.toml, signs each request itself (the step the review CLI
+ * cannot do against the AtomGit gateway), and listens on 127.0.0.1:8899 by
+ * default. Install: `git clone` + `pip install -e .` (Python 3.9+). The token
+ * lasts ~7 days; re-login in AtomCode refreshes it. Not an AtomCode-official
+ * binary.
+ */
+export const PROVIDER_FIX =
+  'Fix: add a direct [providers.<name>] entry — two options. ' +
+  '(a) FREE LOCAL, no API key: the open-source sidecar `atomcode-open-api` ' +
+  '(github.com/baimocn/atomcode-open-api, MIT): git clone + `pip install -e .` (Python 3.9+), ' +
+  'start it with `atomcode-open-api` — it serves AtomCode\'s own CodingPlan quota as a standard ' +
+  'OpenAI endpoint on 127.0.0.1:8899 (its default), reads the OAuth token from ~/.atomcode/auth.toml ' +
+  '(created by an AtomCode /login; the token lasts ~7 days, re-login refreshes it) and signs each ' +
+  'request itself; not an AtomCode-official binary. Then add e.g. [providers.atomcode-local] with ' +
+  'provider = "openai", base_url = "http://127.0.0.1:8899/v1", a model the sidecar lists ' +
+  '(GET /v1/models), and any api_key; ' +
+  '(b) REMOTE: point a direct [providers.<name>] at a live standard endpoint ' +
+  '(OpenRouter / OpenAI / Ollama) with a real api_key.';
+
 export function checkReviewProvision(configDir?: string): ReviewProvision {
   const atomcodeHome = configDir || join(homedir(), '.atomcode');
   const configFile = join(atomcodeHome, 'config.toml');
@@ -438,7 +472,7 @@ export function checkReviewProvision(configDir?: string): ReviewProvision {
       `only the AtomGit gateway is configured (${gatewayOnly.map((p) => p.name).join(', ')}): ` +
         'llm-api.atomgit.com enforces AtomCode\'s proprietary request signature on the inference endpoint, ' +
         `and the review CLI (atomcodex) does not implement it — AtomCode's own error: "signing-enforced gateway … cannot authenticate" ` +
-        '(an unsigned call gets ATOMCODE_SIG_MISSING). Fix: add a direct [providers.<name>] with a STANDARD base_url + api_key. ' +
+        `(an unsigned call gets ATOMCODE_SIG_MISSING). ${PROVIDER_FIX} ` +
         'atomcode_ask is unaffected (the daemon carries the signing).',
     );
   }
@@ -451,14 +485,15 @@ export function checkReviewProvision(configDir?: string): ReviewProvision {
         (defaultProvider ? ` (default_provider is "${defaultProvider}")` : '') +
         ': that is an AtomGit login/account channel with no api_key, and llm-api.atomgit.com requires ' +
         'AtomCode\'s proprietary request signature (unsigned calls get ATOMCODE_SIG_MISSING) which the review CLI does not implement. ' +
-        'Fix: add a direct [providers.<name>] with a STANDARD base_url + api_key (OpenRouter / OpenAI / a local server). ' +
+        `${PROVIDER_FIX} ` +
         'atomcode_ask is unaffected — the daemon carries the signing.',
     );
   }
   return verdict(
     false,
     'no direct [providers.<name>] entry with base_url and api_key found; the review CLI resolves providers from direct entries only ' +
-      '(the daemon and the TUI also accept account-resolved ones). atomcode_ask is unaffected.',
+      `(the daemon and the TUI also accept account-resolved ones). ${PROVIDER_FIX} ` +
+      'atomcode_ask is unaffected.',
   );
 }
 

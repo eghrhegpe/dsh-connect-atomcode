@@ -177,6 +177,13 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
       const prov = checkReviewProvision(join(fakeHome, '.atomcode'));
       assert.equal(prov.available, false);
       assert.ok(prov.reason.length > 0);
+      // The reason CARRIES the self-contained fix (it ships to every
+      // workspace in the tool description, where this repo's docs/ do not):
+      // it must name the local sidecar, where it comes from, and where the
+      // login token lives — not just "a local server".
+      assert.match(prov.reason, /atomcode-open-api/);
+      assert.match(prov.reason, /github\.com\/baimocn\/atomcode-open-api/);
+      assert.match(prov.reason, /auth\.toml/);
     } finally {
       process.env.HOME = origHome;
       const { rmSync } = await import('node:fs');
@@ -464,6 +471,21 @@ describe('src/host/review.ts — checkReviewProvision', () => {
     const r = checkReviewProvision(f);
     assert.equal(r.available, false);
     assert.ok(r.reason.length > 0);
+    assert.match(r.reason, /atomcode-open-api/, 'the gateway-only reason must carry the local fix text');
+    assert.match(r.reason, /github\.com\/baimocn\/atomcode-open-api/);
+    const { rmSync } = await import('node:fs');
+    rmSync(f, { recursive: true, force: true });
+  });
+
+  it('returns available=false with the two-option fix text when config.toml has no providers at all', async () => {
+    const f = mkdtempSync(join(tmpdir(), 'atomcode-none-'));
+    writeFileSync(join(f, 'config.toml'), '# no providers, no default_provider\n', 'utf8');
+    const { checkReviewProvision } = await import(fileUrl(REVIEW));
+    const r = checkReviewProvision(f);
+    assert.equal(r.available, false);
+    assert.match(r.reason, /no direct \[providers\.<name>\] entry/);
+    assert.match(r.reason, /atomcode-open-api/, 'the "nothing configured" reason must also carry the fix text');
+    assert.match(r.reason, /127\.0\.0\.1:8899/);
     const { rmSync } = await import('node:fs');
     rmSync(f, { recursive: true, force: true });
   });
