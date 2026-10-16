@@ -34,6 +34,21 @@
  * is easier to reason about, but it does NOT by itself prevent the lost update
  * above: the loss is a whole-map overwrite, not a key collision.
  *
+ * ## Entries expire (`ttlMs`, default 24h)
+ *
+ * `updatedAt` was written by every `set()` and read NOWHERE, so the map only ever
+ * grew: a daemon restart or an idle exit left ids behind that no live session
+ * answers to, and every later `continue: true` replayed one of them and failed
+ * the same way — the recovery (`reset_session`) was only ever mentioned in the
+ * failure text, i.e. after the model had already burned a turn. An entry older
+ * than `ttlMs` is now treated as absent and dropped on the way past, so the file
+ * stops accumulating dead keys and a stale id stops being offered.
+ *
+ * An entry with NO `updatedAt` (data written before the field existed) is KEPT:
+ * its age is unknown, and guessing "expired" would silently end a side
+ * conversation that may still be alive. Expiry removes a convenience, never
+ * correctness — the next `continue` simply opens a fresh line.
+ *
  * Quarantine + temp churn: a corrupt file is renamed to `<path>.corrupt-<ts>`
  * (never silently erased) and orphan temp files survive a SIGKILL between write
  * and rename; `state-file.ts` sweeps both — newest few quarantines kept, temp
@@ -69,6 +84,15 @@ export interface SessionEntry {
   sessionId?: string;
   updatedAt?: number;
 }
+
+/**
+ * How long a recorded side-conversation key stays resumable: 24h.
+ *
+ * Long enough that "I left it overnight" still continues the same line; short
+ * enough that an id whose daemon exited is not offered days later. It is a
+ * convenience window, not a correctness claim — see the module note on expiry.
+ */
+export const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 /** The on-disk shape: DSH-side key → entry. Unvalidated JSON, so `null` is possible. */
 export type SessionMap = Record<string, SessionEntry | null>;
 
@@ -84,18 +108,44 @@ export function defaultStatePath(): string {
  * @param {string} [keyPrefix] - Optional prefix for every key (e.g. "web" or "desktop").
  *   `get()`/`set()`/`drop()` all take the logical key; the prefix is applied on disk.
  *   Pass an empty string to disable prefixing (default).
- * @param {{onError?: (error: string) => void}} [options] - `onError` observes every
- *   degradation (see the module note on failure semantics). It receives the new
- *   state — a message when degraded, `''` when recovered — and is called only
- *   when that message actually changes. A throwing observer is swallowed: the
- *   reporter must not be able to break the store it reports on.
+ * @param {{onError?: (error: string) => void, ttlMs?: number}} [options] -
+ *   `onError` observes every degradation (see the module note on failure
+ *   semantics). It receives the new state — a message when degraded, `''` when
+ *   recovered — and is called only when that message actually changes. A
+ *   throwing observer is swallowed: the reporter must not be able to break the
+ *   store it reports on. `ttlMs` overrides the entry lifetime
+ *   (`DEFAULT_SESSION_TTL_MS`); `0` or a non-number means the default, because
+ *   "no expiry" is the bug this option exists to close.
  */
 export function createSessionStore(
   path = defaultStatePath(),
   keyPrefix = '',
-  options: { onError?: (error: string) => void } = {},
+  options: { onError?: (error: string) => void; ttlMs?: number } = {},
 ) {
   const prefix = typeof keyPrefix === 'string' && keyPrefix.trim() !== '' ? keyPrefix.trim() + '::' : '';
+  const ttlMs =
+    typeof options.ttlMs === 'number' && Number.isFinite(options.ttlMs) && options.ttlMs > 0
+      ? Math.floor(options.ttlMs)
+      : DEFAULT_SESSION_TTL_MS;
+
+  /**
+   * Whether an entry is too old to be resumed.
+   *
+   * An entry with no (or a non-numeric) `updatedAt` is NOT expired: it predates
+   * the field, so its age is unknown, and treating "unknown" as "expired" would
+   * end a conversation that may still be alive — the one failure mode expiry
+   * must not have.
+   */
+  function isExpired(entry: SessionEntry | null | undefined, now: number): boolean {
+    if (!entry || typeof entry.updatedAt !== 'number' || !Number.isFinite(entry.updatedAt)) return false;
+    return now - entry.updatedAt > ttlMs;
+  }
+
+  /** @returns {number} how old an entry is in ms, or null when its age is unknown. */
+  function ageMs(entry: SessionEntry | null | undefined, now: number): number | null {
+    if (!entry || typeof entry.updatedAt !== 'number' || !Number.isFinite(entry.updatedAt)) return null;
+    return Math.max(0, now - entry.updatedAt);
+  }
 
   /** Last reported degradation, '' when healthy. Doubles as the dedupe key. */
   let lastError = '';
@@ -172,11 +222,23 @@ export function createSessionStore(
     return prefix + outerKey;
   }
 
-  return {
+  const store = {
     /** @returns {string|undefined} the recorded AtomCode session for one working_dir key. */
     get(key: string): string | undefined {
-      const entry = readMap()[internalKey(key)];
-      return entry && typeof entry.sessionId === 'string' ? entry.sessionId : undefined;
+      const map = readMap();
+      const internal = internalKey(key);
+      const entry = map[internal];
+      if (!entry || typeof entry.sessionId !== 'string') return undefined;
+      // Expired keys are dropped on the way past: `get()` is the ONLY place one
+      // is ever observed, so leaving it behind is what let the file grow without
+      // bound. The write degrades like any other (reported, swallowed) — the
+      // caller gets "no session" either way.
+      if (isExpired(entry, Date.now())) {
+        delete map[internal];
+        writeMap(map);
+        return undefined;
+      }
+      return entry.sessionId;
     },
     /**
      * Record a session for one working_dir key.
@@ -208,11 +270,59 @@ export function createSessionStore(
      *   otherwise the panel's `sessions.tracked` would silently include the
      *   other profile's lines from a shared state file. With no prefix (''),
      *   all keys are this store's keys, so the count is the whole map.
+     *
+     *   RESUMABLE keys only: counting an expired id reports a side conversation
+     *   the next `continue` will refuse to resume.
      */
     count(): number {
       const map = readMap();
-      if (prefix === '') return Object.keys(map).length;
-      return Object.keys(map).filter((key) => key.startsWith(prefix)).length;
+      const now = Date.now();
+      const keys =
+        prefix === '' ? Object.keys(map) : Object.keys(map).filter((key) => key.startsWith(prefix));
+      return keys.filter((key) => !isExpired(map[key], now)).length;
+    },
+    /**
+     * Drop every expired key of this store in one pass.
+     *
+     * Called once at store creation, so a long-lived install reaps the ids a
+     * previous daemon left behind even if nobody ever calls `continue` on them
+     * again — `get()` alone only reaps the keys someone actually asks for.
+     *
+     * @returns {number} how many keys were removed.
+     */
+    prune(): number {
+      const map = readMap();
+      const now = Date.now();
+      const expired = Object.keys(map).filter(
+        (key) => (prefix === '' || key.startsWith(prefix)) && isExpired(map[key], now),
+      );
+      if (expired.length === 0) return 0;
+      for (const key of expired) delete map[key];
+      writeMap(map);
+      return expired.length;
+    },
+    /**
+     * @returns {number|null} the age in ms of the OLDEST live key, or null when
+     *   there is no key whose age is known. Surfaced so a human can see how
+     *   stale the map is without opening sessions.json — an unbounded map was
+     *   invisible before `updatedAt` was read at all.
+     */
+    oldestAgeMs(): number | null {
+      const map = readMap();
+      const now = Date.now();
+      let oldest: number | null = null;
+      for (const key of Object.keys(map)) {
+        if (prefix !== '' && !key.startsWith(prefix)) continue;
+        if (isExpired(map[key], now)) continue;
+        const age = ageMs(map[key], now);
+        if (age == null) continue;
+        if (oldest == null || age > oldest) oldest = age;
+      }
+      return oldest;
     },
   };
+
+  // One reap per store creation (i.e. once per host start, per profile).
+  store.prune();
+  return store;
 }

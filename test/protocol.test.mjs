@@ -251,10 +251,28 @@ describe('ask render — a completed turn must show its caveat, a clean one must
   });
   after(() => rmSync(fakeHome, { recursive: true, force: true }));
 
+  // `working_dir` is part of the value the tool now returns, and a turn that
+  // names one is the CLEAN case the assertions below rely on: a turn with no
+  // directory has a caveat of its own (see the third test in this suite).
   const base = {
     reply: 'partial answer', session_id: 's', continued: false, truncated: false,
-    tokens: 1, tool_calls: 0, round_count: 0, tools: [], stop_reason: 'stopped', provider: 'P',
+    tokens: 1, tool_calls: 0, round_count: 0, tools: [], stop_reason: 'stopped',
+    working_dir: '/repo', provider: 'P',
   };
+
+  it('names the directory the turn ran in — and warns when there was none', () => {
+    // An ask with no `working_dir` runs in the daemon's OWN cwd (the user's home,
+    // in the default launch) and asks for bypass approvals: tools auto-approved in
+    // a directory nobody named. `atomcode_review` refuses that case (红线 8); ask
+    // cannot refuse it, so it has to say it — and the directory has to be visible
+    // on the clean path too, or "where did this run" stays a guess.
+    const pinned = render({}, { ...base, ok: true, error: '' })[0].text;
+    assert.match(pinned, /working_dir=\/repo/, 'a named directory must be stated, not implied');
+    assert.doesNotMatch(pinned, /未指定/, 'and must not carry the unspecified-directory caveat');
+    const homeless = render({}, { ...base, ok: true, error: '', working_dir: null })[0].text;
+    assert.match(homeless, /未指定 working_dir/, 'an unattended turn in an unnamed directory must say so');
+    assert.match(homeless, /bypass/, 'the caveat must name WHY it matters (无人值守放行)');
+  });
 
   it('surfaces value.error on ok:true, and stays silent when error is empty', () => {
     // The carry-out fix in `askChat` is worthless if render's ok-branch hides

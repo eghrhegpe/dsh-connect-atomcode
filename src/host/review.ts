@@ -128,10 +128,58 @@ export interface RunReviewOptions extends ReviewOptions {
 export interface ReviewOutcome {
   ok: boolean;
   report: string;
+  /** The structured reading of `report` — see `parseReviewFindings`. */
+  findings: ParsedFindings;
   error: string;
   exitCode: number | null;
   durationMs: number;
 }
+
+/** One finding, normalized. A field the CLI did not carry is `null` — never a guess. */
+export interface ReviewFinding {
+  severity: string | null;
+  file: string | null;
+  line: string | null;
+  message: string;
+}
+
+/**
+ * What `parseReviewFindings` decided about one report.
+ *
+ * `parsed: false` is a FACT, not a silent fallback: the raw report is still
+ * handed back whole and the caller is told the digest is missing, rather than
+ * shown a list that was invented. Same discipline the quota parser is built on
+ * (its whole job is "解析不出来绝不编数字"), and the same reason one layer
+ * sharper: a quota number that fails to parse displays a wrong number, while a
+ * findings document that fails to parse is MISSING findings the caller then
+ * believes it has read — a noisy turn masquerading as a clean one.
+ */
+export interface ParsedFindings {
+  parsed: boolean;
+  /** The real number of findings in the document — even when `findings` is capped. */
+  count: number;
+  findings: ReviewFinding[];
+  /** Why there is no digest. Empty when `parsed` is true. */
+  reason: string;
+  /** `findings` is shorter than `count`. */
+  capped: boolean;
+}
+
+/**
+ * What a run that produced no usable report has.
+ *
+ * Deliberately NOT `{parsed: true, count: 0}`: "no digest was produced" and
+ * "the review found nothing" are different facts, and the second one is exactly
+ * what a failed run must not be allowed to look like.
+ */
+const NO_FINDINGS: ParsedFindings = { parsed: false, count: 0, findings: [], reason: '', capped: false };
+
+/**
+ * How many findings the digest carries. Same shape as `TOOLS_CAP`: the tool
+ * output is bounded, and `count` stays the real total so a clipped digest never
+ * reads as the whole list.
+ */
+export const FINDINGS_CAP = 200;
 
 /**
  * Hard ceiling on the stdout bytes one review may hand back.
@@ -685,6 +733,147 @@ export async function probeLocalEndpoint(baseUrl: string, opts: ProbeOptions = {
 }
 
 /**
+ * The first balanced JSON document in `text`, or null.
+ *
+ * `--json` stdout can carry log lines before and after the document (the module
+ * note on `OUTPUT_CAP_BYTES` is about exactly that), so `JSON.parse(report)` on
+ * the whole buffer fails whenever the CLI printed anything else — which is the
+ * normal case on a real machine, not an edge case. Scanning is string-aware, so
+ * a `}` inside a finding's message cannot end the document early.
+ */
+export function extractJsonDocument(text: string): string | null {
+  let start = -1;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '{' || text[i] === '[') {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return null;
+  const open = text[start];
+  const close = open === '{' ? '}' : ']';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === open) {
+      depth += 1;
+    } else if (ch === close) {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  // Unbalanced: the document was clipped, or this text is not one document.
+  return null;
+}
+
+/**
+ * The first of `keys` that carries a usable scalar, else null.
+ *
+ * Reading a field that IS there is not inventing one that is not — the null is
+ * what keeps those two apart, and a null must be rendered as "unknown", never
+ * as "none".
+ */
+function pickField(item: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = item[key];
+    if (typeof value === 'string' && value.trim() !== '') return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+/**
+ * Turn the CLI's `--json` findings document into a bounded, structured digest.
+ *
+ * Why this exists at all: the review tool used to hand the model the RAW
+ * `--json` stdout (plus any log lines around it) and ask it to grep the
+ * conclusions out. A model that misses one finding believes the review was
+ * complete — and unlike a mis-parsed quota number, that failure is invisible:
+ * nothing in the output says "you did not read all of it".
+ *
+ * Honesty rules, in the order they bind:
+ *   1. no document found / unparseable → `parsed: false` with the reason, and
+ *      the caller still gets the raw report;
+ *   2. a document whose shape is not one this build recognizes → `parsed: false`
+ *      naming the top-level keys it DID find (evidence for the next fix, not a
+ *      guess at where the findings might be);
+ *   3. a field the entry does not carry → `null`, never a default.
+ */
+export function parseReviewFindings(report: string): ParsedFindings {
+  const fail = (reason: string): ParsedFindings => ({
+    parsed: false,
+    count: 0,
+    findings: [],
+    reason,
+    capped: false,
+  });
+  if (typeof report !== 'string' || report.trim() === '') return fail('report 为空');
+
+  const doc = extractJsonDocument(report);
+  if (doc === null) return fail('report 里找不到完整的 JSON 文档（可能夹了日志行，或输出被截断）');
+
+  let root: unknown;
+  try {
+    root = JSON.parse(doc);
+  } catch (error: any) {
+    return fail(`JSON 解析失败：${String(error && error.message ? error.message : error)}`);
+  }
+
+  let items: unknown[] | null = null;
+  if (Array.isArray(root)) {
+    items = root;
+  } else if (root && typeof root === 'object') {
+    const bag = root as Record<string, unknown>;
+    if (Array.isArray(bag.findings)) items = bag.findings;
+    else return fail(`JSON 文档里没有 findings 数组（顶层键：${Object.keys(bag).join(', ') || '(空对象)'}）`);
+  } else {
+    return fail('JSON 文档既不是数组也不是对象');
+  }
+
+  const objects = items.filter(
+    (item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item),
+  );
+  if (objects.length === 0) return fail('findings 数组里没有对象条目');
+
+  const findings = objects.slice(0, FINDINGS_CAP).map((item) => {
+    let message = pickField(item, ['message', 'title', 'description', 'summary', 'content']);
+    if (message === null) {
+      // Nothing recognizable to summarize: show the entry rather than dropping
+      // the finding. Truncated — one pathological entry must not blow the cap.
+      try {
+        message = JSON.stringify(item).slice(0, 500);
+      } catch {
+        message = '(该条无法序列化)';
+      }
+    }
+    return {
+      severity: pickField(item, ['severity', 'level', 'priority']),
+      file: pickField(item, ['file', 'path', 'filename']),
+      line: pickField(item, ['line', 'line_number', 'startLine', 'start_line']),
+      message,
+    };
+  });
+
+  return {
+    parsed: true,
+    count: objects.length,
+    findings,
+    reason: '',
+    capped: objects.length > findings.length,
+  };
+}
+
+/**
  * Run one review to completion (or cancellation) and collect its outcome.
  *
  * @param {Parameters<typeof buildReviewArgs>[0] & {
@@ -709,6 +898,7 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
     return {
       ok: false,
       report: '',
+      findings: NO_FINDINGS,
       error: `could not prepare review: ${message}`,
       exitCode: -1,
       durationMs: Date.now() - startedAt,
@@ -734,6 +924,7 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
     return {
       ok: false,
       report: '',
+      findings: NO_FINDINGS,
       error: `spawn failed: ${message}`,
       exitCode: -1,
       durationMs: Date.now() - startedAt,
@@ -834,7 +1025,7 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
 
   const stderrTrimmed = stderr.trim().slice(0, 2000);
   if (aborted) {
-    return { ok: false, report, error: 'canceled by caller', exitCode, durationMs };
+    return { ok: false, report, findings: NO_FINDINGS, error: 'canceled by caller', exitCode, durationMs };
   }
   if (timedOut) {
     // Report the fuse as what it is: a killed run reads as a signal exit code
@@ -842,6 +1033,7 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
     return {
       ok: false,
       report,
+      findings: NO_FINDINGS,
       error: `atomcode review timed out after ${opts.timeoutMs}ms (process killed)`,
       exitCode,
       durationMs,
@@ -862,7 +1054,7 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
     } else if (/missing base URL/i.test(detail)) {
       detail += ' — the configured default_provider has no base_url; add a direct [providers.<name>] entry with base_url (non-AtomGit) for the review CLI; daemon ask is unaffected';
     }
-    return { ok: false, report, error: `atomcode review exited ${exitCode}: ${detail}`, exitCode, durationMs };
+    return { ok: false, report, findings: NO_FINDINGS, error: `atomcode review exited ${exitCode}: ${detail}`, exitCode, durationMs };
   }
   if (stdoutClipped) {
     // Deliberately a FAILURE, and deliberately NOT silent: `--json` means stdout
@@ -873,6 +1065,10 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
     return {
       ok: false,
       report,
+      // A clipped document is not parsed even if the fragment happens to be
+      // balanced: a digest read out of a truncated findings list is precisely
+      // the "clean review" this branch exists to prevent.
+      findings: NO_FINDINGS,
       error:
         `atomcode review wrote more than ${Math.round(OUTPUT_CAP_BYTES / 1048576)} MB to stdout and was cut off: ` +
         'the --json findings document is incomplete and must not be read as a result',
@@ -881,7 +1077,7 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
     };
   }
   if (report === '') {
-    return { ok: false, report, error: 'atomcode review produced no output', exitCode, durationMs };
+    return { ok: false, report, findings: NO_FINDINGS, error: 'atomcode review produced no output', exitCode, durationMs };
   }
-  return { ok: true, report, error: '', exitCode, durationMs };
+  return { ok: true, report, findings: parseReviewFindings(report), error: '', exitCode, durationMs };
 }

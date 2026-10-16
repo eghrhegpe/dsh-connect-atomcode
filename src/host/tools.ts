@@ -15,6 +15,7 @@
 import { askChat, TOOLS_CAP } from './daemon.ts';
 import {
   checkReviewProvision,
+  FINDINGS_CAP,
   probeLocalEndpoint,
   PROVIDER_FIX,
   runReview,
@@ -177,6 +178,12 @@ export function mountAskTool({
           },
           tools_truncated: { type: 'boolean', description: 'tools 数组被截断（只回了前若干条；tool_calls 是真实总数，不代表 tools 就是全部）' },
           stop_reason: { type: 'string' },
+          working_dir: {
+            type: ['string', 'null'],
+            description:
+              '本回合实际使用的工作目录（同时是侧边对话的会话键）。null = 本次没有指定：回合跑在 daemon 自己的 cwd 下（通常是用户 home），' +
+              '而本工具的 approval_mode 默认 bypass——即在该目录里无人值守放行工具调用。要指定仓库就显式传 working_dir',
+          },
           provider: { type: 'string' },
           providerReported: { type: 'boolean', description: 'provider 是否来自 daemon SSE 的 runtime_info（true = 远端实测值；false = daemon 未报，回显本插件请求值、未经远端证实——daemon 升级后若不再发 runtime_info，每回合都会带 false 并标注）' },
           protocol_unknown_types: {
@@ -186,7 +193,7 @@ export function mountAskTool({
           },
           error: { type: 'string' },
         },
-        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'tools_truncated', 'stop_reason', 'provider', 'providerReported', 'protocol_unknown_types', 'error'],
+        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'tools_truncated', 'stop_reason', 'working_dir', 'provider', 'providerReported', 'protocol_unknown_types', 'error'],
         additionalProperties: false,
       },
       render(_args: any, value: any) {
@@ -231,6 +238,20 @@ export function mountAskTool({
           if (value.providerReported === false) {
             lines.push('[注意：daemon 未报 runtime_info，provider= 是本插件回传请求值、未经远端证实（daemon 可能已升级）]', '');
           }
+          // The one thing a turn run without a working_dir never used to say:
+          // where its tools actually ran. `null` means the daemon's own cwd (the
+          // user's home, in the default launch). Said out loud only when the turn
+          // was ALSO unattended (`approval_mode: bypass`, the default) — that
+          // pairing is the risk: tools auto-approved in a directory nobody named.
+          // review refuses the case outright (红线 8); ask cannot, so it names it.
+          // Every turn still carries `working_dir=` in the meta line below.
+          if (approvalMode === 'bypass' && (value.working_dir === null || value.working_dir === undefined)) {
+            lines.push(
+              '[注意：本回合未指定 working_dir，工具在 daemon 自己的 cwd 下执行（通常是用户 home），且 approval_mode=bypass 无人值守放行。' +
+                '要限定目录请显式传 working_dir 或配置插件的 working_dir]',
+              '',
+            );
+          }
           // The drift shape NEITHER error path can report, because the turn
           // SUCCEEDED and carried content — so it reads as a clean turn unless
           // said out loud here. It is worse than a plain caveat: the round fuse
@@ -254,6 +275,15 @@ export function mountAskTool({
           if (value.round_count != null && value.round_count > 0) meta.push(`rounds=${value.round_count}`);
           meta.push(`tool_calls=${value.tool_calls}`);
           meta.push(`stop_reason=${value.stop_reason}`);
+          // Always present, so "which directory did this run in" is never a
+          // guess — `null` is printed as what it means rather than as a blank.
+          meta.push(
+            `working_dir=${
+              value.working_dir === null || value.working_dir === undefined
+                ? '未指定（daemon 自己的 cwd）'
+                : value.working_dir
+            }`,
+          );
           meta.push(`provider=${value.provider}`);
           lines.push(`[${meta.join(' ')}]`);
         } else {
@@ -280,6 +310,10 @@ export function mountAskTool({
         tools: [],
         tools_truncated: false,
         stop_reason: '',
+        // Reported on FAILURE too: a refused turn has to be able to say which
+        // directory it would have run in — the fallback is the daemon's own cwd,
+        // and "unspecified" is not the same fact as "this repo".
+        working_dir: workDir || null,
         provider: askProvider || 'default',
         providerReported: false,
         protocol_unknown_types: [],
@@ -420,6 +454,7 @@ export function mountAskTool({
         tools: result.tools,
         tools_truncated: result.toolsTruncated === true,
         stop_reason: result.stopReason,
+        working_dir: workDir || null,
         provider: result.provider,
         providerReported: result.providerReported,
         protocol_unknown_types: result.unknownTypes,
@@ -530,19 +565,73 @@ export function mountReviewTool({
         type: 'object',
         properties: {
           ok: { type: 'boolean' },
-          report: { type: 'string' },
+          report: { type: 'string', description: 'CLI --json 的原始 stdout（可能夹带日志行）。findings 是它的结构化读数；两者同在，原始文本不因解析成功而被丢掉' },
           truncated: { type: 'boolean', description: 'report 超过上限被截断（findings 原文不完整，必要时改用 task 缩小范围）' },
+          findings_parsed: {
+            type: 'boolean',
+            description:
+              'report 是否被解析成了结构化 findings。false = 没能解析（原始文本仍在 report 里，需自己读结论），' +
+              '此时 findings_count=0 表示"没有解析出结论"，**不是"没有问题"**',
+          },
+          findings_count: { type: 'number', description: '文档里的 finding 条数（findings 数组被截断时它仍是真实总数）' },
+          findings: {
+            type: 'array',
+            description:
+              `结构化 findings，最多 ${FINDINGS_CAP} 条（真实总数见 findings_count）。` +
+              'severity/file/line 为 null = 该条目没带这个字段（未知），不是"无"；转达时不要把它写成"无严重程度"',
+            items: {
+              type: 'object',
+              properties: {
+                severity: { type: ['string', 'null'] },
+                file: { type: ['string', 'null'] },
+                line: { type: ['string', 'null'] },
+                message: { type: 'string' },
+              },
+              required: ['severity', 'file', 'line', 'message'],
+              additionalProperties: false,
+            },
+          },
           error: { type: 'string' },
           exit_code: { type: 'number', description: '进程退出码；-1 = 未能启动，或被信号终止（超时/取消）。两种含义共用 -1（被信号杀时真实 code 为 null），具体原因看 error' },
           duration_ms: { type: 'number' },
         },
-        required: ['ok', 'report', 'truncated', 'error', 'exit_code', 'duration_ms'],
+        required: ['ok', 'report', 'truncated', 'findings_parsed', 'findings_count', 'findings', 'error', 'exit_code', 'duration_ms'],
         additionalProperties: false,
       },
       render(_args: any, value: any) {
         const lines = [];
         if (value.ok) {
-          lines.push(`AtomCode 评审完成（${Math.round(value.duration_ms / 1000)}s）:`, value.report || '(空 findings)');
+          // The digest leads the raw document. Both are printed: the digest is
+          // the reliable reading (one line per finding, nothing to grep), and the
+          // raw text stays because a finding can carry fields the digest does not
+          // normalize. Handing back ONLY the raw --json is what let a missed
+          // finding pass as "the review was complete".
+          const findings = Array.isArray(value.findings) ? value.findings : [];
+          lines.push(
+            `AtomCode 评审完成（${Math.round(value.duration_ms / 1000)}s${
+              value.findings_parsed ? `，${value.findings_count} 条 findings` : '，findings 未能解析'
+            }）:`,
+          );
+          if (value.findings_parsed && findings.length > 0) {
+            for (const finding of findings) {
+              const where = [finding.file, finding.line].filter((part) => part !== null && part !== '').join(':');
+              lines.push(
+                `- ${finding.severity ? `[${finding.severity}] ` : ''}${where ? `${where} — ` : ''}${finding.message}`,
+              );
+            }
+            if (findings.length < value.findings_count) {
+              lines.push(`[注意：只列出了前 ${findings.length} 条，共 ${value.findings_count} 条——完整清单见下面的 report 原文]`);
+            }
+          } else if (value.findings_parsed) {
+            lines.push('（findings 文档里没有条目）');
+          } else {
+            // The one sentence that keeps "not parsed" from reading as "clean".
+            lines.push(
+              '[注意：--json 原文没能解析成 findings 文档，下面的 report 是原始文本，需自己从中读结论——' +
+                'findings_count=0 是"没解析出"，不等于"没有问题"]',
+            );
+          }
+          lines.push('--- report 原文 ---', value.report || '(空 findings)');
           if (value.truncated) lines.push('[注意：findings 已截断，末尾内容不完整]');
         } else {
           lines.push(`AtomCode 评审失败: ${value.error}`);
@@ -576,6 +665,11 @@ export function mountReviewTool({
           ok: false,
           report: '',
           truncated: false,
+          // "no digest" — never "zero findings": a refused run must not look
+          // like a review that found nothing wrong.
+          findings_parsed: false,
+          findings_count: 0,
+          findings: [],
           error,
           exit_code: -1,
           duration_ms: Date.now() - t0,
@@ -683,6 +777,7 @@ export function mountReviewTool({
       else stats.review.err += 1;
       const REPORT_CAP = 200_000;
       const truncated = result.report.length > REPORT_CAP;
+      const parsed = result.findings || { parsed: false, count: 0, findings: [] };
       return {
         ok: result.ok,
         report: truncated
@@ -691,6 +786,9 @@ export function mountReviewTool({
             } more characters]`
           : result.report,
         truncated,
+        findings_parsed: parsed.parsed === true,
+        findings_count: typeof parsed.count === 'number' ? parsed.count : 0,
+        findings: Array.isArray(parsed.findings) ? parsed.findings : [],
         error: result.error,
         exit_code: result.exitCode ?? -1,
         duration_ms: result.durationMs,

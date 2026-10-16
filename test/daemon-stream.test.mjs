@@ -226,6 +226,56 @@ describe('daemon /chat SSE client — hermetic', () => {
     assert.match(r.error, /atomcode turn aborted: canceled by caller/);
   });
 
+  it('all three abort reasons carry the SAME "the daemon keeps running" caveat', async () => {
+    // The caveat used to live in exactly one place — the `max_rounds` parameter
+    // description. A turn that timed out, or one the caller cancelled, reported a
+    // bare "aborted" and read as "the turn stopped", while the daemon was still
+    // spending tool calls and quota on it. Same fact, one sentence, three paths.
+    //
+    // Asserted as ONE test over all three reasons (rather than one line added to
+    // each existing test) so a fourth abort path has to answer this question
+    // here instead of quietly shipping its own wording.
+    const slowDaemon = async () => {
+      const fake = await startFakeDaemon((req, res) =>
+        respondSse(
+          res,
+          [
+            { type: 'text', content: 'slow' },
+            { type: 'done', stop_reason: 'stopped' },
+          ],
+          { chunkDelayMs: 400 },
+        ),
+      );
+      open.push(fake);
+      return fake;
+    };
+
+    const timedOut = await askChat({ message: 'hi', port: (await slowDaemon()).port, timeoutMs: 150 });
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), 100);
+    const canceled = await askChat({ message: 'hi', port: (await slowDaemon()).port, signal: ctrl.signal });
+    const fuseDaemon = await startFakeDaemon((req, res) =>
+      respondSse(res, [
+        { type: 'tool_start', name: 'a' },
+        { type: 'tool_start', name: 'b' },
+        { type: 'done', stop_reason: 'stopped' },
+      ]),
+    );
+    open.push(fuseDaemon);
+    const fused = await askChat({ message: 'hi', port: fuseDaemon.port, timeoutMs: 10_000, maxRounds: 1 });
+
+    const caveat = /daemon 侧的回合不会被中止/;
+    for (const [which, r] of [
+      ['timeout', timedOut],
+      ['caller cancel', canceled],
+      ['round fuse', fused],
+    ]) {
+      assert.equal(r.ok, false, `${which}: an aborted turn must not report ok`);
+      assert.match(r.error, /atomcode turn aborted/, `${which}: the abort must be named, not a bare DOMException`);
+      assert.match(r.error, caveat, `${which}: must say the daemon-side turn is NOT stopped`);
+    }
+  });
+
   it('streamChat yields events in order and skips keep-alive/noise lines', async () => {
     const fake = await startFakeDaemon((req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream' });

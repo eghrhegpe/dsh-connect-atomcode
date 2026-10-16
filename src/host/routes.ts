@@ -90,6 +90,11 @@ export function mountRoutes({
           // Reflect the live tracked-session count on read (prefix-scoped: only this
           // store's keys, so a sibling profile's lines never inflate it).
           stats.sessionsTracked = sessions.count();
+          // Same read, one more fact: how stale the oldest surviving key is. A
+          // bare count cannot tell "one live line" from "nine ids a daemon that
+          // exited three days ago left behind" — which is exactly the state the
+          // count used to report as healthy.
+          stats.sessionsOldestAgeMs = sessions.oldestAgeMs();
           await refreshHealth();
           // Opening the panel is itself a good moment to bring the daemon up.
           // Fire-and-forget: the start poll can run 30s, and this handler must

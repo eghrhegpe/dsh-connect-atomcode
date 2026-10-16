@@ -185,7 +185,13 @@ export interface BinaryBranch {
 
 /** The `sessions` branch — the tracked-session store's reading. */
 export interface SessionsBranch {
+  /** Resumable keys only — expired ones are no longer counted as tracked. */
   tracked: number;
+  /**
+   * Age in ms of the oldest resumable key; null when there is none or its age
+   * is unknown. Absent on an older host.
+   */
+  oldestAgeMs?: number | null;
   error?: string | null;
 }
 

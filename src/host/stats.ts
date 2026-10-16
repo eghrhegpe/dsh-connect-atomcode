@@ -189,6 +189,13 @@ export interface StatsBag {
   reviewReason: string;
   // ── session glue ──────────────────────────────────────────────────────────
   sessionsTracked: number;
+  /**
+   * Age in ms of the oldest still-resumable session key (null when there is
+   * none, or when its age is unknown). The map used to grow without bound and
+   * nothing showed it — `tracked` alone cannot distinguish "one fresh line"
+   * from "nine dead ids from last week".
+   */
+  sessionsOldestAgeMs: number | null;
   /** Why session glue is degraded right now (`''` when healthy). */
   sessionsError: string;
   // ── the two patch-only knobs, plus which of them the user authored ────────
@@ -278,6 +285,7 @@ export function createStatsBag(seed: StatsSeed): StatsBag {
     reviewAvailable: seed.reviewAvailable,
     reviewReason: seed.reviewReason,
     sessionsTracked: 0,
+    sessionsOldestAgeMs: null,
     sessionsError: '',
     askRounds: seed.askRounds,
     retrySecs: seed.retrySecs,
@@ -412,7 +420,11 @@ export function buildStatsBody(stats: StatsBag, quota: any): StatsSnapshot {
     // CodingPlan quota. Only the daemon's `status` command carries it (as
     // localized text), so this branch is best-effort and says why when empty.
     quota: quota ?? { available: false, reason: 'not collected yet', fetchedAt: null },
-    sessions: { tracked: stats.sessionsTracked, error: stats.sessionsError },
+    sessions: {
+      tracked: stats.sessionsTracked,
+      oldestAgeMs: stats.sessionsOldestAgeMs,
+      error: stats.sessionsError,
+    },
     ask: stats.ask,
     review: stats.review,
   };

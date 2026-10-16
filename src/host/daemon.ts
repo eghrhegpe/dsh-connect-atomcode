@@ -348,9 +348,23 @@ export async function* streamChat(opts: StreamChatOptions) {
   // instead of a non-null assertion so an unset value is handled, not lied to.
   const roundFuse = opts.maxRounds != null && opts.maxRounds > 0 ? opts.maxRounds : 0;
 
+  // Every abort this function can raise stops OUR side of the wire and nothing
+  // else: `ctrl.abort()` closes the fetch, while the daemon keeps running the
+  // turn it already accepted — tool calls, tokens and CodingPlan quota that
+  // nobody is waiting for any more. That used to be said in exactly one place
+  // (the `max_rounds` parameter description) and silent on the other two, so a
+  // caller whose turn timed out, or who cancelled, got a bare "aborted" and
+  // read it as "stopped". One sentence, appended to every reason, from one
+  // function — a caveat repeated per path is a caveat one path will lose.
+  const LOCAL_ABORT_CAVEAT =
+    '（本端已停止等待；daemon 侧的回合不会被中止，仍在继续跑并消耗额度与工具调用）';
+
+  /** The one abort sentence — so no abort path can ship its own wording. */
+  const abortError = () => new Error(`atomcode turn aborted: ${abortReason}${LOCAL_ABORT_CAVEAT}`);
+
   /** Re-throw an abort-flavoured transport error as an actionable message. */
   const describeAbort = (error: unknown) => {
-    if (abortReason) return new Error(`atomcode turn aborted: ${abortReason}`);
+    if (abortReason) return abortError();
     return error;
   };
 
@@ -407,7 +421,7 @@ export async function* streamChat(opts: StreamChatOptions) {
         if (roundFuse > 0 && toolStartCount > roundFuse) {
           abortWith(`agent exceeded ${roundFuse} tool rounds (round fuse)`);
           yield event;
-          throw new Error(`atomcode turn aborted: ${abortReason}`);
+          throw abortError();
         }
         if (typeof event.type === 'string' && !KNOWN_SSE_TYPES.has(event.type)) {
           unknownTypeNames.add(event.type);
