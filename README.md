@@ -105,7 +105,7 @@ provider（本机实测通路是本地代理），否则插件会在调用前就
 | `session_key_prefix` | 自动探测 | 会话键前缀，隔离多 profile（web / desktop）共用同一 state 文件；空 = 按 `DSH_PROFILE`/argv 自动判定 |
 | `daemon_retry_secs` | `60` | 自动拉起**失败**后的重试冷却。`0` = 每次轮询都重试；不设则失败会永久禁用本次挂载的自动拉起 |
 | `review_no_web` | `true` | 评审关 web_search（适配代理受限网络；有外网可设 false） |
-| `review_max_rounds` | `35` | 评审 agent 轮数保险丝 |
+| `review_max_rounds` | `35` | 评审 agent 轮数保险丝；`0` = 不限（桥接层省略 `--max-rounds`，交由 CLI 自身治理，与 `ask_max_rounds: 0` 同义；墙钟 `review_max_duration_secs` 仍然生效） |
 | `review_max_duration_secs` | `900` | 评审墙钟保险丝 |
 | `quota_refresh_secs` | `60` | CodingPlan 额度刷新间隔（秒）；`0` = 关闭额度显示（连带不发那条额外 `/command` 调用）。缓存是为了让面板 5s 轮询不变成 5s 一次 daemon 调用 |
 | `daemon_start_timeout_secs` | `30` | 拉起 daemon 后等 `/health` 应答的上限（秒），每 1.5s 探一次；`0` = 只 spawn 不等 |

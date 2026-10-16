@@ -125,6 +125,8 @@
         # Set false to let reviews search the web when egress is available.
         review_no_web: true
         # Review agent fuses: hard round cap and absolute wall-clock cap.
+        # 0 = 不设轮数熔断（与 ask_max_rounds: 0 同义）：桥接层直接不发 --max-rounds，
+        # 由 CLI 自己的 UNLIMITED 兜底。墙钟 review_max_duration_secs 仍然生效。
         review_max_rounds: 35
         review_max_duration_secs: 900
         # CodingPlan quota refresh interval (seconds) for the detail-page panel.

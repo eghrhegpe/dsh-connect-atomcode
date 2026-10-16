@@ -44,6 +44,28 @@ function hostSessionCwd(exec: any): string | undefined {
 }
 
 /**
+ * Resolve a call's `max_rounds` argument against the configured default — for
+ * BOTH tools, from one function.
+ *
+ * This was two hand-written predicates that read the same name differently: ask
+ * accepted `0` as "no fuse" while review read `0` as "unset, use 35". Both were
+ * defensible alone and each was explained by its own comment — and a model
+ * reading two JSON Schemas with one parameter name had no way to learn that
+ * `max_rounds: 0` meant opposite things depending on which tool it was calling.
+ * Three comments explaining a trap is worse than one function that cannot have
+ * it: `0` means "no round fuse" here, and each backend spells that in its own
+ * way (ask counts SSE events in-process and passes 0 through; review omits
+ * `--max-rounds`, which the CLI documents as UNLIMITED).
+ *
+ * @param {unknown} raw - the per-call argument (`0` and up are honoured).
+ * @param {number} fallback - the configured default for the flanking tool.
+ * @returns {number} the round budget for this call, or 0 for "no fuse".
+ */
+export function resolveMaxRounds(raw: unknown, fallback: number): number {
+  return Number.isFinite(raw) && (raw as number) >= 0 ? Math.floor(raw as number) : fallback;
+}
+
+/**
  * `atomcode_ask` — one full autonomous daemon turn, with side-conversation
  * continuity.
  *
@@ -121,7 +143,7 @@ export function mountAskTool({
         provider: { type: 'string', description: '可选：点名 AtomCode 模型档位，传它就换本次回合用的模型。名字以 daemon GET /models 的 provider 字段为准（如 "AtomGit-glm5.3-flash"），不要传裸模型 id（"glm5.3-flash"）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
         working_dir: { type: 'string', description: '可选：回合的工作目录，同时是侧边对话的会话键。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 插件配置 working_dir > 宿主 home 兜底' },
         timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800' },
-        max_rounds: { type: 'number', description: '可选：工具调用轮数上限（按 daemon SSE 的 tool_start 事件计数；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数。默认取插件配置，当前 ' + askMaxRounds + '；传 0 关掉本端熔断，交回 daemon 自带治理）。超限只中止本端等待并返回错误，不保证停掉 daemon 侧回合' },
+        max_rounds: { type: 'number', description: '可选：工具调用轮数上限（按 daemon SSE 的 tool_start 事件计数；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数。默认取插件配置，当前 ' + askMaxRounds + '；传 0 关掉本端熔断，交回 daemon 自带治理——与 atomcode_review 的 max_rounds: 0 同义）。超限只中止本端等待并返回错误，不保证停掉 daemon 侧回合' },
       },
       required: ['message'],
     },
@@ -298,17 +320,10 @@ export function mountAskTool({
         Number.isFinite(args.timeout_secs) && args.timeout_secs > 0
           ? Math.floor(args.timeout_secs) * 1000
           : 30 * 60 * 1000;
-      // Same contract as the config field above: an explicit 0 is "no fuse", not
-      // a missing value, so it must not fall back to the configured budget.
-      // DELIBERATELY ASYMMETRIC with the review path (mountReviewTool, this file):
-      // there 0 means "unset -> use default 35", here 0 means "no fuse". Reason:
-      // review forwards its fuse to the CLI as `--max-rounds`, and a literal 0
-      // there aborts the review immediately (see review.ts buildReviewArgs), so
-      // review cannot honour "0 = no fuse" without also changing that argv
-      // contract. Ask governs the fuse in-process and has no such boundary.
-      // Do NOT "unify" these two predicates — they encode different contracts.
-      const maxRounds =
-        Number.isFinite(args.max_rounds) && args.max_rounds >= 0 ? Math.floor(args.max_rounds) : askMaxRounds;
+      // Same contract as the config field above, and the SAME resolver the review
+      // path uses: an explicit 0 is "no fuse", not a missing value. See
+      // resolveMaxRounds — the two tools used to disagree about that word.
+      const maxRounds = resolveMaxRounds(args.max_rounds, askMaxRounds);
       const result = await askChat({
         message: String(args.message || ''),
         port,
@@ -458,7 +473,7 @@ export function mountReviewTool({
         pr: { type: 'number', description: '可选：GitHub PR 号（需本机 gh CLI）' },
         diff_text: { type: 'string', description: '可选：原始 diff 文本（写临时文件走 --diff-file；适合非 git 场景/CI 产物）' },
         provider: { type: 'string', description: '可选：点名 AtomCode provider，原样透传给 review CLI 的 --provider。名字以 ~/.atomcode/config.toml 的 [providers.<name>] 条目为准（这条路径不看 daemon /models，也不是裸模型 id——别传 "glm5.3-flash"）；要换该 provider 用的模型，改它条目里的 model。留空时按顺序取：面板上选的条目 → 插件配置 review_default_provider → config.toml 的 default_provider → 自动选择（见工具描述）' },
-        max_rounds: { type: 'number', description: '可选：评审 agent 轮数保险丝（默认取插件配置，通常 ' + reviewMaxRounds + '）' },
+        max_rounds: { type: 'number', description: '可选：评审 agent 轮数熔断（默认取插件配置，通常 ' + reviewMaxRounds + '；传 0 关掉轮数熔断，交回 CLI 自己治理——与 atomcode_ask 的 max_rounds: 0 同义；墙钟熔断 max_duration_secs 仍然生效）' },
         max_duration_secs: { type: 'number', description: '可选：墙钟保险丝秒数（默认取插件配置，通常 900）。有效上限约 1740s——进程级兜底取 maxDuration+60s，超过宿主 30min 工具超时就会先被宿主杀掉' },
         enable_web: { type: 'boolean', description: '可选：允许评审用 web_search（默认 false，适配受限网络）' },
       },
@@ -582,19 +597,13 @@ export function mountReviewTool({
           );
         }
       }
-      // Normalize to positive numbers here too (mirrors buildReviewArgs) so the
-      // process-level backstop is computed from the same values the CLI gets.
-      // DELIBERATELY ASYMMETRIC with the ask path (mountAskTool, this file): there 0
-      // means "no fuse", here 0 means "unset -> use default 35". An explicit 0
-      // is NOT "no fuse" because review forwards the fuse to the CLI as
-      // `--max-rounds`, and a literal 0 would abort the review immediately
-      // (see review.ts buildReviewArgs). Honouring "0 = no fuse" here would
-      // require changing that argv contract first. The two predicates are
-      // intentionally different; do not merge them blindly.
-      const maxRounds =
-        Number.isFinite(args.max_rounds) && args.max_rounds > 0
-          ? Math.floor(args.max_rounds)
-          : reviewMaxRounds;
+      // The SAME resolver as the ask path (`resolveMaxRounds`), so one parameter
+      // name means one thing across both tools: an explicit 0 reaches
+      // buildReviewArgs, which is where it becomes the CLI's own UNLIMITED (the
+      // flag is omitted). The wall-clock fuse below keeps its own `> 0` rule —
+      // "no round cap" is not "no limit", and that knob was never part of the
+      // ambiguity.
+      const maxRounds = resolveMaxRounds(args.max_rounds, reviewMaxRounds);
       const maxDurationSecs =
         Number.isFinite(args.max_duration_secs) && args.max_duration_secs > 0
           ? Math.floor(args.max_duration_secs)

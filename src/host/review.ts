@@ -49,6 +49,11 @@ export interface ReviewOptions {
   pr?: number;
   diffText?: string;
   provider?: string;
+  /**
+   * Round fuse. `undefined` / nonsense → 35; `0` → NO fuse, expressed by leaving
+   * `--max-rounds` off the argv (the CLI's own UNLIMITED); `> 0` → forwarded.
+   * Same meaning as `atomcode_ask`'s `max_rounds: 0` — see `buildReviewArgs`.
+   */
   maxRounds?: number;
   maxDurationSecs?: number;
   noWeb?: boolean;
@@ -186,7 +191,8 @@ export function resolveBinary(configBinary?: string): string {
  * @param {number} [opts.pr] - GitHub PR number (needs the `gh` CLI)
  * @param {string} [opts.diffText] - raw diff, written to a temp file
  * @param {string} [opts.provider] - AtomCode provider/model override
- * @param {number} [opts.maxRounds] - round fuse (default 35)
+ * @param {number} [opts.maxRounds] - round fuse: 0 = none (the flag is omitted,
+ *   the CLI's own UNLIMITED), otherwise the cap (default 35)
  * @param {number} [opts.maxDurationSecs] - wall-clock fuse (default 900)
  * @param {boolean} [opts.noWeb] - disable web_search (default true: this host's network is proxy-gated)
  * @returns {{argv:string[], tempFiles:string[]}} the CLI argv plus any temp files to clean up.
@@ -233,23 +239,28 @@ export function buildReviewArgs(opts: ReviewOptions = {}): ReviewArgs {
     argv.push('--provider', opts.provider.trim());
   }
 
-  // Sanitize the fuses at the argv boundary: a non-positive or non-finite value
-  // would otherwise be handed to the CLI verbatim (`--max-rounds -5`,
-  // `--max-duration 0`) and its meaning becomes the CLI's guess — a zero round
-  // cap in particular could abort the review immediately. Fall back to the
+  // Sanitize the fuses at the argv boundary: a non-finite or NEGATIVE value would
+  // otherwise be handed to the CLI verbatim (`--max-rounds -5`,
+  // `--max-duration 0`) and its meaning becomes the CLI's guess. Fall back to the
   // documented defaults instead of forwarding nonsense.
-  // NOTE: this `> 0` predicate is intentionally asymmetric with the ask path
-  // (src/host/index.ts's max_rounds normalization), where 0 means "no fuse".
-  // Here 0 means "unset -> use default 35" precisely because forwarding
-  // `--max-rounds 0` to the CLI would abort the review. See that comment before
-  // changing this predicate, or you will re-introduce the immediate-abort bug.
+  //
+  // `0` is neither nonsense nor "unset": it is the explicit "no round fuse" the
+  // ask path already honours, and on THIS side it is honoured by OMITTING the
+  // flag — the CLI documents `--max-rounds` as UNLIMITED when absent
+  // (docs/AtomCode-CLI与daemon接口参考.md §review 参数), so leaving it off IS the
+  // unlimited reading, while forwarding a literal 0 aborts the review at once.
+  // That is how the two tools agree on what `0` MEANS without agreeing on how it
+  // is spelled to their respective backends (ask counts SSE events in-process).
+  // The wall-clock fuse is a separate knob: a review with no round cap is still
+  // bounded by `--max-duration`.
   const maxRounds =
-    Number.isFinite(opts.maxRounds) && opts.maxRounds! > 0 ? Math.floor(opts.maxRounds!) : 35;
+    Number.isFinite(opts.maxRounds) && opts.maxRounds! >= 0 ? Math.floor(opts.maxRounds!) : 35;
   const maxDurationSecs =
     Number.isFinite(opts.maxDurationSecs) && opts.maxDurationSecs! > 0 ? Math.floor(opts.maxDurationSecs!) : 900;
 
   argv.push('--json', '--no-telemetry');
-  argv.push('--max-rounds', String(maxRounds));
+  // 0 = no round fuse → leave the flag off entirely (see above).
+  if (maxRounds !== 0) argv.push('--max-rounds', String(maxRounds));
   argv.push('--max-duration', String(maxDurationSecs));
   if (opts.noWeb !== false) argv.push('--no-web');
 

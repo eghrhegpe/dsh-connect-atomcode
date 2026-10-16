@@ -5,10 +5,11 @@
  * asserted against fake child processes.
  */
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it, before, after } from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   buildReviewArgs,
   resolveBinary,
@@ -17,6 +18,8 @@ import {
   cleanupTempFiles,
   OUTPUT_CAP_BYTES,
 } from '../lib/review.js';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 class FakeChild {
   constructor({ stdout = '', stderr = '', code = 0, stderrAsError = false } = {}) {
@@ -78,14 +81,33 @@ describe('review.js — argument construction', () => {
     assert.ok(!withWeb.argv.includes('--no-web'));
   });
 
-  it('a non-positive or non-finite fuse never reaches the CLI verbatim', () => {
+  it('a negative or non-finite fuse never reaches the CLI verbatim', () => {
     // `--max-rounds -5` / `--max-duration 0` would be the CLI's guess to
-    // interpret; a zero round cap could abort the review immediately.
-    for (const bad of [-5, 0, -0.5, NaN, Infinity, -Infinity, null, undefined, '12']) {
+    // interpret. NOTE 0 is deliberately NOT in this list any more: it is an
+    // explicit "no round fuse" (see the next test), while -0.5 / NaN / null and
+    // friends are values that cannot BE a round count.
+    for (const bad of [-5, -0.5, NaN, Infinity, -Infinity, null, undefined, '12']) {
       const { argv } = buildReviewArgs({ maxRounds: bad, maxDurationSecs: bad });
       assert.equal(argv[argv.indexOf('--max-rounds') + 1], '35', `maxRounds=${String(bad)} must fall back to 35`);
       assert.equal(argv[argv.indexOf('--max-duration') + 1], '900', `maxDurationSecs=${String(bad)} must fall back to 900`);
     }
+  });
+
+  it('maxRounds: 0 means NO round fuse — the flag is omitted, not sent as 0', () => {
+    // The trap this replaces: 0 used to be read as "unset -> use 35", so a caller
+    // who had learned from `atomcode_ask` that 0 disarms the fuse got a 35-round
+    // cap instead and was never told. The CLI documents `--max-rounds` as
+    // UNLIMITED when absent (docs/AtomCode-CLI与daemon接口参考.md), so omitting the
+    // flag is the honest way to say it — forwarding a literal 0 would abort the
+    // review immediately, which is why the old comment believed 0 was impossible.
+    const { argv } = buildReviewArgs({ maxRounds: 0 });
+    assert.ok(!argv.includes('--max-rounds'), 'a disarmed round fuse must not be spelled at all');
+    // The wall-clock fuse is a SEPARATE knob: "no round cap" is not "no limit".
+    assert.equal(argv[argv.indexOf('--max-duration') + 1], '900');
+    // …and an explicit 0 must not leak into the other fuse either.
+    const both = buildReviewArgs({ maxRounds: 0, maxDurationSecs: 300 });
+    assert.ok(!both.argv.includes('--max-rounds'));
+    assert.equal(both.argv[both.argv.indexOf('--max-duration') + 1], '300');
   });
 
   it('positive fuses are forwarded, floored to whole seconds/rounds', () => {
@@ -276,5 +298,101 @@ describe('review.js — run outcomes', () => {
     const r = await p;
     assert.equal(r.ok, false);
     assert.match(r.error, /canceled/);
+  });
+});
+
+describe('atomcode_review — the round fuse reaches the child the way the ask tool means it', () => {
+  // The end-to-end half of the `max_rounds: 0` fix. `buildReviewArgs`'s own test
+  // proves the argv SPELLING; this one proves the TOOL did not swallow the 0 into
+  // the configured default first — which is exactly what the old predicate did,
+  // and what no unit test on either side of that boundary could see. The spawn
+  // seam is the observation point: the argv the child is handed is the end of the
+  // chain (tool → runReview → buildReviewArgs → spawn).
+  let review;
+  let savedHome;
+  let savedUserProfile;
+  let savedProfile;
+  const dirs = [];
+
+  before(async () => {
+    const mod = await import(pathToFileURL(join(ROOT, 'lib', 'index.js')).href);
+    const home = mkdtempSync(join(tmpdir(), 'atomcode-fuse-home-'));
+    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-fuse-state-')), 'sessions.json');
+    dirs.push(home, dirname(statePath));
+    mkdirSync(join(home, '.atomcode'), { recursive: true });
+    // A direct provider with a NON-loopback base_url: `selectReviewProvider` picks
+    // it and no local-endpoint probe is attempted, so the call reaches the spawn
+    // in the same tick.
+    writeFileSync(
+      join(home, '.atomcode', 'config.toml'),
+      ['[providers.direct]', 'base_url = "https://some-llm.test/v1"', 'api_key = "sk-test"'].join('\n'),
+      'utf8',
+    );
+    savedHome = process.env.HOME;
+    savedUserProfile = process.env.USERPROFILE;
+    savedProfile = process.env.DSH_PROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    delete process.env.DSH_PROFILE;
+    const tools = [];
+    const ctx = {
+      get: (name) => {
+        if (name === 'tools') return { register: (d) => { tools.push(d); return () => {}; } };
+        if (name === 'webServer') return { register: () => () => {} };
+        return undefined;
+      },
+      logger: { warn() {}, error() {}, info() {} },
+      fiber: { entry: { options: { id: 'dsh-connect-atomcode' } } },
+      inject() {},
+      effect() {},
+      on() {},
+    };
+    mod.apply(ctx, { auto_start: false, port: 45995, state_path: statePath });
+    review = tools.find((t) => t.name === 'atomcode_review');
+    assert.ok(review, 'the review tool must be registered');
+  });
+
+  after(() => {
+    setSpawnOverride(null);
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+    if (savedProfile === undefined) delete process.env.DSH_PROFILE; else process.env.DSH_PROFILE = savedProfile;
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Run one tool call against a child that records the argv it was given. */
+  async function runTool(args) {
+    const seen = [];
+    setSpawnOverride((bin, argv) => {
+      seen.push({ bin, argv });
+      return new FakeChild({ stdout: '{"findings":[]}' });
+    });
+    try {
+      const repo = mkdtempSync(join(tmpdir(), 'atomcode-fuse-repo-'));
+      try {
+        const r = await review.execute({ task: 'x', working_dir: repo, ...args }, {});
+        assert.ok(seen.length === 1, `the CLI must have been spawned once (got ${seen.length})`);
+        assert.equal(r.ok, true, `precondition: the fake child must succeed; error=${r.error}`);
+        return seen[0].argv;
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    } finally {
+      setSpawnOverride(null);
+    }
+  }
+
+  it('max_rounds: 0 omits --max-rounds entirely (the CLI then applies its own UNLIMITED)', async () => {
+    const argv = await runTool({ max_rounds: 0 });
+    assert.ok(
+      !argv.includes('--max-rounds'),
+      'a disarmed round fuse must not arrive as "--max-rounds 35" — that is the silent 35 the caller never asked for',
+    );
+    assert.ok(argv.includes('--max-duration'), 'the wall-clock fuse is a separate knob and stays armed');
+  });
+
+  it('a positive max_rounds is forwarded unchanged', async () => {
+    const argv = await runTool({ max_rounds: 7 });
+    assert.equal(argv[argv.indexOf('--max-rounds') + 1], '7');
   });
 });

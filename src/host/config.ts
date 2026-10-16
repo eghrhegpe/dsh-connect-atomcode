@@ -93,7 +93,8 @@ export function detectProfileKey(argv: string[] = process.argv) {
  *   default_provider ('' = AtomCode's own default, ASK path) ·
  *   review_default_provider ('' = auto-select, REVIEW path)
  *   working_dir ('') · state_path ('') · review_no_web (true)
- *   review_max_rounds (35) · review_max_duration_secs (900)
+ *   review_max_rounds (35; 0 = no round fuse, same as ask) ·
+ *   review_max_duration_secs (900)
  *   ask_max_rounds (25 = bounded default; 0 = unlimited)
  *   session_key_prefix ('' = auto-detect) · daemon_retry_secs (60)
  */
@@ -188,8 +189,15 @@ export function readConfig(rawConfig: Record<string, any>) {
       ? config.review_working_dir
       : undefined;
   const reviewNoWeb = config.review_no_web !== false;
+  // 0 means the SAME thing it means for `ask_max_rounds` above: no round fuse.
+  // It is not a missing value, and the CLI does not have to be told so — the
+  // bridge expresses it by leaving `--max-rounds` off the argv, which the CLI
+  // documents as UNLIMITED (see buildReviewArgs). Only values that cannot BE a
+  // round count (non-integers, negatives) fall back to the default. Reading 0 as
+  // "use 35" made the two same-named knobs mean opposite things.
+  // `review_max_duration_secs` is a separate fuse and is unaffected by this.
   const reviewMaxRounds =
-    Number.isInteger(config.review_max_rounds) && config.review_max_rounds > 0
+    Number.isInteger(config.review_max_rounds) && config.review_max_rounds >= 0
       ? config.review_max_rounds
       : 35;
   const reviewMaxDurationSecs =
