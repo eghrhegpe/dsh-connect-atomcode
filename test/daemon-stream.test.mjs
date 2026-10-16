@@ -266,4 +266,93 @@ describe('daemon /chat SSE client — hermetic', () => {
     assert.equal(seen.working_dir, 'C:\\repo');
     assert.equal(seen.provider, 'P');
   });
+
+  /**
+   * Tool attribution. `tool_result` carries no name or id, so the ONLY thing
+   * tying it to a `tool_start` is ordering — and ordering is unambiguous only
+   * while exactly one call is outstanding. These three cases are the whole
+   * contract: serial rounds stay attributed (the shape every existing test
+   * assumes), a concurrent batch must say "unknown" instead of writing every
+   * result onto the last call started, and a serial round AFTER a concurrent
+   * batch must be attributed again (the batch flag is per batch, not sticky).
+   */
+  it('attributes tool results in a SERIAL turn (each result belongs to the only open call)', async () => {
+    const fake = await startFakeDaemon((req, res) =>
+      respondSse(res, [
+        { type: 'tool_start', name: 'read' },
+        { type: 'tool_result', success: true },
+        { type: 'tool_start', name: 'edit' },
+        { type: 'tool_result', success: false },
+        { type: 'done', session_id: 's', tool_calls: 2, stop_reason: 'stopped' },
+      ]),
+    );
+    open.push(fake);
+    const r = await askChat({ message: 'hi', port: fake.port, timeoutMs: 10_000 });
+    assert.deepEqual(
+      r.tools,
+      [
+        { name: 'read', success: true },
+        { name: 'edit', success: false },
+      ],
+      'a serial turn is the case attribution actually works for',
+    );
+  });
+
+  it('a CONCURRENT batch reports success:null for the whole batch rather than a fabricated false', async () => {
+    // Three calls started before any result arrives — the shape an agent that
+    // fans out produces. The old code wrote every result onto the LAST started
+    // call, so `read` and `grep` stayed `success: false` while both succeeded:
+    // a wrong fact handed to the model as a per-tool verdict, which is how
+    // already-done work gets redone.
+    const fake = await startFakeDaemon((req, res) =>
+      respondSse(res, [
+        { type: 'tool_start', name: 'read' },
+        { type: 'tool_start', name: 'grep' },
+        { type: 'tool_start', name: 'bash' },
+        { type: 'tool_result', success: true },
+        { type: 'tool_result', success: true },
+        { type: 'tool_result', success: true },
+        { type: 'done', session_id: 's', tool_calls: 3, stop_reason: 'stopped' },
+      ]),
+    );
+    open.push(fake);
+    const r = await askChat({ message: 'hi', port: fake.port, timeoutMs: 10_000 });
+    assert.equal(r.roundCount, 3, 'premise: three tool_start events, so the fuse counts calls not rounds');
+    assert.deepEqual(
+      r.tools,
+      [
+        { name: 'read', success: null },
+        { name: 'grep', success: null },
+        { name: 'bash', success: null },
+      ],
+      'unknown must be distinguishable from failed: null, not false. The whole '
+        + 'batch is marked, including the last one — a single attributed value '
+        + 'among two unknowns would read as if attribution had worked',
+    );
+  });
+
+  it('a serial round AFTER a concurrent batch is attributed again (the flag is per batch)', async () => {
+    const fake = await startFakeDaemon((req, res) =>
+      respondSse(res, [
+        { type: 'tool_start', name: 'read' },
+        { type: 'tool_start', name: 'grep' },
+        { type: 'tool_result', success: true },
+        { type: 'tool_result', success: true },
+        { type: 'tool_start', name: 'edit' },
+        { type: 'tool_result', success: false },
+        { type: 'done', session_id: 's', tool_calls: 3, stop_reason: 'stopped' },
+      ]),
+    );
+    open.push(fake);
+    const r = await askChat({ message: 'hi', port: fake.port, timeoutMs: 10_000 });
+    assert.deepEqual(
+      r.tools,
+      [
+        { name: 'read', success: null },
+        { name: 'grep', success: null },
+        { name: 'edit', success: false },
+      ],
+      'once the batch drains, the next single call is unambiguous again',
+    );
+  });
 });

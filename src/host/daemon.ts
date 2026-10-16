@@ -469,6 +469,18 @@ export async function askChat(opts: StreamChatOptions) {
   let realProvider = undefined;
   let providerReported = false;
   let roundCount = 0;
+  /**
+   * Tool calls started but not yet answered, in start order, plus whether the
+   * CURRENT batch ever had more than one outstanding call.
+   *
+   * The daemon may run several tool calls in parallel, and `tool_result` does
+   * not carry the name or id of the call it answers — so while a batch is
+   * concurrent there is no way to know which `tool_start` a given result
+   * belongs to. The batch flag is what turns "unknown" into an explicit null
+   * instead of a fabricated false; see the `tool_result` branch.
+   */
+  const outstanding: Array<{ name: string; success: boolean | null }> = [];
+  let batchConcurrent = false;
   // The aggregation gate for drift: a turn that produced NO recognizable
   // signal at all (no text, no tool, no done/error, no session, no tokens)
   // while carrying unknown types is a protocol change, not an empty turn.
@@ -505,9 +517,32 @@ export async function askChat(opts: StreamChatOptions) {
         providerReported = true;
       }
       else if (ev.type === 'tool_start') {
-        usedTools.push({ name: String(ev.name || 'tool'), success: false });
+        const record: { name: string; success: boolean | null } = { name: String(ev.name || 'tool'), success: false };
+        usedTools.push(record);
+        // Queue the call as OUTSTANDING. The result event carries no name or id
+        // (see the vocabulary above), so the only thing tying a `tool_result`
+        // back to a call is ordering — and ordering is only unambiguous while
+        // exactly one call is outstanding.
+        outstanding.push(record);
+        if (outstanding.length > 1) batchConcurrent = true;
         roundCount += 1;
-      } else if (ev.type === 'tool_result' && usedTools.length > 0) usedTools[usedTools.length - 1]!.success = ev.success === true;
+      } else if (ev.type === 'tool_result') {
+        const record = outstanding.shift();
+        if (record) {
+          // Serial turns (one call outstanding) can be attributed, so the
+          // success flag is a fact. A CONCURRENT batch — several calls started
+          // before any result arrived — cannot be: `tool_result` has no name,
+          // so there is nothing to say which of them this result belongs to.
+          // Writing it to "the last one started" (what this did before) is not
+          // a guess, it is a wrong fact: every other call in the batch stays
+          // `success: false` forever while the render tells the model they all
+          // failed. Null says "unknown" and stays truthful.
+          record.success = batchConcurrent ? null : ev.success === true;
+        }
+        // Batch boundary: once every outstanding call has its result, the next
+        // `tool_start` opens a fresh batch (and serial Turns stay attributed).
+        if (outstanding.length === 0) batchConcurrent = false;
+      }
       else if (ev.type === 'tokens') tokens = Number(ev.total) || 0;
       else if (ev.type === 'done') done = ev;
       else if (ev.type === 'error' && eventError === '') eventError = String(ev.message || 'atomcode turn error');

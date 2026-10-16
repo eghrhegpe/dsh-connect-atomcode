@@ -142,8 +142,8 @@ export function mountAskTool({
         reset_session: { type: 'boolean', description: '可选：清掉本工作目录记录的侧边会话（续线接到一条已过期的 daemon 会话、或想彻底开新线时用；不影响本回合）' },
         provider: { type: 'string', description: '可选：点名 AtomCode 模型档位，传它就换本次回合用的模型。名字以 daemon GET /models 的 provider 字段为准（如 "AtomGit-glm5.3-flash"），不要传裸模型 id（"glm5.3-flash"）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
         working_dir: { type: 'string', description: '可选：回合的工作目录，同时是侧边对话的会话键。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 插件配置 working_dir > 宿主 home 兜底' },
-        timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800' },
-        max_rounds: { type: 'number', description: '可选：工具调用轮数上限（按 daemon SSE 的 tool_start 事件计数；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数。默认取插件配置，当前 ' + askMaxRounds + '；传 0 关掉本端熔断，交回 daemon 自带治理——与 atomcode_review 的 max_rounds: 0 同义）。超限只中止本端等待并返回错误，不保证停掉 daemon 侧回合' },
+        timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800，上限也是 1800——本工具向宿主声明的超时上限就是 30 分钟，超过它的值不会生效（宿主会先中止调用，得到的会是"已取消"而不是超时）' },
+        max_rounds: { type: 'number', description: '可选：工具调用次数上限（按 daemon SSE 的 tool_start 事件计数；一个 agent 回合可能并行发起多次工具调用，故事件数 ≥ agent 轮数——把它当轮数理解，会在更少的 agent 轮数上就熔断）。默认取插件配置，当前 ' + askMaxRounds + '；传 0 关掉本端熔断，交回 daemon 自带治理——与 atomcode_review 的 max_rounds: 0 同义）。超限只中止本端等待并返回错误，不保证停掉 daemon 侧回合' },
       },
       required: ['message'],
     },
@@ -158,13 +158,19 @@ export function mountAskTool({
           truncated: { type: 'boolean', description: 'reply 超过上限被截断（截断处有标记；让 AtomCode 把长内容落盘再读，别只靠这一份摘要）' },
           tokens: { type: 'number' },
           tool_calls: { type: 'number' },
-          round_count: { type: 'number', description: '本回合 tool_start 事件数（≤ agent 轮数；并行工具会多次计数）' },
+          round_count: { type: 'number', description: '本回合 tool_start 事件数（≥ agent 轮数：同一轮并行发起的工具调用会各计一次）' },
           tools: {
             type: 'array',
-            description: `本回合的工具记录，最多 ${TOOLS_CAP} 条（超出部分被省略，见 tools_truncated；tool_calls 仍是真实总数）`,
+            description: `本回合的工具记录，最多 ${TOOLS_CAP} 条（超出部分被省略，见 tools_truncated；tool_calls 仍是真实总数）。success 为 null 表示本端无法判断该次调用成败：daemon 并行发起的工具调用只回 {type:"tool_result",success:..}，不带名字或 id，本端无从知道它属于同一批里的哪一个——此时不猜，一律置 null`,
             items: {
               type: 'object',
-              properties: { name: { type: 'string' }, success: { type: 'boolean' } },
+              properties: {
+                name: { type: 'string' },
+                success: {
+                  type: ['boolean', 'null'],
+                  description: '该次工具调用是否成功；null = 并行批次内结果无法归因，成败未知（不是失败）',
+                },
+              },
               required: ['name', 'success'],
               additionalProperties: false,
             },
@@ -204,6 +210,21 @@ export function mountAskTool({
           if (value.tools_truncated) {
             lines.push(
               `[注意：tools 只回了前 ${TOOLS_CAP} 条，本回合工具调用不止这些（见 tool_calls）]`,
+              '',
+            );
+          }
+          // Same class of caveat, and the one a model is most likely to misread:
+          // `success: null` means UNKNOWN (a parallel batch whose results carry
+          // no attribution), and reading it as "failed" would re-run work that
+          // already succeeded. Say it, with the count, or the null is worse than
+          // a wrong boolean — it looks like a value.
+          const unattributed = Array.isArray(value.tools)
+            ? value.tools.filter((t: any) => t && t.success === null).length
+            : 0;
+          if (unattributed > 0) {
+            lines.push(
+              `[注意：tools 里有 ${unattributed} 条 success=null——daemon 并行发起的工具调用结果不带归属标识，` +
+                '本端无法判定这些调用的成败（未知，不是失败），不要据此重做]',
               '',
             );
           }
@@ -355,6 +376,31 @@ export function mountAskTool({
       // Truncation is MARKED, never silent: a silently clipped 200KB reply reads
       // to the model like a complete answer, which is how a half-copied report
       // becomes a confidently wrong summary.
+      // A turn that RESUMED a stored side conversation and then failed has one
+      // thing to say that no daemon error will: the stored id may be the problem.
+      // `sessions.set()` only records SUCCESSFUL turns, so a dead id is never
+      // overwritten — every later `continue: true` replays it and fails again,
+      // forever. The escape hatch exists (`reset_session`), but nothing told the
+      // caller it was the move, so the failure reads as transient and gets
+      // retried into the same dead id.
+      //
+      // Deliberately NOT auto-dropping the key: a resumed turn can also fail for
+      // reasons that leave the session perfectly alive (our own timeout, a
+      // network blip, the round fuse), and dropping it would silently end a
+      // conversation the user wanted continued. Name the recovery instead —
+      // that is the caller's decision to make, with the evidence in hand.
+      const resumeHint =
+        '本次接续的是本工作目录记录的侧边会话；若该会话已失效（daemon 重启或空闲退出后常见），' +
+        '可用 reset_session=true 清掉它再开一条新线';
+      const reportedError =
+        !result.ok && continued
+          ? result.error
+            ? `${result.error}（${resumeHint}）`
+            : resumeHint
+          : result.error;
+      // Truncation is MARKED, never silent: a silently clipped 200KB reply reads
+      // to the model like a complete answer, which is how a half-copied report
+      // becomes a confidently wrong summary.
       const REPLY_CAP = 200_000;
       const truncated = result.reply.length > REPLY_CAP;
       const reply = truncated
@@ -377,7 +423,7 @@ export function mountAskTool({
         provider: result.provider,
         providerReported: result.providerReported,
         protocol_unknown_types: result.unknownTypes,
-        error: result.error,
+        error: reportedError,
       };
     },
   });
