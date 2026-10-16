@@ -433,8 +433,26 @@ describe('quotaView — one snapshot in, one render model out', () => {
   it('never renders the string "null" or "undefined" in the label', () => {
     // The regression stated outright: the old code path could emit this text.
     const v = quotaView(healthy, NOW);
-    assert.equal(v.label, 'atom · 5d / 共 7d 18%');
+    assert.equal(v.label, 'atom · 18% · 1h0m 后重置');
     assert.ok(!/null|undefined|NaN/.test(v.label), v.label);
+  });
+
+  it('leads the chip with the countdown, never the plan period', () => {
+    // `atom · 3d / 共 7d 2%` glued a PLAN-PERIOD figure (days left of the
+    // billing period, from the `到期 <date>（5d / 共 7d）` line) to the
+    // ROLLING-WINDOW percent, so it read as "2% of 7 days". The user cares
+    // when quota comes back, not when the subscription lapses.
+    const label = quotaView(healthy, NOW).label;
+    assert.ok(!/共\s*7d|5d\s*\//.test(label), `the plan period is not a usage window: ${label}`);
+    assert.ok(label.includes('后重置'), `the countdown is the reason to show this at all: ${label}`);
+  });
+
+  it('omits the countdown rather than inventing one', () => {
+    // No `resetInSecs` => no timing claim. Same rule as the panel rows: a
+    // missing fact is an absent segment, never a placeholder.
+    const v = quotaView({ ...healthy, resetInSecs: null }, NOW);
+    assert.equal(v.label, 'atom · 18%', 'the percent stands alone without a countdown');
+    assert.ok(!/后重置/.test(v.label), v.label);
   });
 
   it('keeps the normal state ambient (tertiary), not primary', () => {

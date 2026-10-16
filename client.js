@@ -375,13 +375,37 @@
 		].filter(Boolean);
 	}
 	/**
-	* The window descriptor for quota readouts. Prefer the window the daemon
-	* actually reported (`planWindow`, parsed from the status text) over the
-	* historical "5小时" default — a 7-day plan must not be labelled "5小时窗口".
-	* Falls back to "5小时" only when the daemon did not expose a window at all.
+	* The window descriptor, for the one place that needs to NAME the window
+	* rather than time it: the "this window is exhausted" line on the detail page.
+	*
+	* Prefer the descriptor the daemon actually reported (`planWindow`, parsed from
+	* the status text) over the historical "5小时" default — a 7-day plan must not
+	* be labelled "5小时窗口". Falls back to "5小时" only when the daemon did not
+	* expose one at all.
+	*
+	* NOT used by the dock chip any more. The chip used to read
+	* `atom · 3d / 共 7d 2%`, which glued a PLAN-PERIOD figure (the `（5d / 共 7d）`
+	* parenthetical sits on the `到期 <date>` line: days left of the billing
+	* period) to the ROLLING-WINDOW usage percent. Two different clocks, one
+	* string, so it read as "2% of 7 days". The chip now leads with the countdown
+	* that actually governs when quota comes back.
 	*/
 	function windowLabel(planWindow) {
 		return typeof planWindow === "string" && planWindow.trim() !== "" ? planWindow.trim() : "5小时";
+	}
+	/**
+	* The dock chip's text: what is used, and when it comes back.
+	*
+	* `atom · 2% · 29m13s 后重置` — deliberately NOT the plan period. See
+	* `windowLabel` for why that was wrong: the user cares when the rolling window
+	* refills, not how many days of the subscription remain. The countdown is the
+	* part that goes stale between polls, so it is omitted rather than faked when
+	* the snapshot cannot support one (same rule as the panel rows).
+	*/
+	function chipLabel(pct, liveSecs) {
+		const parts = ["atom", pct + "%"];
+		if (liveSecs !== null) parts.push(fmtCountdown(liveSecs) + " 后重置");
+		return parts.join(" · ");
 	}
 	/**
 	* Everything the readout renders, derived from ONE stats snapshot.
@@ -402,7 +426,7 @@
 			known: true,
 			pct,
 			limited,
-			label: "atom · " + windowLabel(quota.planWindow) + " " + pct + "%",
+			label: chipLabel(pct, liveSecs),
 			color: limited || quota.usagePercent >= 100 ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-tertiary)",
 			facts: quotaFacts(quota, liveSecs),
 			barWidth: barWidth(pct)
@@ -900,7 +924,10 @@
 				} }, String(num), h("span", { style: S.callStatLabel }, label));
 			}
 			/**
-			* Compact quota readout: `atom · 5小时 19%` — a click-opens panel.
+			* Compact quota readout: `atom · 2% · 29m13s 后重置` — a click-opens panel.
+			* The countdown leads the facts because the rolling window refilling is
+			* the thing that changes what the user can do next; the plan period
+			* (`3d / 共 7d`) is deliberately absent from the strip (see `chipLabel`).
 			*
 			* Rendered into `conversation.composer.dock` ("Ambient entries below the
 			* composer card") — the strip that already carries the host's own

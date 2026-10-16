@@ -401,7 +401,10 @@ const REGISTRATION = {
     // ── quota chip ────────────────────────────────────────────────────────
 
     /**
-     * Compact quota readout: `atom · 5小时 19%` — a click-opens panel.
+     * Compact quota readout: `atom · 2% · 29m13s 后重置` — a click-opens panel.
+     * The countdown leads the facts because the rolling window refilling is
+     * the thing that changes what the user can do next; the plan period
+     * (`3d / 共 7d`) is deliberately absent from the strip (see `chipLabel`).
      *
      * Rendered into `conversation.composer.dock` ("Ambient entries below the
      * composer card") — the strip that already carries the host's own
