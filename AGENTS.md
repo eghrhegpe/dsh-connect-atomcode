@@ -250,7 +250,8 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 - **没有 `docs/PITFALLS.md` 与 `docs/ARCHITECTURE.md`**——本插件没有兄弟插件那套事故史账本；
   三条事实 + 8 条红线 + `docs/DECISIONS.md` 就是全部的判断依据。别照抄一份空的出来占位。
   （事故卷宗只有一份，按主题拆在 `docs/AtomGit-网关与-review-通路.md` 里。）
-- **没有 `docs/RELEASING.md`，但发版纪律有落点。** 版本号**两处手改**：`package.json` 的 `version`
+- **发版手册在 `docs/RELEASING.md`**（动作顺序 + 本仓库特有坑）。核心纪律：版本号**两处手改**：
+  `package.json` 的 `version`
   与 `src/host/index.ts` 里 stats body 的 `version`。两处必须一致，断言在 `test/wiring.test.mjs`
   （产物 `lib/index.js` 由构建生成，手改它等于没改）。
   **2026-10-16 补上这条断言**：此前这条纪律只写在文档里，而 `build-gate` 只比 `lib/` 与 `src/`、
@@ -258,6 +259,8 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
   **发版打 git tag**：`git tag v<package.json version>`（两处手改 + `npm run build` 产物落定后再打）。
   「某版本是哪次提交」回看 `git tag`，行为史靠 `CHANGELOG.md` + `git log --date=short`。
   发布形态与兄弟插件同款：`package.json` 的 `prepack: npm run build` + `files` 白名单 + `publishConfig.access`；
+  **npm 发布要钉 `registry.npmjs.org`**——本机 `~/.npmrc` 的 registry 是只读镜像
+  （会拒绝 publish），靠 `publishConfig.registry` + 仓库根 `.npmrc` 双保险拉回；
   市场投稿见 `docs/submission/eghrhegpe__dsh-connect-atomcode.yml`——复制到 awesome-dsh-plugin 的
   `data/plugins/` 后开 PR，别加 `npm:` 字段、别在 yml 里放截图（市场读仓库根 `screenshots.json`）。
 - **`upstream/atomcode-open-api`** 是参照件（第三方 AtomCode OpenAPI 实现，自带 `.git`），
