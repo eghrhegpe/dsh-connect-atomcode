@@ -81,13 +81,24 @@ export function describeDaemonDown(reason: HealthFailure): string {
     case 'not-atomcode':
       return '端口被非 AtomCode 服务占用（/health 未声明 atomcode-daemon）';
     case 'unreachable':
+      // The CLASSIFIED catch-all: the fetch failed, for a cause `probeFailure`
+      // looked at and could not name. That is an answer — "we checked, we cannot
+      // tell" — and it is deliberately not the same thing as `default`.
       return '探活失败，原因未能归类';
     case '':
       // Down, but no probe has finished yet — the panel can ask before the
       // mount's first probe resolves. Not a failure, and not worth inventing one.
       return '尚未探活';
     default:
-      return '探活失败，原因未能归类';
+      // Unreachable against the `HealthFailure` union, but REACHABLE at runtime:
+      // a caller — or an older `lib/daemon.js` — can hand this a value this build
+      // does not know. It used to return the SAME sentence as `unreachable`,
+      // which made the two indistinguishable on the one surface that reads them
+      // (红线 3: a panel that cannot tell "unclassified" from "unknown value"
+      // has already lost the distinction). An unrecognized classification is
+      // itself a drift signal (事实 3), so name the value instead of folding it
+      // into the catch-all that means "we looked and found nothing to name".
+      return `探活失败，归类「${String(reason)}」本版本不认识`;
   }
 }
 
