@@ -15,6 +15,7 @@ import {
   runReview,
   setSpawnOverride,
   cleanupTempFiles,
+  OUTPUT_CAP_BYTES,
 } from '../lib/review.js';
 
 class FakeChild {
@@ -149,6 +150,28 @@ describe('review.js — run outcomes', () => {
     const r = await runReview({ task: 'x' });
     assert.equal(r.ok, false);
     assert.match(r.error, /no output/);
+  });
+
+  it('a runaway stdout is named as a corrupt document, never returned as findings', async () => {
+    // `--json` means stdout IS the findings document, so a clipped stream is a
+    // corrupt one. The failure mode this guards is the quiet one: a TRUNCATED
+    // findings list still parses, and reads to the model as a clean review.
+    setSpawnOverride(() => new FakeChild({ stdout: Buffer.alloc(OUTPUT_CAP_BYTES + 1, 0x78) }));
+    const r = await runReview({ task: 'x' });
+    assert.equal(r.ok, false, 'a clipped --json document must not be reported as a result');
+    assert.match(r.error, /cut off/);
+    assert.match(r.error, /incomplete/);
+    assert.equal(r.exitCode, 0, 'the exit code is still reported as what it was');
+  });
+
+  it('an ordinary 1 MB findings document is NOT clipped', async () => {
+    // The counter-case: a cap that fires on real work would be worse than none.
+    const payload = `{"findings":[${'"x",'.repeat(250000)}]}`;
+    assert.ok(payload.length > 1_000_000 && payload.length < OUTPUT_CAP_BYTES);
+    setSpawnOverride(() => new FakeChild({ stdout: payload }));
+    const r = await runReview({ task: 'x' });
+    assert.equal(r.ok, true);
+    assert.equal(r.report.length, payload.length);
   });
 
   it('missing-base-URL failure carries the actionable provider hint', async () => {

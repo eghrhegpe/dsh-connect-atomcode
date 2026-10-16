@@ -21,10 +21,13 @@ import { join } from 'node:path';
 import {
   listUsableProviders,
   selectReviewProvider,
-  isLoopbackBaseUrl,
   probeLocalEndpoint,
   checkReviewProvision,
 } from '../lib/review.js';
+// The loopback predicate is the SHARED module (`src/shared/loopback.ts`), not a
+// review-local one: the renderer bundles the same source, so this import and
+// `client-fns.test.mjs`'s `isLoopbackEndpoint` are two views of one artifact.
+import { isLoopbackBaseUrl } from '../lib/loopback.js';
 
 function withConfig(lines, fn) {
   const home = mkdtempSync(join(tmpdir(), 'atomcode-sel-'));
@@ -223,6 +226,15 @@ describe('selectReviewProvider', () => {
   });
 });
 
+/**
+ * isLoopbackBaseUrl — the host's export of the SHARED predicate.
+ *
+ * It is re-exported from `lib/review.js` but defined in `src/shared/loopback.ts`,
+ * which the renderer bundles too (`isLoopbackEndpoint` in `client.js`, asserted
+ * by `client-fns.test.mjs`). Both halves answered this question with hand-written
+ * copies before; these two suites are what make the shared module's contract
+ * visible from each side.
+ */
 describe('isLoopbackBaseUrl', () => {
   it('recognizes loopback forms', () => {
     for (const url of [

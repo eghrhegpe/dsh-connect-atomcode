@@ -48,6 +48,19 @@
 - **provider 优先级阶梯不再有两份**：execute 侧四档（含 `argument`），面板侧自己抄了一份三档的，
   改一边不会动另一边。现在面板侧复用同一个 `resolveProvider`（复用已读的 picks，不额外多读一次文件）；
   review 空档仍报 `auto`，与 ask 的 `atomcode` 是两个语义，不是同一个旋钮。
+- **review 的 stdout 累积加了上限**：原来是 `stdout += chunk` 到子进程自己停为止，而墙钟熔断只停
+  「等」不停「攒」——一个开始刷日志的 CLI 能把 host 内存吃光。现在边上限边排空（不排空会反向堵住
+  子进程），且**超限即失败并出口具名**：`--json` 模式下 stdout 就是那份 findings 文档，被截断的文档
+  「能解析」比不能解析更危险——它读起来像一份干净的评审。stderr 同理，只留前 8 KB（消费者本来就只取 2000 字符）。
+- **`detectProfileKey` 从此有测试，且两处真 bug 修掉**：显式的 `DSH_PROFILE` 原来要过
+  `web/desktop/headless` 三词白名单，白名单外的合法值被**丢掉**、答案落到"猜"上；argv 启发式原来是
+  对 `process.argv.join(' ')` 跑 `/dsh.*\b(desktop|web)\b/i`，会跨参数边界匹配、也会被
+  `/opt/dsh-tools/webpack.config.js` 这种路径骗到。现在环境变量即权威，argv 改为**逐 token 精确匹配**。
+  判不出 profile 时**在 mount 时具名**（原来静默）：空前缀会让两个 profile 在共享的 `sessions.json`
+  里撞同一个 `default::` 键，一侧的 `continue` 会续上另一侧的会话。
+- **loopback 判据从两份手写副本改为一份真源**（`src/shared/loopback.ts`，两半各自 import；
+  host 侧产物 `lib/loopback.js`）。两份一致所以一直没人发现，但"一致的两份"仍是两份——
+  哪天其中一份先学会新的 loopback 写法，另一半就会与它不一致。
 
 ### 性能
 

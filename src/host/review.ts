@@ -127,6 +127,29 @@ export interface ReviewOutcome {
   durationMs: number;
 }
 
+/**
+ * Hard ceiling on the stdout bytes one review may hand back.
+ *
+ * `atomcode review --json` prints ONE findings document — tens of KB in the
+ * worst case measured. The unbounded `stdout += chunk` this replaces only
+ * stopped growing when the child did, and the wall-clock fuse above stops the
+ * WAITING, not the accumulation: a child that starts dumping a debug log (or a
+ * repo whose diff makes the reviewer echo it back) would grow this string until
+ * the host ran out of memory, while the fuse watched the clock.
+ *
+ * Hitting the cap is a FAILURE, not a truncation to be silently tolerated: in
+ * `--json` mode stdout IS the document, so a clipped stream is a corrupt
+ * document — and a truncated findings list is worse than no list, because it
+ * parses and reads as "nothing else wrong here". A NOISY turn must not be able
+ * to masquerade as a CLEAN one.
+ */
+export const OUTPUT_CAP_BYTES = 4 * 1024 * 1024;
+/**
+ * How much stderr to retain. The only consumer trims to 2000 chars, so this is
+ * generous; the point is that a panicking CLI cannot grow it without bound.
+ */
+const STDERR_KEEP_BYTES = 8192;
+
 /** @type {(bin:string, args:string[], opts:object) => import('node:child_process').ChildProcess} */
 let spawnOverride: Spawner | null = null;
 
@@ -521,20 +544,12 @@ export function selectReviewProvider(requested?: string, configDir?: string): Re
   return { provider: null, baseUrl: '', auto: false, error: 'no usable direct provider in config.toml' };
 }
 
-/**
- * Is this base_url a loopback/localhost endpoint (i.e. a local sidecar like
- * the atomcode-open-api proxy, which is a live process dependency)?
- * @param {string} baseUrl
- * @returns {boolean} false for anything unparseable — never probe blindly.
- */
-export function isLoopbackBaseUrl(baseUrl: string): boolean {
-  try {
-    const { hostname } = new URL(baseUrl);
-    return hostname === 'localhost' || hostname === '::1' || hostname === '[::1]' || /^127\./.test(hostname);
-  } catch {
-    return false;
-  }
-}
+// The loopback predicate used to live here, and the renderer carried a
+// hand-written copy of it. It now lives in `src/shared/loopback.ts` and is
+// imported DIRECTLY by whoever needs it (`src/host/index.ts` on this side,
+// `src/client/rows.ts` on the other) — not re-exported through this module.
+// A re-export here made the bundler turn `review.ts` into a shared chunk and
+// rename its entry artifact, which is a lot of damage for a convenience alias.
 
 /**
  * Probe a local OpenAI-compatible endpoint: ANY HTTP response (even 401/404)
@@ -633,11 +648,35 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
 
   let stdout = '';
   let stderr = '';
+  let stdoutBytes = 0;
+  let stdoutClipped = false;
+  // Both pipes keep being DRAINED — a full pipe blocks the child, so refusing to
+  // read would turn a noisy CLI into a hang — but what we KEEP is bounded.
   child.stdout.on('data', (chunk) => {
-    stdout += chunk;
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    if (stdoutBytes >= OUTPUT_CAP_BYTES) {
+      stdoutClipped = true;
+      return;
+    }
+    stdoutBytes += buffer.byteLength;
+    // A single chunk that would CROSS the cap is dropped whole rather than
+    // appended in part: a half-decoded tail is not a prefix of the document
+    // either, and `stdoutClipped` already marks the report unusable.
+    if (stdoutBytes > OUTPUT_CAP_BYTES) {
+      stdoutClipped = true;
+      return;
+    }
+    stdout += buffer.toString('utf8');
   });
+  let stderrBytes = 0;
   child.stderr.on('data', (chunk) => {
-    stderr += chunk;
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    // stderr is only ever read as `slice(0, 2000)` below, so keeping more than a
+    // few KB of it is pure memory. Clipping here needs no flag: nothing was lost
+    // that any caller was going to look at.
+    if (stderrBytes >= STDERR_KEEP_BYTES) return;
+    stderrBytes += buffer.byteLength;
+    stderr += buffer.toString('utf8');
   });
 
   const killer = () => {
@@ -715,6 +754,22 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
       detail += ' — the configured default_provider has no base_url; add a direct [providers.<name>] entry with base_url (non-AtomGit) for the review CLI; daemon ask is unaffected';
     }
     return { ok: false, report, error: `atomcode review exited ${exitCode}: ${detail}`, exitCode, durationMs };
+  }
+  if (stdoutClipped) {
+    // Deliberately a FAILURE, and deliberately NOT silent: `--json` means stdout
+    // is the findings document, so what is in `report` is a truncated one. It is
+    // still handed back (hiding received bytes helps nobody debug this), but the
+    // outcome says it is incomplete — otherwise a clipped list of findings reads
+    // to the model as a clean review.
+    return {
+      ok: false,
+      report,
+      error:
+        `atomcode review wrote more than ${Math.round(OUTPUT_CAP_BYTES / 1048576)} MB to stdout and was cut off: ` +
+        'the --json findings document is incomplete and must not be read as a result',
+      exitCode,
+      durationMs,
+    };
   }
   if (report === '') {
     return { ok: false, report, error: 'atomcode review produced no output', exitCode, durationMs };

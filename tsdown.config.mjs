@@ -45,6 +45,13 @@ export default defineConfig([
       quota: "src/host/quota.ts",
       sessions: "src/host/sessions.ts",
       "provider-store": "src/host/provider-store.ts",
+      // The one module BOTH halves read (`src/client/rows.ts` bundles it too).
+      // It gets its own entry so it lands at a stable path instead of being
+      // inlined into whichever host module happened to import it first — that
+      // is how `lib/review.js` once became a re-export shell with the real code
+      // in a generated `lib/review2.js`, which breaks the "one artifact per
+      // source module" naming this config promises (see the header).
+      loopback: "src/shared/loopback.ts",
     },
     outDir: "lib",
     format: "esm",

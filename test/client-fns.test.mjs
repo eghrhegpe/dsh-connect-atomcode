@@ -751,12 +751,15 @@ describe('providerSelectModel — one slot, one dropdown, one namespace', () => 
 });
 
 /**
- * isLoopbackEndpoint — the renderer's copy of the host's loopback test.
+ * isLoopbackEndpoint — the renderer's NAME for the host's loopback test.
  *
- * It exists because the warning must be worded from the same fact the host
- * probes on (`isLoopbackBaseUrl`): "this choice bills through a process on your
- * machine". Anything unparseable is NOT loopback — guessing would produce
- * warnings about endpoints that are not local.
+ * Not a copy any more: both halves import `src/shared/loopback.ts`, because the
+ * warning must be worded from the same fact the host probes on (`isLoopbackBaseUrl`)
+ * — "this choice bills through a process on your machine". Anything unparseable
+ * is NOT loopback; guessing would produce warnings about endpoints nobody can
+ * point at. Asserted from BOTH halves (`review-select.test.mjs` covers the host
+ * export) so that a future edit to one entry point cannot leave the other
+ * silently behind.
  */
 describe('isLoopbackEndpoint', () => {
   it('recognises the local shapes and nothing else', () => {

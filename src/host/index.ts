@@ -48,7 +48,8 @@ import {
 } from './daemon.ts';
 import { createSessionStore, defaultStatePath } from './sessions.ts';
 import { createProviderStore, PROVIDER_SLOTS, normalizeProviderName } from './provider-store.ts';
-import { runReview, checkReviewProvision, selectReviewProvider, isLoopbackBaseUrl, probeLocalEndpoint } from './review.ts';
+import { runReview, checkReviewProvision, selectReviewProvider, probeLocalEndpoint } from './review.ts';
+import { isLoopbackBaseUrl } from '../shared/loopback.ts';
 import { buildQuotaReport } from './quota.ts';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -84,15 +85,43 @@ function sameOrigin(request: any) {
 }
 
 /** Profile key used to namespace session keys (e.g. "web" or "desktop"). */
-function detectProfileKey() {
-  // DSH sets DSH_PROFILE in the host process environment; fall back to the
-  // fiber entry id for the profile name heuristic.
-  const env = process.env.DSH_PROFILE || '';
-  if (env && (env === 'web' || env === 'desktop' || env === 'headless')) return env;
-  // Attempt to detect from argv: "dsh web" -> "web", "dsh desktop" -> "desktop"
-  const argv = process.argv.join(' ');
-  if (/dsh.*\bdesktop\b/i.test(argv)) return 'desktop';
-  if (/dsh.*\bweb\b/i.test(argv)) return 'web';
+/**
+ * Which DSH profile this host process belongs to, as a key-space prefix.
+ *
+ * The prefix keeps two profiles (web + desktop) writing DISJOINT keys in the
+ * shared `sessions.json`. Without one they collide on the same `default::` key,
+ * and a `continue: true` in one profile resumes the OTHER profile's side
+ * conversation — a wrong-repo answer with no trace of why.
+ *
+ * Two behaviours here were wrong and both are fixed in place:
+ *
+ *  1. An explicit `DSH_PROFILE` was run through a three-word allowlist
+ *     ('web' / 'desktop' / 'headless'), so a legitimate value outside that set
+ *     was TOSSED and the answer fell through to a guess. The environment is the
+ *     authority — if DSH set it, it is the answer, whatever it says.
+ *  2. The argv heuristic tested `/dsh.*\b(desktop|web)\b/i` against
+ *     `process.argv.join(' ')`. That matches across argument boundaries (any
+ *     later `desktop` anywhere on the line) and inside unrelated strings — a
+ *     path like `/opt/dsh-tools/webpack.config.js` satisfies the `web` branch.
+ *     A WRONG profile key is worse than a missing one: it silently splits or
+ *     merges the wrong conversations.
+ *
+ * Returning '' is therefore a real possibility, and the caller NAMES it rather
+ * than letting an unprefixed key space look intentional (红线 3).
+ *
+ * @param {string[]} [argv] - injectable for tests.
+ * @returns {string} the profile name, or '' when it cannot be determined.
+ */
+export function detectProfileKey(argv: string[] = process.argv) {
+  const env = String(process.env.DSH_PROFILE || '').trim();
+  if (env !== '') return env;
+  const tokens = argv.slice(1).map((t) => String(t).trim().toLowerCase());
+  // The profile word must be its OWN argument, and the invocation must actually
+  // be `dsh` — otherwise `web` inside a configuration filename would win.
+  const isDshInvocation = tokens.some((t) => /(^|[\\/])dsh(\.exe|\.cmd|\.bat|\.js)?$/.test(t));
+  if (!isDshInvocation) return '';
+  if (tokens.includes('desktop')) return 'desktop';
+  if (tokens.includes('web')) return 'web';
   return '';
 }
 
@@ -309,10 +338,15 @@ function readConfig(rawConfig: Record<string, any>) {
       ? config.ask_max_rounds
       : DEFAULT_ASK_MAX_ROUNDS;
   const authoredAskMaxRounds = askMaxRounds !== DEFAULT_ASK_MAX_ROUNDS;
-  const sessionKeyPrefix =
-    typeof config.session_key_prefix === 'string' && config.session_key_prefix !== ''
-      ? config.session_key_prefix
-      : detectProfileKey();
+  const configuredPrefix =
+    typeof config.session_key_prefix === 'string' && config.session_key_prefix.trim() !== ''
+      ? config.session_key_prefix.trim()
+      : '';
+  const sessionKeyPrefix = configuredPrefix || detectProfileKey();
+  // WHERE the prefix came from, so the caller can name the case where there is
+  // none. An empty prefix is not a neutral default — it puts both profiles on
+  // one key space in a shared sessions.json.
+  const sessionKeyPrefixSource = configuredPrefix !== '' ? 'config' : sessionKeyPrefix !== '' ? 'profile' : 'none';
   const statePath =
     typeof config.state_path === 'string' && config.state_path !== '' ? config.state_path : defaultStatePath();
   // Review's default repo root. Kept SEPARATE from `working_dir` on purpose:
@@ -375,6 +409,7 @@ function readConfig(rawConfig: Record<string, any>) {
     authoredWorkingDir,
     authoredAskMaxRounds,
     sessionKeyPrefix,
+    sessionKeyPrefixSource,
     statePath,
     reviewWorkingDir,
     reviewNoWeb,
@@ -406,6 +441,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
     authoredWorkingDir,
     authoredAskMaxRounds,
     sessionKeyPrefix,
+    sessionKeyPrefixSource,
     statePath,
     reviewWorkingDir,
     reviewNoWeb,
@@ -422,6 +458,19 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
   // `[atomcode-bridge]` prefix instead of re-typing it (and so a second logger
   // call site cannot drift from it).
   const log = (message: any) => ctx.logger?.warn(`[atomcode-bridge] ${message}`);
+
+  // An UNDETERMINED profile is named at mount, not left to be discovered as a
+  // wrong continuation weeks later: with no prefix, both profiles write the same
+  // `default::` key in the shared sessions.json, so a `continue: true` in one
+  // resumes the other's side conversation — a wrong-context answer with no trace
+  // of why. Named here (红线 3), and fixable by the user with one config line.
+  if (sessionKeyPrefixSource === 'none') {
+    log(
+      '无法判定 DSH profile（DSH_PROFILE 未设置，argv 里也没有 dsh 的 web/desktop 子命令）：' +
+        'sessions.json 将不带 profile 前缀。若本机同时跑 web 与 desktop，两侧的会话续接会共用同一个键、互相串线——' +
+        '在插件配置里设 session_key_prefix 可消除歧义。',
+    );
+  }
 
   // Session glue degrades rather than throws (sessions.ts), and every
   // degradation is NAMED here instead of swallowed (红线 3): a state file this

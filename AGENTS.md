@@ -58,6 +58,14 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
     假 spawner（`setSpawnOverride`，模块级状态），而 `lib/index.js` 是 `import './review.js'` 用它的。
     一旦把它们捆成一坨，测试装的那份就成了**没人调用的私副本**，于是真的去跑 review CLI 了——
     这个坑踩过，见 `tsdown.config.mjs` 的 `host` 条目注释。
+  · **`src/shared/` 是第三块，且只有一处**：`shared/loopback.ts` 是被**两半同时读**的模块
+    （host 的 `index.ts` 与 client 的 `rows.ts` 各 import 一次），因为"这个 base_url 是不是本机端点"
+    是同一个事实——host 用它决定要不要探活，渲染侧用它写那句"代理一停 review 立刻断"。它在 host 侧是
+    **显式 entry**（产物 `lib/loopback.js`），在 client 侧被内联进 `client.js`。
+    ⚠️ **别把共享模块 re-export 挂在别的模块上**：`export {...} from '../shared/loopback.ts'` 写在
+    `review.ts` 里那一次，打包器把 `review.ts` 主体降级成共享 chunk、entry 被自动改名为
+    `lib/review2.js`——而 `wiring` / `protocol` 依赖 `lib/review.js` 的模块级单例（见上一条）。
+    加共享模块 = 在 `tsdown.config.mjs` 里给它一个 entry。
   · 两半都是"改 `src/` → `npm run build` → 提交源码+产物"，都由 `build-gate` 盯着。
 - **测试一律打产物，不打 `src/`**（与 client 侧 `client-id` / `client-fns` 载入 `client.js` 同规矩）：
   产物才是真正跑起来的东西，而 build-gate 保证产物就是 `src/` 的忠实构建。改测试导入时**别图省事

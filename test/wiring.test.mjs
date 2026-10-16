@@ -1079,3 +1079,87 @@ describe('version truth — the manifest and the reported version cannot disagre
     );
   });
 });
+
+/**
+ * detectProfileKey — the key-space prefix that keeps two profiles on disjoint keys.
+ *
+ * It had ZERO coverage until now, and two behaviours a test would have caught:
+ * an explicit `DSH_PROFILE` was run through a three-word allowlist (so a
+ * legitimate value outside it was DISCARDED and the answer fell through to a
+ * guess), and the argv heuristic was a regex over `process.argv.join(' ')` that
+ * matched across argument boundaries and inside unrelated paths.
+ *
+ * The consequence of getting this wrong is not cosmetic: with no prefix, both
+ * profiles write the same `default::` key in the shared sessions.json, and a
+ * `continue: true` in one resumes the other's side conversation.
+ */
+describe('detectProfileKey — the prefix that keeps two profiles apart', () => {
+  const savedProfile = process.env.DSH_PROFILE;
+  after(() => {
+    if (savedProfile === undefined) delete process.env.DSH_PROFILE;
+    else process.env.DSH_PROFILE = savedProfile;
+  });
+
+  it('an explicit DSH_PROFILE is the authority, whatever it says', async () => {
+    // The allowlist is what was wrong: 'my-own-profile' is a legitimate value
+    // and used to be thrown away in favour of a guess.
+    const { detectProfileKey } = await import(fileUrl(BRIDGE));
+    for (const value of ['web', 'desktop', 'headless', 'my-own-profile']) {
+      process.env.DSH_PROFILE = value;
+      assert.equal(detectProfileKey(['node', 'dsh', 'web']), value, `${value} must win over argv`);
+    }
+  });
+
+  it('falls back to the argv subcommand, as its own token', async () => {
+    const { detectProfileKey } = await import(fileUrl(BRIDGE));
+    delete process.env.DSH_PROFILE;
+    assert.equal(detectProfileKey(['node', 'dsh', 'desktop']), 'desktop');
+    assert.equal(detectProfileKey(['node', '/usr/local/bin/dsh', 'web']), 'web');
+    assert.equal(detectProfileKey(['node', 'dsh.exe', 'desktop']), 'desktop');
+  });
+
+  it('does NOT invent a profile out of unrelated arguments', async () => {
+    const { detectProfileKey } = await import(fileUrl(BRIDGE));
+    delete process.env.DSH_PROFILE;
+    // The old `/dsh.*\bweb\b/i` over the JOINED line read this as 'web'.
+    assert.equal(detectProfileKey(['node', '/opt/dsh-tools/webpack.config.js']), '');
+    // A path argument that merely ends in the profile word is not a subcommand.
+    assert.equal(detectProfileKey(['node', 'dsh', '--cwd', '/srv/web']), '');
+    // A profile word with no dsh invocation at all is not enough either.
+    assert.equal(detectProfileKey(['node', 'some-other-cli', 'web']), '');
+  });
+
+  it('an undetermined profile is NAMED at mount, not left to be discovered later', async () => {
+    const mod = await import(fileUrl(BRIDGE));
+    const { detectProfileKey } = mod;
+    delete process.env.DSH_PROFILE;
+    // Premise of this test: this process genuinely looks underdetermined. If the
+    // runner ever starts passing a profile, this line says so instead of letting
+    // the assertion below fail for a reason nobody can see.
+    assert.equal(detectProfileKey(), '', 'this process must look profile-less for the mount assertion to mean anything');
+
+    const warnings = [];
+    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-profile-')), 'sessions.json');
+    const { ctx } = fakeCtx();
+    ctx.logger = { warn: (m) => warnings.push(String(m)), error() {}, info() {} };
+    mod.apply(ctx, { state_path: statePath, auto_start: false });
+    assert.ok(
+      warnings.some((w) => w.includes('session_key_prefix') && w.includes('profile')),
+      'an unprefixed key space must be named at mount (红线 3)',
+    );
+  });
+
+  it('a configured session_key_prefix silences it', async () => {
+    const mod = await import(fileUrl(BRIDGE));
+    delete process.env.DSH_PROFILE;
+    const warnings = [];
+    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-profile-')), 'sessions.json');
+    const { ctx } = fakeCtx();
+    ctx.logger = { warn: (m) => warnings.push(String(m)), error() {}, info() {} };
+    mod.apply(ctx, { state_path: statePath, auto_start: false, session_key_prefix: 'web' });
+    assert.ok(
+      !warnings.some((w) => w.includes('session_key_prefix')),
+      'a user who named the prefix must not be warned about it',
+    );
+  });
+});

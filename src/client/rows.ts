@@ -15,6 +15,7 @@ import type {
   ProviderSelectModel,
   ProviderSlotName,
 } from './types.ts';
+import { isLoopbackBaseUrl } from '../shared/loopback.ts';
 
 // ── 回合边界 ──────────────────────────────────────────────────────────────
 
@@ -98,23 +99,14 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
  * Is this base_url a loopback endpoint — i.e. a local sidecar process the
  * review then DEPENDS on?
  *
- * Mirrors `isLoopbackBaseUrl` on the host (which decides whether to probe
- * before spawning), because the renderer needs the same fact to word the
- * warning: "this choice bills through a process on your machine, and stops
- * working the moment it exits". Deliberately returns false for anything
- * unparseable rather than guessing.
+ * This IS the host's predicate (`isLoopbackBaseUrl`), imported from
+ * `src/shared/loopback.ts` under the renderer's name for it. It used to be a
+ * hand-written copy: the host decides whether to probe before spawning, and the
+ * renderer words the warning ("this choice bills through a process on your
+ * machine, and stops working the moment it exits") — two halves needing one fact
+ * is exactly the case a shared module exists for.
  */
-export function isLoopbackEndpoint(url: unknown): boolean {
-  if (typeof url !== 'string' || url.trim() === '') return false;
-  try {
-    const { hostname } = new URL(url.trim());
-    if (hostname === 'localhost') return true;
-    if (/^127\./.test(hostname)) return true;
-    return hostname === '::1' || hostname === '[::1]';
-  } catch {
-    return false;
-  }
-}
+export { isLoopbackBaseUrl as isLoopbackEndpoint };
 
 /**
  * The model rows, derived from ONE stats snapshot.
@@ -286,7 +278,7 @@ export function providerSelectModel(
     const endpoints = src.endpoints && typeof src.endpoints === 'object' ? src.endpoints : {};
     const target = name(panel) || effective;
     const baseUrl = name((endpoints as Record<string, unknown>)[target]);
-    if (baseUrl !== '' && isLoopbackEndpoint(baseUrl)) {
+    if (baseUrl !== '' && isLoopbackBaseUrl(baseUrl)) {
       warning = '本地端点 ' + baseUrl + '：评审经本机进程转发计费，它一停 review 立刻断（探活会给出具名诊断）';
     }
   }
