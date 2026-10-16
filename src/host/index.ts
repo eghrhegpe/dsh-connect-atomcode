@@ -832,7 +832,11 @@ function createRuntime({
       // after the daemon has already come up.
       value = {
         available: false,
-        reason: stats.daemonStarting ? '正在拉起 daemon…' : 'daemon 未运行',
+        // The quota branch used to say a blanket 'daemon 未运行' for every
+        // daemon-down shape — the same collapse the daemon branch just grew out
+        // of. Name it from the same function so a "额度不可用" red line tells the
+        // user whether the port is empty, held by a stranger, or just silent.
+        reason: stats.daemonStarting ? '正在拉起 daemon…' : describeDaemonDown(stats.daemonDownReason),
         fetchedAt: now,
       };
       if (!stats.daemonStarting) quotaCache = { at: now, value };

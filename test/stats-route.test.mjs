@@ -572,7 +572,7 @@ describe('stats route — CodingPlan quota', () => {
       const { body } = await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
       assert.equal(body.quota.available, false);
       assert.equal(body.quota.usagePercent, undefined);
-      assert.match(body.quota.reason, /未运行/);
+      assert.match(body.quota.reason, /没有任何进程在监听/);
     } finally {
       rmSync(dirname(statePath), { recursive: true, force: true });
     }
@@ -715,7 +715,7 @@ describe('stats route — auto-start on observation', () => {
       const { body } = await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
       assert.equal(body.daemon.spawnTried, false, 'auto_start:false must keep the plugin lazy');
       assert.equal(body.daemon.starting, false);
-      assert.match(body.quota.reason, /daemon 未运行/);
+      assert.match(body.quota.reason, /没有任何进程在监听/);
     } finally {
       rmSync(dirname(statePath), { recursive: true, force: true });
     }
@@ -970,7 +970,7 @@ describe('stats route — auto-start on observation', () => {
       const elapsed = Date.now() - startedAt;
       assert.equal(body.daemon.up, false, 'a wedged daemon is not up');
       assert.equal(body.quota.available, false);
-      assert.match(body.quota.reason, /daemon 未运行/, 'and the reason names the state');
+      assert.match(body.quota.reason, /有进程在监听/, 'and the reason names the state');
       // The probe deadline is 5s; allow CI slack but fail on a hang.
       assert.ok(elapsed < 9000, `the route must answer within the probe deadline, took ${elapsed}ms`);
       rmSync(dirname(statePath), { recursive: true, force: true });
