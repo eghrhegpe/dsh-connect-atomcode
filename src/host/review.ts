@@ -30,6 +30,7 @@
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { defaultBinary } from './daemon.ts';
 
 /** Spawn seam shape: the `child_process.spawn` surface this module calls. */
@@ -688,6 +689,16 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
 
   let stdout = '';
   let stderr = '';
+  // A pipe delivers ARBITRARY byte boundaries, and a UTF-8 code point is 1–4
+  // bytes: `buffer.toString('utf8')` on a chunk that ends mid-character emits
+  // U+FFFD for it, so a findings document containing Chinese (or any non-ASCII)
+  // would arrive corrupted wherever the read boundary happened to fall — with
+  // no exit code to show for it. This module already refuses to hand back a
+  // CLIPPED --json document as a result; a mis-decoded one is corrupt in the
+  // same way and quieter about it, so it gets the same treatment. The decoder
+  // holds a partial code point across chunks and flushes it below.
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
   let stdoutBytes = 0;
   let stdoutClipped = false;
   // Both pipes keep being DRAINED — a full pipe blocks the child, so refusing to
@@ -706,7 +717,7 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
       stdoutClipped = true;
       return;
     }
-    stdout += buffer.toString('utf8');
+    stdout += stdoutDecoder.write(buffer);
   });
   let stderrBytes = 0;
   child.stderr.on('data', (chunk) => {
@@ -716,7 +727,7 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
     // that any caller was going to look at.
     if (stderrBytes >= STDERR_KEEP_BYTES) return;
     stderrBytes += buffer.byteLength;
-    stderr += buffer.toString('utf8');
+    stderr += stderrDecoder.write(buffer);
   });
 
   const killer = () => {
@@ -757,6 +768,11 @@ export async function runReview(opts: RunReviewOptions = {}): Promise<ReviewOutc
   if (timer) clearTimeout(timer);
   if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
   cleanupTempFiles(tempFiles);
+  // Flush what the decoders are still holding. A stream whose final bytes are an
+  // incomplete code point leaves those bytes in the decoder, and the tail of a
+  // findings document is where its verdict usually lives.
+  stdout += stdoutDecoder.end();
+  stderr += stderrDecoder.end();
 
   const durationMs = Date.now() - startedAt;
   const aborted = opts.signal?.aborted === true;

@@ -174,6 +174,34 @@ describe('review.js — run outcomes', () => {
     assert.equal(r.report.length, payload.length);
   });
 
+  it('a multi-byte character split across two pipe reads survives decoding', async () => {
+    // A pipe hands over arbitrary byte boundaries and a Chinese character is 3
+    // bytes, so a read can land mid-character. Decoding each chunk on its own
+    // (`buffer.toString('utf8')`) emits U+FFFD for it — a findings document that
+    // still parses and is now WRONG, which is the same silent-corruption class
+    // OUTPUT_CAP_BYTES refuses to return. The assertion is byte-faithfulness, not
+    // just "no crash".
+    const text = '评审：改动无问题，可以合并。';
+    const bytes = Buffer.from(text, 'utf8');
+    const cut = bytes.indexOf(Buffer.from('评', 'utf8')) + 1;
+    assert.ok(cut > 0 && cut < bytes.length, 'the split must land inside a character');
+    setSpawnOverride(() => {
+      const c = new FakeChild({});
+      c.stdout = {
+        on(event, cb) {
+          if (event !== 'data') return;
+          cb(bytes.subarray(0, cut));
+          cb(bytes.subarray(cut));
+        },
+      };
+      return c;
+    });
+    const r = await runReview({ task: 'x' });
+    assert.equal(r.ok, true);
+    assert.equal(r.report, text, 'the document must come back byte-faithful');
+    assert.ok(!r.report.includes('\uFFFD'), 'no replacement character may be substituted');
+  });
+
   it('missing-base-URL failure carries the actionable provider hint', async () => {
     setSpawnOverride(
       () =>

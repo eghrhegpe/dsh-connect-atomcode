@@ -491,6 +491,35 @@ export function mountReviewTool({
       },
     },
     async execute(args: any, exec: any) {
+      // Accounting opens ONCE, here, and every refusal below exits through
+      // `refuse()`.
+      //
+      // The four refusals used to repeat `calls += 1; err += 1;` by hand and
+      // each one returned `duration_ms: 0` — so `msTotal` only ever counted the
+      // calls that got as far as spawning a process, while `calls` counted all
+      // of them. The panel's average duration was therefore low by construction
+      // (a fast refusal added a denominator and no numerator), and a fifth
+      // refusal added later would have inherited the same hole from whichever
+      // copy someone read first. One exit cannot forget a line its siblings
+      // remember — the same reason `mountRoutes()` returns one disposer for two
+      // routes (src/host/routes.ts) and `readQuota` names its cause from one
+      // function. The reported `duration_ms` is the real elapsed time now; `0`
+      // was never a measurement, just an uninitialised field that looked like
+      // one.
+      const t0 = Date.now();
+      const refuse = (error: string) => {
+        stats.review.calls += 1;
+        stats.review.err += 1;
+        stats.review.msTotal += Date.now() - t0;
+        return {
+          ok: false,
+          report: '',
+          truncated: false,
+          error,
+          exit_code: -1,
+          duration_ms: Date.now() - t0,
+        };
+      };
       // Repo requirement FIRST: a missing repository is the caller's own
       // mistake, and reporting it beats both reviewing the wrong tree and
       // burying it under a config diagnostic. The host process cwd is an
@@ -504,19 +533,11 @@ export function mountReviewTool({
           ? args.working_dir
           : hostSessionCwd(exec) ?? reviewWorkingDir;
       if (!workDir) {
-        stats.review.calls += 1;
-        stats.review.err += 1;
-        return {
-          ok: false,
-          report: '',
-          truncated: false,
-          error:
-            'atomcode_review needs a repository: pass working_dir (<repo root>), or set the plugin config ' +
+        return refuse(
+          'atomcode_review needs a repository: pass working_dir (<repo root>), or set the plugin config ' +
             '`review_working_dir`. Falling back to the host process cwd would review the ' +
             'wrong tree (or nothing) while reporting success.',
-          exit_code: -1,
-          duration_ms: 0,
-        };
+        );
       }
       // The mount-time probe is only a hint in the DESCRIPTION; the truth is
       // re-read here, so a config.toml edit after mount is honoured. It is
@@ -524,19 +545,11 @@ export function mountReviewTool({
       // spawns a process that would fail with a diagnostic aimed at a human.
       const currentProvision = checkReviewProvision();
       if (!currentProvision.available) {
-        stats.review.calls += 1;
-        stats.review.err += 1;
-        return {
-          ok: false,
-          report: '',
-          truncated: false,
-          error:
-            `atomcode_review is unavailable on this host: ${currentProvision.reason} ` +
+        return refuse(
+          `atomcode_review is unavailable on this host: ${currentProvision.reason} ` +
             'Use atomcode_ask instead (the daemon carries the AtomGit gateway signing). ' +
             'If this looks wrong, fix ~/.atomcode/config.toml and retry — this check re-reads it on every call.',
-          exit_code: -1,
-          duration_ms: 0,
-        };
+        );
       }
       // Which direct provider will this run use? The CLI's own default is
       // default_provider, which on an AtomGit login host has no base_url ("missing
@@ -547,16 +560,7 @@ export function mountReviewTool({
       // review_default_provider > the CLI's own auto-selection (红线 8).
       const selection = selectReviewProvider(resolveProvider('review', args.provider).name);
       if (selection.error) {
-        stats.review.calls += 1;
-        stats.review.err += 1;
-        return {
-          ok: false,
-          report: '',
-          truncated: false,
-          error: `atomcode_review: ${selection.error}`,
-          exit_code: -1,
-          duration_ms: 0,
-        };
+        return refuse(`atomcode_review: ${selection.error}`);
       }
       if (selection.auto) {
         log(`review provider auto-selected: ${selection.provider} — ${selection.reason}`);
@@ -570,20 +574,12 @@ export function mountReviewTool({
       if (selection.baseUrl && isLoopbackBaseUrl(selection.baseUrl)) {
         const probe = await probeLocalEndpoint(selection.baseUrl);
         if (!probe.alive) {
-          stats.review.calls += 1;
-          stats.review.err += 1;
-          return {
-            ok: false,
-            report: '',
-            truncated: false,
-            error:
-              `atomcode_review: local provider endpoint ${selection.baseUrl} (provider "${selection.provider}") ` +
+          return refuse(
+            `atomcode_review: local provider endpoint ${selection.baseUrl} (provider "${selection.provider}") ` +
               `is not responding (${probe.detail}; tried ${probe.tried.join(', ') || 'no URL'}). ` +
               `${PROVIDER_FIX} ` +
               'Daemon-side atomcode_ask is unaffected (it does not go through this endpoint).',
-            exit_code: -1,
-            duration_ms: 0,
-          };
+          );
         }
       }
       // Normalize to positive numbers here too (mirrors buildReviewArgs) so the
@@ -603,7 +599,6 @@ export function mountReviewTool({
         Number.isFinite(args.max_duration_secs) && args.max_duration_secs > 0
           ? Math.floor(args.max_duration_secs)
           : reviewMaxDurationSecs;
-      const t0 = Date.now();
       stats.review.calls += 1;
       const result = await runReview({
         workingDir: workDir,
@@ -624,6 +619,10 @@ export function mountReviewTool({
         ...(exec?.signal ? { signal: exec.signal } : {}),
         log,
       });
+      // Measured from the top of execute(), so the whole call is counted —
+      // repo/config/selection/probe included — which is the same span the
+      // refusals above book through `refuse()`. Both halves of the average must
+      // cover one span, or the "average duration" is an average of nothing.
       stats.review.msTotal += Date.now() - t0;
       if (result.ok) stats.review.ok += 1;
       else stats.review.err += 1;

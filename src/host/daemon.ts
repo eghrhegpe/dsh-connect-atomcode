@@ -461,15 +461,7 @@ export async function* streamChat(opts: StreamChatOptions) {
  *   visible instead of silently masquerading as "the model that ran".
  */
 export async function askChat(opts: StreamChatOptions) {
-  const events = [];
-  let streamError = '';
-  try {
-    for await (const ev of streamChat(opts)) events.push(ev);
-  } catch (error: any) {
-    streamError = String(error && error.message ? error.message : error);
-  }
   let reply = '';
-  let error = streamError;
   const usedTools = [];
   let done = null;
   let tokens = 0;
@@ -483,22 +475,48 @@ export async function askChat(opts: StreamChatOptions) {
   // `streamChat` already throws on the missing `done`; this covers the case
   // where it saw a terminal event of an unknown name.
   const unknownTypes = new Set<string>();
-  for (const ev of events) {
-    if (ev.type === 'text') reply += String(ev.content || '');
-    else if (ev.type === 'session_assigned' && typeof ev.session_id === 'string') sessionId = ev.session_id;
-    else if (ev.type === 'runtime_info' && typeof ev.provider === 'string' && ev.provider !== '') {
-      realProvider = ev.provider;
-      providerReported = true;
+  let streamError = '';
+  /**
+   * Aggregated AS the stream arrives, not collected into an array first.
+   *
+   * The array version held every event of the turn in memory until the stream
+   * ended, with no cap: a long autonomous turn emits thousands of `text`
+   * deltas, and this module caps everything else it takes from the wire (reply
+   * 200KB in tools.ts, `tools` at TOOLS_CAP, review stdout at
+   * OUTPUT_CAP_BYTES) — this was the one unbounded buffer left, and the one
+   * with no marker to say it had grown. Streaming also means the turn's cost
+   * tracks its content rather than its event count.
+   *
+   * The two error channels are kept APART rather than sharing one variable,
+   * because their precedence is real: an aborted/truncated stream (thrown by
+   * `streamChat`) outranks an `error` event the daemon sent *inside* a stream
+   * that then died. The array version got that ordering by initialising
+   * `error` to the stream error first and only letting an event fill an empty
+   * one; collapsing them into a single variable here would silently invert the
+   * precedence, so they are merged once, below, in the same order.
+   */
+  let eventError = '';
+  try {
+    for await (const ev of streamChat(opts)) {
+      if (ev.type === 'text') reply += String(ev.content || '');
+      else if (ev.type === 'session_assigned' && typeof ev.session_id === 'string') sessionId = ev.session_id;
+      else if (ev.type === 'runtime_info' && typeof ev.provider === 'string' && ev.provider !== '') {
+        realProvider = ev.provider;
+        providerReported = true;
+      }
+      else if (ev.type === 'tool_start') {
+        usedTools.push({ name: String(ev.name || 'tool'), success: false });
+        roundCount += 1;
+      } else if (ev.type === 'tool_result' && usedTools.length > 0) usedTools[usedTools.length - 1]!.success = ev.success === true;
+      else if (ev.type === 'tokens') tokens = Number(ev.total) || 0;
+      else if (ev.type === 'done') done = ev;
+      else if (ev.type === 'error' && eventError === '') eventError = String(ev.message || 'atomcode turn error');
+      else if (ev && typeof ev.type === 'string' && !KNOWN_SSE_TYPES.has(ev.type)) unknownTypes.add(ev.type);
     }
-    else if (ev.type === 'tool_start') {
-      usedTools.push({ name: String(ev.name || 'tool'), success: false });
-      roundCount += 1;
-    } else if (ev.type === 'tool_result' && usedTools.length > 0) usedTools[usedTools.length - 1]!.success = ev.success === true;
-    else if (ev.type === 'tokens') tokens = Number(ev.total) || 0;
-    else if (ev.type === 'done') done = ev;
-    else if (ev.type === 'error' && error === '') error = String(ev.message || 'atomcode turn error');
-    else if (ev && typeof ev.type === 'string' && !KNOWN_SSE_TYPES.has(ev.type)) unknownTypes.add(ev.type);
+  } catch (error: any) {
+    streamError = String(error && error.message ? error.message : error);
   }
+  let error = streamError || eventError;
   let ok = done !== null;
   // Protocol-drift diagnostics — drift comes in two shapes and the v0.4.0 gate
   // only caught one of them (red line 3: a silent failure must become a NAMED

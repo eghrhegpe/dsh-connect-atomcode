@@ -29,12 +29,27 @@ const STATS_PATH = '/api/atomcode-bridge/stats';
 
 const PROVIDER_PATH = '/api/atomcode-bridge/provider';
 
-/** Mount the plugin and capture EVERY route it registers. */
-function captureRoutes({ statePath, port = CLOSED_PORT, extra = {} }) {
+/**
+ * Mount the plugin and capture EVERY route it registers.
+ *
+ * `toolSink` is optional and additive: pass an array to also collect the tool
+ * definitions the mount registers. The snapshot carries per-tool counters
+ * (`ask.*` / `review.*`), and asserting those against a real tool call needs the
+ * tool object — reading them only through the route would make every such test
+ * silently self-consistent.
+ */
+function captureRoutes({ statePath, port = CLOSED_PORT, extra = {}, toolSink }) {
   const routes = [];
   const ctx = {
     get: (name) => {
-      if (name === 'tools') return { register: () => () => {} };
+      if (name === 'tools') {
+        return {
+          register: (def) => {
+            if (toolSink) toolSink.push(def);
+            return () => {};
+          },
+        };
+      }
       if (name === 'webServer') return { register: (route) => { routes.push(route); return () => {}; } };
       return undefined;
     },
@@ -670,6 +685,84 @@ describe('stats route — protocol drift signals', () => {
       rmSync(dirname(stateB), { recursive: true, force: true });
     } finally {
       statusText = ['  登录：  someone', '  模型：  qwen', '  用量：稍后统计'].join('\n');
+    }
+  });
+});
+
+describe('stats route — a refused review is still accounted for', () => {
+  // The four review refusals used to book `calls`/`err` by hand and return
+  // `duration_ms: 0`, so `msTotal` counted only the calls that reached a spawn
+  // while `calls` counted every attempt — the panel's average duration was low
+  // by construction, and a fifth refusal added later would have inherited the
+  // hole. They now exit through one `refuse()`. This drives the one refusal
+  // path that genuinely SPENDS time (a local sidecar that accepts the connection
+  // and never answers), because that is the only shape where the assertion can
+  // tell "booked" from "left at zero". The ~2s is the probe's own budget, not a
+  // sleep: it is paid once because the second candidate URL fails instantly.
+  let server;
+  let sidecarPort = 0;
+
+  before(async () => {
+    server = createServer((req) => {
+      // /health: accept and never answer, so the loopback probe burns its budget.
+      // Anything else (the /models fallback candidate): fail at once, so the
+      // test pays for ONE probe budget rather than two.
+      if (req.url !== '/health') req.socket.destroy();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    sidecarPort = server.address().port;
+  });
+  after(() => {
+    server.closeAllConnections?.();
+    server.close();
+  });
+
+  it('a refusal that waited is counted in calls, err and msTotal', async () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-acc-')), 'sessions.json');
+    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-acc-home-'));
+    const repo = mkdtempSync(join(tmpdir(), 'atomcode-acc-repo-'));
+    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
+    writeFileSync(
+      join(fakeHome, '.atomcode', 'config.toml'),
+      [
+        '[providers.hanging]',
+        `base_url = "http://127.0.0.1:${sidecarPort}/v1"`,
+        'api_key = "sk-test"',
+      ].join('\n'),
+      'utf8',
+    );
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      const tools = [];
+      const routes = captureRoutes({ statePath, toolSink: tools });
+      const statsRoute = routes.find((r) => r.path === STATS_PATH);
+      const review = tools.find((t) => t.name === 'atomcode_review');
+      assert.ok(review, 'the review tool must be registered');
+      const r = await review.execute({ working_dir: repo }, {});
+      assert.equal(r.ok, false);
+      assert.match(r.error, /is not responding/, 'the dead-sidecar refusal is the path under test');
+      assert.ok(
+        r.duration_ms >= 1500,
+        'a refusal must report the time it really spent, not a hardcoded 0',
+      );
+      const { body } = await callRoute(statsRoute);
+      assert.equal(body.review.calls, 1);
+      assert.equal(body.review.err, 1);
+      assert.ok(
+        body.review.msTotal >= 1500,
+        'a refusal that waited must not leave msTotal at 0 — the average duration would be low by construction',
+      );
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = savedUserProfile;
+      rmSync(dirname(statePath), { recursive: true, force: true });
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 });
