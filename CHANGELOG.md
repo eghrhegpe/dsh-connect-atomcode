@@ -41,8 +41,10 @@ npm tarball 的这份文件（`CHANGELOG.md` 已列入 `package.json` 的 `files
   `0.4.1` 这个号直到 `7434249`（10-15）才真正对齐进文件。所以下面按**主题**分组，
   不假装能精确切到某个版本号上——存疑的地方就写出来。
 - ⚠️ **本节定位 2026-10-16 修正**：本文件是**市场给用户看的更新日记**（见文首），不是维护者档案。
-  旧版本号下的历史条目里仍混有内部重构、测试策略、"为什么之前测试是绿的"叙事——那些按旧标准写的，
-  **保留原样**作为决策档案：回改历史等于改历史、代价大于收益。新条目一律按文首尺子写。
+  同日清掉了旧条目里的内部重构与测试工程（`apply()` 拆分、loopback 判据合并、`detectProfileKey` 修 bug 等）——
+  那些是措辞问题不是事实问题，提交与决策仍在 `git log` / `docs/DECISIONS.md`，改写不构成篡改历史。
+  仅保留不可替代的记录原样：`0.3 / 0.4` 边界混的说明、`0.2.0` 移植自上游的诚实声明。
+  新条目一律按文首尺子写。
 
 ---
 
@@ -54,7 +56,7 @@ npm tarball 的这份文件（`CHANGELOG.md` 已列入 `package.json` 的 `files
 
 ---
 
-## 0.4.2 — 2026-10-16（daemon 诊断具名 · apply 拆分收尾）
+## 0.4.2 — 2026-10-16（daemon 诊断具名 · tools 截断挂牌）
 
 ### 新增
 
@@ -70,19 +72,6 @@ npm tarball 的这份文件（`CHANGELOG.md` 已列入 `package.json` 的 `files
   一轮已经拿到完整回复的回合被当成失败；现在降级为「下次续接开新会话」（与读侧一致），
   并经 `onError` 观察者上报到 `stats.sessionsError`——面板「侧边会话」卡片降级时多一行具名原因。
   EISDIR/ENOTDIR 两侧归到同一句话，不再同一根因两条措辞让按文本去重永远失效。
-
-### 变更 / 工程
-
-- **`apply()` 四段拆分**（`9f60e4e` → `c265e7c`）：`readConfig`（纯函数，四个常量上移模块级）、
-  `createRuntime`（挂载期状态，`return` 里 11 个名字成为可读清单）、`mountRoutes`（两条路由注册与注销
-  同函数首尾，cleanup 有编译器保护）、两件工具各自 mount（description 与其 `register()` 同作用域）。
-  `apply()` 从 1206 行降到约 60 行；三段都以「搬走的文本与原件逐字一致 + 工具定义快照 md5 不变
-  （`c40bc9500628aaae16b9a72754d308af`）」为证据——13 个套件盖的是行为，盖不住两段中文描述的逐字拼接。
-- **两个 state store 共用 state-file 层**（`8a304f8`）；EISDIR 从「quarantine」改为按配置写错处理，
-  不再把用户的目录 rename 成 `<dir>.corrupt-<ts>`。
-- **工具定义快照脚本入库**（`0ae39dc`，`scripts/`）：拆 apply 前的字节级护栏，离线零依赖，刻意不进 `npm test`。
-- **ask-glue 的偶发失败自解释**（`60babb9`）：mock logger 不再吞掉挂载期上报的降级原因，
-  `execOk(r, ask)` 让「回合失败」与「成功但没记账」是两条不同的失败信息，不会再混成同一个 ENOENT。
 
 ---
 
@@ -102,50 +91,15 @@ npm tarball 的这份文件（`CHANGELOG.md` 已列入 `package.json` 的 `files
 
 ### 修复
 
-- 额度卡缩进错一层，导致它不在网格里、跨满整行；改单主数字；工具统计改内联对齐；额度卡移到末位（读得最勤的放最后）。
-- `authored` 判据改为「**值偏离出厂缺省**」，而不是「配置里有这个键」——旧服务端会把用户自己设的
-  `approval_mode: ask` 说成「插件默认」。
-- **无证据时不得声称「插件默认」**（同一类洞的第二次修：不是所有 host 都发得出 `config.defaults`）。
-- 描述改用 `locale/` 目录（不是 `package.json` 里的对象）；`session key` 用 `resolve` 规范化 Windows 路径。
-- 探针 deadline、TOML 行内注释解析、provider 回显标注。
-- 四处可验证的洞一并收口。
-- **「review 本地端点即时警告」此前一次都没真正出现过**：host 把 endpoint 表写在
-  `provider.review.endpoints`，渲染侧却从 `provider.endpoints`（分支根）读，而根上从来没有这个键——
-  于是那段「代理一停 review 立刻断」在生产里恒为空字符串。两半各自的测试都是绿的，因为
-  `stats-route` 断言的是 host 那一半、`client-fns` 的 fixture 是自己手写的另一半形状，
-  **没有任何一条断言把 host 的真实快照喂给渲染侧的读取函数**。现在读路径对齐到 slot，
-  并新增 `test/snapshot-contract.test.mjs` 专门守这条接缝（先跑旧产物确认它红，才改成绿）。
-- **`provider` 路由的 HEAD 以前会带 body**：stats 路由早就只回 header（注释还专门写了理由），
-  provider 路由放行 HEAD 却照常 `writeJson`。现已对齐；两条路由的 HEAD 断言也从「只测状态码」
-  加强为「必须无 payload」——只测状态码正是这条纪律能被漏掉一半的原因。
-- **provider 优先级阶梯不再有两份**：execute 侧四档（含 `argument`），面板侧自己抄了一份三档的，
-  改一边不会动另一边。现在面板侧复用同一个 `resolveProvider`（复用已读的 picks，不额外多读一次文件）；
-  review 空档仍报 `auto`，与 ask 的 `atomcode` 是两个语义，不是同一个旋钮。
-- **review 的 stdout 累积加了上限**：原来是 `stdout += chunk` 到子进程自己停为止，而墙钟熔断只停
-  「等」不停「攒」——一个开始刷日志的 CLI 能把 host 内存吃光。现在边上限边排空（不排空会反向堵住
-  子进程），且**超限即失败并出口具名**：`--json` 模式下 stdout 就是那份 findings 文档，被截断的文档
-  「能解析」比不能解析更危险——它读起来像一份干净的评审。stderr 同理，只留前 8 KB（消费者本来就只取 2000 字符）。
-- **`detectProfileKey` 从此有测试，且两处真 bug 修掉**：显式的 `DSH_PROFILE` 原来要过
-  `web/desktop/headless` 三词白名单，白名单外的合法值被**丢掉**、答案落到"猜"上；argv 启发式原来是
-  对 `process.argv.join(' ')` 跑 `/dsh.*\b(desktop|web)\b/i`，会跨参数边界匹配、也会被
-  `/opt/dsh-tools/webpack.config.js` 这种路径骗到。现在环境变量即权威，argv 改为**逐 token 精确匹配**。
-  判不出 profile 时**在 mount 时具名**（原来静默）：空前缀会让两个 profile 在共享的 `sessions.json`
-  里撞同一个 `default::` 键，一侧的 `continue` 会续上另一侧的会话。
-- **loopback 判据从两份手写副本改为一份真源**（`src/shared/loopback.ts`，两半各自 import；
-  host 侧产物 `lib/loopback.js`）。两份一致所以一直没人发现，但"一致的两份"仍是两份——
-  哪天其中一份先学会新的 loopback 写法，另一半就会与它不一致。
-
-### 性能
-
-- 模块级共享 stats 缓存：20 个会话从 4 req/s 降到 0.2 req/s。
-
-### 文档 / 工程
-
-- `README.md` 的三合一职责拆开：证据档案 → `docs/AtomGit-网关与-review-通路.md`，
-  治理记录 → 本文件 + `docs/DECISIONS.md`。
-- 探针脚本从仓库根归位到 `scripts/probes/`（含成本标注）——结论与脚本一起入库，证据链可复现。
-- `scripts.test` 链里的套件数与 test 数**不写进任何文档**（写死过一次，13 分钟后就过期了）。
-  后续 `scripts/test.mjs` 自动发现 `test/*.test.mjs`，把"新套件没挂进链"这条纪律从代码层消掉。
+- **面板不再把你自己设的值说成「插件默认」**：判据改为「值偏离出厂缺省」；拿不到出厂缺省时**不说**"插件默认"。
+- **额度卡布局修好**：原先缩进错一层导致它不在网格里、跨满整行；改单主数字、工具统计内联对齐、额度卡移到末位。
+- **「代理一停 review 立刻断」这句警告此前一次都没真正出现过**：读路径两侧读的不是同一个键，于是它恒为空；
+  现在真的显示了（新增 `test/snapshot-contract.test.mjs` 守这条接缝）。
+- **review 进程刷日志不再吃光内存**：stdout / stderr 都加上限，超限即失败并出口具名——`--json` 模式下
+  被截断的 findings 文档「能解析」比不能解析更危险。
+- **多个 profile 不再续上别人的会话**：判不出是哪个 profile 时**在挂载时报错**（原来静默），
+  两个 profile 曾会撞同一个会话键。
+- **模块级共享 stats 缓存**：20 个会话从 4 req/s 降到 0.2 req/s。
 
 ---
 
@@ -170,11 +124,6 @@ npm tarball 的这份文件（`CHANGELOG.md` 已列入 `package.json` 的 `files
   卡片 summary 不再重复描述。
 - 不再抹掉中途 error 事件——完成的回合可以带非空 error 出去。
 - 「评审第 2 条」的彻底修法：给 CLI argv 加**正向断言**（原来只有"没崩"的弱断言）。
-
-### 变更
-
-- **测试与文档的取值纪律**：`stats-route` 覆盖面板会解引用的每一个字段；
-  额度载荷以「真实抓取」为准（`Captured verbatim ... 5.2.3`）。
 
 ---
 
