@@ -1107,63 +1107,40 @@ function mountRoutes({
   };
 }
 
-export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
-  // Resolved once, here, and handed to createRuntime() as the whole `config`
-  // object. Each scope destructures only the names it consumes, so a field that
-  // nobody reads any more disappears from a short list instead of lingering as a
-  // stale binding at the top of a thousand-line function. Same names in both
-  // places, on purpose: a move that also renamed things would stop being readable
-  // as proof that nothing else changed.
-  const config = readConfig(rawConfig);
+/**
+ * `atomcode_ask` — one full autonomous daemon turn, with side-conversation
+ * continuity.
+ *
+ * The description is assembled HERE rather than at the mount site: `providerHint`
+ * names the live state of `default_provider`, so it and the `register()` call that
+ * consumes it belong in the same scope. They used to be separated by hundreds of
+ * lines, which is how a description goes quietly stale against the code it
+ * describes with nothing failing.
+ *
+ * @returns {() => void} the tool’s disposer.
+ */
+function mountAskTool({
+  tools,
+  config,
+  runtime,
+}: {
+  tools: any;
+  config: Record<string, any>;
+  runtime: ReturnType<typeof createRuntime>;
+}) {
   const {
     port,
     autoStart,
-    binary,
     approvalMode,
     defaultWorkingDir,
     defaultProvider,
-    reviewDefaultProvider,
     askMaxRounds,
-    sessionKeyPrefixSource,
-    reviewWorkingDir,
-    reviewNoWeb,
-    reviewMaxRounds,
-    reviewMaxDurationSecs,
   } = config;
-
-  // `log` lives before its other uses so the store's observer can share the one
-  // `[atomcode-bridge]` prefix instead of re-typing it (and so a second logger
-  // call site cannot drift from it).
-  const log = (message: any) => ctx.logger?.warn(`[atomcode-bridge] ${message}`);
-
-  // An UNDETERMINED profile is named at mount, not left to be discovered as a
-  // wrong continuation weeks later: with no prefix, both profiles write the same
-  // `default::` key in the shared sessions.json, so a `continue: true` in one
-  // resumes the other's side conversation — a wrong-context answer with no trace
-  // of why. Named here (红线 3), and fixable by the user with one config line.
-  if (sessionKeyPrefixSource === 'none') {
-    log(
-      '无法判定 DSH profile（DSH_PROFILE 未设置，argv 里也没有 dsh 的 web/desktop 子命令）：' +
-        'sessions.json 将不带 profile 前缀。若本机同时跑 web 与 desktop，两侧的会话续接会共用同一个键、互相串线——' +
-        '在插件配置里设 session_key_prefix 可消除歧义。',
-    );
-  }
-
-  // Everything that accumulates across the mount now lives in one object rather
-  // than as ~420 lines of closures declared right here.
-  const runtime = createRuntime({ config, log });
   const {
     stats,
     sessions,
-    providerStore,
     resolveProvider,
-    refreshHealth,
-    ensureDaemonStarted,
     ensureDaemon,
-    readQuota,
-    refreshPanelState,
-    refreshModelCatalog,
-    reviewProvision,
   } = runtime;
 
   // Said out loud in BOTH tool descriptions. The most common wrong move against
@@ -1183,9 +1160,6 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
     '优先级：本参数 > 详情页面板上选的档位 > 插件配置 default_provider' +
     (defaultProvider ? `（当前 default_provider="${defaultProvider}"）` : '（当前未配 default_provider）') +
     ' > AtomCode 自己的默认档位；返回里的 provider= 是 daemon 报的真实生效值。';
-
-  const tools = ctx.get('tools');
-  if (tools === undefined) return; // inject declares it; belt and braces.
 
   // ── atomcode_ask：侧边对话（daemon 自主回合 + 会话连续性） ──────────────
   const disposeAsk = tools.register({
@@ -1417,6 +1391,43 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
     },
   });
 
+  return disposeAsk;
+}
+
+/**
+ * `atomcode_review` — one-shot code review through the CLI subcommand.
+ *
+ * Same reason as mountAskTool() for building the description here: the note
+ * about which provider will be used has to sit next to the `register()` that
+ * ships it, so the two cannot describe different ladders.
+ *
+ * @returns {() => void} the tool’s disposer.
+ */
+function mountReviewTool({
+  tools,
+  config,
+  runtime,
+  log,
+}: {
+  tools: any;
+  config: Record<string, any>;
+  runtime: ReturnType<typeof createRuntime>;
+  log: (message: any) => void;
+}) {
+  const {
+    binary,
+    reviewDefaultProvider,
+    reviewWorkingDir,
+    reviewNoWeb,
+    reviewMaxRounds,
+    reviewMaxDurationSecs,
+  } = config;
+  const {
+    stats,
+    resolveProvider,
+    reviewProvision,
+  } = runtime;
+
   // ── atomcode_review：one-shot 代码评审（CLI 子命令） ─────────────────────
   // Dynamically build the description: if the local config has no direct
   // [providers.<name>] entry with base_url that the review CLI can resolve,
@@ -1643,6 +1654,49 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
       };
     },
   });
+
+  return disposeReview;
+}
+
+export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
+  // Resolved once, here, and handed to every mount function as the whole
+  // `config` object — each one destructures only the fields it consumes, so a
+  // field nobody reads any more disappears from a short list instead of
+  // lingering as a stale binding at the top of a long function. Same names
+  // everywhere, on purpose: a move that also renamed things would stop being
+  // readable as proof that nothing else changed.
+  const config = readConfig(rawConfig);
+
+  // `log` lives before its other uses so the store’s observer can share the one
+  // `[atomcode-bridge]` prefix instead of re-typing it (and so a second logger
+  // call site cannot drift from it).
+  const log = (message: any) => ctx.logger?.warn(`[atomcode-bridge] ${message}`);
+
+  // An UNDETERMINED profile is named at mount, not left to be discovered as a
+  // wrong continuation weeks later: with no prefix, both profiles write the same
+  // `default::` key in the shared sessions.json, so a `continue: true` in one
+  // resumes the other’s side conversation — a wrong-context answer with no trace
+  // of why. Named here (红线 3), and fixable by the user with one config line.
+  if (config.sessionKeyPrefixSource === 'none') {
+    log(
+      '无法判定 DSH profile（DSH_PROFILE 未设置，argv 里也没有 dsh 的 web/desktop 子命令）：' +
+        'sessions.json 将不带 profile 前缀。若本机同时跑 web 与 desktop，两侧的会话续接会共用同一个键、互相串线——' +
+        '在插件配置里设 session_key_prefix 可消除歧义。',
+    );
+  }
+
+  // Everything that accumulates across the mount — the live stats bag, the two
+  // state stores, daemon liveness and spawning, the quota cache and the
+  // panel-facing state — lives in one object rather than as ~420 lines of
+  // closures declared right here.
+  const runtime = createRuntime({ config, log });
+
+  const tools = ctx.get('tools');
+  if (tools === undefined) return; // inject declares it; belt and braces.
+
+  // Each tool owns its own description string end to end.
+  const disposeAsk = mountAskTool({ tools, config, runtime });
+  const disposeReview = mountReviewTool({ tools, config, runtime, log });
 
   // `webServer` is declared in `inject`, but degrade quietly if a host mounts
   // this plugin without the route service rather than failing the whole mount.
