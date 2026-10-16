@@ -476,6 +476,25 @@
 		return `daemon 未运行（${typeof d.downMessage === "string" && d.downMessage !== "" ? d.downMessage : "原因未记录（宿主较旧）"}${d.autoStart ? "；可自动拉起" : ""}）`;
 	}
 	/**
+	* The sentence for a daemon that sent event types this client does not know, or
+	* `''` when there is nothing to say.
+	*
+	* Pure for the same reason `daemonStatusLine` is one: the rule is then testable
+	* without a browser, and the panel and the tool render cannot word one fact two
+	* ways.
+	*
+	* Silence is the DEFAULT, and here it carries meaning. An older host sends no
+	* `unknownTypes` at all, and a notice that fired on absence would cry wolf on
+	* every stock install — which is how a real warning gets trained out. Only a
+	* NON-EMPTY list is news.
+	*/
+	function protocolDriftNotice(protocol) {
+		const p = protocol && typeof protocol === "object" ? protocol : {};
+		const types = Array.isArray(p.unknownTypes) ? p.unknownTypes.filter((t) => typeof t === "string" && t !== "") : [];
+		if (types.length === 0) return "";
+		return `协议漂移：daemon 发来了本插件不认识的事件类型（${types.slice().sort().join(", ")}），AtomCode 可能已升级或改了事件名。本插件的轮数熔断靠计数 tool_start 生效——若被改名的正是这类被计数的事件，熔断会少计甚至完全不触发，此时 round_count 不可信，请调小 ask 的 max_rounds 或人工盯防。`;
+	}
+	/**
 	* The "回合边界" card's rows — a pure function so the honesty rule below is
 	* testable without a browser.
 	*
@@ -682,7 +701,8 @@
 				providerSelectModel,
 				turnBoundaryRows,
 				isLoopbackEndpoint: isLoopbackBaseUrl,
-				daemonStatusLine
+				daemonStatusLine,
+				protocolDriftNotice
 			};
 			async function postProvider(slotName, value) {
 				try {
@@ -1028,6 +1048,7 @@
 						msTotal: 0
 					};
 					const proto = data.protocol || {};
+					const protoNotice = protocolDriftNotice(proto);
 					const prov = data.provider || null;
 					const retryNote = cfg.daemonRetrySecs > 0 ? cfg.daemonRetrySecs + "s" : "每次轮询";
 					const liveResetSecs = liveRemaining(quota.resetInSecs, quota.fetchedAt, Date.now());
@@ -1049,7 +1070,7 @@
 							...S.staleReason
 						},
 						title: error
-					}, error) : null), proto.quotaTextDrift ? h("div", { style: S.notice }, "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。") : null, cfg.reviewAvailable ? null : h("div", { style: S.notice }, "代码评审（atomcode_review）当前不可用：" + (cfg.reviewReason || "本机 AtomCode 配置没有可用的直连 provider") + "。侧边咨询（atomcode_ask）不受影响。"), h("div", { style: S.grid }, h("div", { style: S.card }, h("p", { style: {
+					}, error) : null), proto.quotaTextDrift ? h("div", { style: S.notice }, "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。") : null, protoNotice ? h("div", { style: S.notice }, protoNotice) : null, cfg.reviewAvailable ? null : h("div", { style: S.notice }, "代码评审（atomcode_review）当前不可用：" + (cfg.reviewReason || "本机 AtomCode 配置没有可用的直连 provider") + "。侧边咨询（atomcode_ask）不受影响。"), h("div", { style: S.grid }, h("div", { style: S.card }, h("p", { style: {
 						...S.cardTitle,
 						display: "flex",
 						alignItems: "center",

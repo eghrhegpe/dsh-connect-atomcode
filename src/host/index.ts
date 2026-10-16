@@ -259,6 +259,13 @@ function buildStatsBody(stats: Record<string, any>, quota: any) {
       daemonVersion: stats.daemonVersion,
       verifiedGeneration: '5.x',
       quotaTextDrift: stats.quotaDriftSeen,
+      // Same species as `quotaTextDrift` above — a silent degradation turned
+      // into an observable fact — and the sharper instance of it. A renamed
+      // `tool_start` leaves every turn looking like a clean success (see
+      // askChat's `unknownTypes`), while the round fuse that counts those
+      // events quietly stops existing. The panel is where a human sees it
+      // without having to read a tool result first.
+      unknownTypes: stats.protocolUnknownTypes,
     },
     // CodingPlan quota. Only the daemon's `status` command carries it (as
     // localized text), so this branch is best-effort and says why when empty.
@@ -472,6 +479,25 @@ function readConfig(rawConfig: Record<string, any>) {
 }
 
 /**
+ * The resolved configuration, DERIVED from `readConfig` instead of written out
+ * beside it (one fact, one place — a hand-maintained copy is a copy that starts
+ * lying the day a field moves).
+ *
+ * The three assembly functions below used to take `config: Record<string, any>`,
+ * which erased the type of every field at the exact seam where the 24 field
+ * names are matched up. What hid behind that is not theoretical: a mistyped
+ * `daemonStartAttempsX` destructures to `undefined`, and because every field has
+ * a fallback for a missing value, `for (i < undefined)` merely polls zero times
+ * — the daemon then silently never starts and NOTHING raises. That is red line
+ * 3's forbidden shape, sitting in the one place the compiler was not watching.
+ *
+ * Measured before the change: injecting a destructure of a key `readConfig`
+ * never returns typechecked CLEAN. With this type it is a TS2339, which is what
+ * makes the 24 names a checked contract rather than a convention.
+ */
+type HostConfig = ReturnType<typeof readConfig>;
+
+/**
  * Everything the plugin accumulates while it is mounted, in one object.
  *
  * This block used to be declared inline in `apply()`, ~420 lines of closures.
@@ -491,13 +517,13 @@ function readConfig(rawConfig: Record<string, any>) {
  * observer should keep leaning on that ordering is a separate question, and a
  * separate commit.
  *
- * @param {{ config: Record<string, any>, log: (message: any) => void }} deps
+ * @param {{ config: HostConfig, log: (message: any) => void }} deps
  */
 function createRuntime({
   config,
   log,
 }: {
-  config: Record<string, any>;
+  config: HostConfig;
   log: (message: any) => void;
 }) {
   const {
@@ -668,6 +694,12 @@ function createRuntime({
     },
     defaults: { approvalMode: DEFAULT_APPROVAL_MODE, askMaxRounds: DEFAULT_ASK_MAX_ROUNDS },
     quotaDriftSeen: false,
+    // SSE event types the daemon sent that we did not recognize. Accumulated as
+    // a UNION across every ask turn of this mount: the fact worth keeping is
+    // "has this ever been seen", and letting a later clean turn erase the
+    // evidence would make a one-off (or an intermittent) drift invisible on the
+    // panel — the very silent degradation red line 3 forbids.
+    protocolUnknownTypes: [] as string[],
     ask: { calls: 0, ok: 0, err: 0, msTotal: 0, tokens: 0 },
     review: { calls: 0, ok: 0, err: 0, msTotal: 0 },
   };
@@ -1199,7 +1231,7 @@ function mountAskTool({
   runtime,
 }: {
   tools: any;
-  config: Record<string, any>;
+  config: HostConfig;
   runtime: ReturnType<typeof createRuntime>;
 }) {
   const {
@@ -1289,9 +1321,14 @@ function mountAskTool({
           stop_reason: { type: 'string' },
           provider: { type: 'string' },
           providerReported: { type: 'boolean', description: 'provider 是否来自 daemon SSE 的 runtime_info（true = 远端实测值；false = daemon 未报，回显本插件请求值、未经远端证实——daemon 升级后若不再发 runtime_info，每回合都会带 false 并标注）' },
+          protocol_unknown_types: {
+            type: 'array',
+            description: '本回合 daemon 发来、本插件不认识的事件类型（空数组 = 词汇表未变，是常态；恒有本字段，故「没观察到漂移」与「没检查漂移」不会混淆）。非空说明 AtomCode 可能已升级或改了事件名。注意：轮数熔断靠计数 tool_start 生效，若被改名的正是这类被计数的事件，熔断会少计甚至完全不触发——此时 round_count 不可信',
+            items: { type: 'string' },
+          },
           error: { type: 'string' },
         },
-        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'tools_truncated', 'stop_reason', 'provider', 'providerReported', 'error'],
+        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'tools_truncated', 'stop_reason', 'provider', 'providerReported', 'protocol_unknown_types', 'error'],
         additionalProperties: false,
       },
       render(_args: any, value: any) {
@@ -1320,6 +1357,23 @@ function mountAskTool({
           }
           if (value.providerReported === false) {
             lines.push('[注意：daemon 未报 runtime_info，provider= 是本插件回传请求值、未经远端证实（daemon 可能已升级）]', '');
+          }
+          // The drift shape NEITHER error path can report, because the turn
+          // SUCCEEDED and carried content — so it reads as a clean turn unless
+          // said out loud here. It is worse than a plain caveat: the round fuse
+          // that bounds this turn counts `tool_start`, so a renamed tool event
+          // leaves the fuse silently disarmed while every surface still reports
+          // success. Say which of the two it is rather than hedging.
+          if (Array.isArray(value.protocol_unknown_types) && value.protocol_unknown_types.length > 0) {
+            lines.push(
+              `[注意：本回合 daemon 发来本插件不认识的事件类型（${value.protocol_unknown_types.join(', ')}），` +
+                'AtomCode 可能已升级或改了事件名。本端轮数熔断靠计数 tool_start 生效——' +
+                (value.round_count === 0
+                  ? '而本回合轮数为 0：若被改名的是这类事件，熔断此刻已是失效状态。'
+                  : '若被改名的是这类事件，熔断会少计，下面的 round_count 偏小。') +
+                '可调小 max_rounds 或人工盯防本轮]',
+              '',
+            );
           }
           const meta = [];
           meta.push(`session_id=${value.session_id}`);
@@ -1355,6 +1409,7 @@ function mountAskTool({
         stop_reason: '',
         provider: askProvider || 'default',
         providerReported: false,
+        protocol_unknown_types: [],
         error,
       });
       const workDir =
@@ -1442,6 +1497,13 @@ function mountAskTool({
       } else {
         stats.ask.err += 1;
       }
+      // Accumulate protocol drift for the panel, on EVERY turn rather than only
+      // successful ones: drift is a fact about the wire, not a property of the
+      // reply, and a failed turn that still named an unknown type is exactly the
+      // evidence a later diagnosis needs. Union, never replace — see the bag.
+      for (const unknownType of result.unknownTypes) {
+        if (!stats.protocolUnknownTypes.includes(unknownType)) stats.protocolUnknownTypes.push(unknownType);
+      }
       if (result.ok && result.sessionId) sessions.set(sessionKey, result.sessionId);
       // Truncation is MARKED, never silent: a silently clipped 200KB reply reads
       // to the model like a complete answer, which is how a half-copied report
@@ -1467,6 +1529,7 @@ function mountAskTool({
         stop_reason: result.stopReason,
         provider: result.provider,
         providerReported: result.providerReported,
+        protocol_unknown_types: result.unknownTypes,
         error: result.error,
       };
     },
@@ -1491,7 +1554,7 @@ function mountReviewTool({
   log,
 }: {
   tools: any;
-  config: Record<string, any>;
+  config: HostConfig;
   runtime: ReturnType<typeof createRuntime>;
   log: (message: any) => void;
 }) {

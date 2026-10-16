@@ -91,6 +91,39 @@ describe('daemon /chat SSE client — hermetic', () => {
     assert.deepEqual(r.tools, [{ name: 'read', success: true }]);
     assert.equal(r.stopReason, 'stopped');
     assert.equal(r.provider, 'Fake-Provider-A', 'provider comes from runtime_info');
+    assert.deepEqual(
+      r.unknownTypes,
+      [],
+      'no drift observed must be reported as an EMPTY list, not an absent field — '
+        + '"not checked" and "nothing seen" are different facts',
+    );
+  });
+
+  it('a SUCCESSFUL turn carrying an unknown event type still reports it', async () => {
+    // The hole both error gates missed. Gate 1 needs the turn to have FAILED,
+    // gate 2 needs it to have produced nothing — so a daemon that renames an
+    // event while leaving `text`/`done` intact came back ok:true with the drift
+    // thrown away. Here the renamed event is `tool_begin`, and the consequence
+    // is asserted rather than described: `roundCount` stays 0, so the round fuse
+    // (which counts `tool_start`) is silently disarmed for this very turn.
+    const fake = await startFakeDaemon((req, res) =>
+      respondSse(res, [
+        { type: 'text', content: 'all good' },
+        { type: 'tool_begin', name: 'read' },
+        { type: 'done', session_id: 'sess-x', tokens: 1, stop_reason: 'stopped' },
+      ]),
+    );
+    open.push(fake);
+    const r = await askChat({ message: 'hi', port: fake.port, timeoutMs: 10_000 });
+    assert.equal(r.ok, true, 'the turn genuinely succeeded — this is why it stayed silent');
+    assert.equal(r.reply, 'all good');
+    assert.equal(r.error, '');
+    assert.deepEqual(
+      r.unknownTypes,
+      ['tool_begin'],
+      'the drift must survive a successful turn (红线 3)',
+    );
+    assert.equal(r.roundCount, 0, 'premise: the renamed tool event is not counted, so the fuse is blind');
   });
 
   it('falls back to the tokens event when done omits tokens', async () => {

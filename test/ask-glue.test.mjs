@@ -62,6 +62,12 @@ function startFakeDaemon(state) {
         for (let i = 0; i < (state.toolStarts || 0); i += 1) {
           events.push({ type: 'tool_start', name: `synthetic-tool-${i}` });
         }
+        // Drift injection: event types this client does not know. Deliberately
+        // ADDITIVE and placed before a perfectly good `text`/`done`, because
+        // that is the shape that used to pass for a clean success.
+        for (const type of state.unknownTypes || []) {
+          events.push({ type, name: 'synthetic-unknown' });
+        }
         events.push({ type: 'text', content: 'ok' });
         events.push({
           type: 'done',
@@ -93,11 +99,21 @@ function startFakeDaemon(state) {
  * never written) surfaced as a bare ENOENT that pointed at the symptom and hid
  * the cause. Capturing the name here is what lets `readState` report it.
  */
-async function mountAsk(mod, { statePath, port, keyPrefix, config = {} }) {
+async function mountAsk(mod, { statePath, port, keyPrefix, config = {}, withRoutes = false }) {
   const tools = [];
+  const routes = [];
   const mountWarnings = [];
   const ctx = {
-    get: (name) => (name === 'tools' ? { register: (def) => { tools.push(def); return () => {}; } } : undefined),
+    get: (name) => {
+      if (name === 'tools') return { register: (def) => { tools.push(def); return () => {}; } };
+      // Opt-in. Registering the webServer is what makes the mount build its HTTP
+      // routes; leaving it off by default keeps the cases that never read the
+      // panel running the same code path they ran before.
+      if (name === 'webServer') {
+        return withRoutes ? { register: (route) => { routes.push(route); return () => {}; } } : undefined;
+      }
+      return undefined;
+    },
     logger: {
       warn: (m) => mountWarnings.push(String(m)),
       error: (m) => mountWarnings.push(String(m)),
@@ -118,7 +134,30 @@ async function mountAsk(mod, { statePath, port, keyPrefix, config = {} }) {
   const ask = tools.find((t) => t.name === 'atomcode_ask');
   assert.ok(ask, 'atomcode_ask must be registered');
   ask.mountWarnings = mountWarnings;
+  ask.routes = routes;
   return ask;
+}
+
+/**
+ * Drive a registered route for real and capture what it wrote.
+ *
+ * The stats snapshot is the only place the panel-facing half of protocol drift
+ * lives, and it is built inside the mount — so asserting it means calling the
+ * route the panel actually calls, not rebuilding the body here.
+ */
+async function callRoute(route, { method = 'GET', headers = {} } = {}) {
+  const captured = { status: 0, body: null, ended: false };
+  const response = {
+    writeHead(status) { captured.status = status; },
+    end(payload) {
+      captured.ended = true;
+      if (payload === undefined) return;
+      try { captured.body = JSON.parse(payload); } catch { captured.body = null; }
+    },
+  };
+  await route.handler({ method, headers }, response);
+  assert.equal(captured.ended, true, 'the handler must end the response');
+  return captured;
 }
 
 /**
@@ -632,5 +671,80 @@ describe('atomcode_ask — bookkeeping that cannot be written does not fail the 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('atomcode_ask — a renamed daemon event is NAMED, never a silent success', () => {
+  // The drift shape neither of askChat's error gates can report, because both
+  // require the turn to have FAILED or produced NOTHING. A daemon that renames an
+  // event while leaving `text`/`done` intact therefore came back as a clean
+  // success with the evidence discarded — and when the renamed event is
+  // `tool_start`, the round fuse (which COUNTS it) quietly stops existing while
+  // every surface still says ok. These cases assert the signal end to end:
+  // wire → aggregation → tool output → stats snapshot the panel reads.
+  const state = { requests: [], counter: 300, mode: 'ok', unknownTypes: [] };
+  let fake;
+
+  before(async () => { fake = await startFakeDaemon(state); });
+  after(() => fake.server.close());
+  beforeEach(() => { state.requests.length = 0; state.unknownTypes = []; });
+
+  it('a SUCCESSFUL turn carrying an unknown SSE type reports it on the tool output', async () => {
+    state.unknownTypes = ['tool_begin'];
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+    assert.equal(r.ok, true, 'the turn must genuinely succeed — otherwise the other gate would explain it');
+    assert.deepEqual(r.protocol_unknown_types, ['tool_begin'], 'the drift must survive success (红线 3)');
+    assert.equal(r.round_count, 0, 'premise: the renamed event is not counted, so the fuse is disarmed');
+  });
+
+  it('a clean turn reports an EMPTY list rather than omitting the field', async () => {
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+    assert.deepEqual(r.protocol_unknown_types, [], '"not checked" and "nothing seen" must not look alike');
+    assert.ok(
+      ask.output.schema.required.includes('protocol_unknown_types'),
+      'a drift marker that may be omitted is not a contract (same rule as tools_truncated)',
+    );
+  });
+
+  it('the render names the type AND says the round fuse is disarmed', async () => {
+    state.unknownTypes = ['tool_begin'];
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+    const text = ask.output.render({}, r).map((part) => part.text).join('\n');
+    assert.match(text, /不认识的事件类型（tool_begin）/, 'the drifted type must be named, not summarised');
+    assert.match(text, /轮数为 0/, 'and the consequence must be stated, not hedged');
+  });
+
+  it('the drift reaches the stats snapshot the panel polls', async () => {
+    state.unknownTypes = ['tool_begin'];
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port, withRoutes: true });
+    const stats = ask.routes.find((r) => r.path === '/api/atomcode-bridge/stats');
+    assert.ok(stats, 'the stats route must be registered');
+    await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+    const res = await callRoute(stats, { headers: { host: '127.0.0.1:3080' } });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.protocol.unknownTypes, ['tool_begin']);
+  });
+
+  it('a later clean turn does NOT erase a drift already seen', async () => {
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port, withRoutes: true });
+    const stats = ask.routes.find((r) => r.path === '/api/atomcode-bridge/stats');
+    state.unknownTypes = ['tool_begin'];
+    await ask.execute({ message: 'drifting', working_dir: WORKDIR }, {});
+    state.unknownTypes = [];
+    await ask.execute({ message: 'clean', working_dir: WORKDIR }, {});
+    const res = await callRoute(stats, { headers: { host: '127.0.0.1:3080' } });
+    assert.deepEqual(
+      res.body.protocol.unknownTypes,
+      ['tool_begin'],
+      'an intermittent drift that a later turn erases is invisible again — the union is the point',
+    );
   });
 });

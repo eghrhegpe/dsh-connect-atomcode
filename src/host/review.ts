@@ -29,7 +29,7 @@
  */
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { defaultBinary } from './daemon.ts';
 
 /** Spawn seam shape: the `child_process.spawn` surface this module calls. */

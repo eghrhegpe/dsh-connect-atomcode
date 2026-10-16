@@ -14,7 +14,7 @@
  *
  * @module dsh-connect-atomcode/client
  */
-import type { CSSProperties, ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import type {
   ProviderBranch,
   ProviderSlotName,
@@ -36,7 +36,14 @@ import {
   windowLabel,
   panelStyle,
 } from './quota.ts';
-import { providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint, daemonStatusLine } from './rows.ts';
+import {
+  providerRows,
+  providerSelectModel,
+  turnBoundaryRows,
+  isLoopbackEndpoint,
+  daemonStatusLine,
+  protocolDriftNotice,
+} from './rows.ts';
 
 // The loader hands the factory an untyped `require`; the host resolves
 // `react` from the web boot's seed table.
@@ -118,6 +125,7 @@ const REGISTRATION = {
       turnBoundaryRows,
       isLoopbackEndpoint,
       daemonStatusLine,
+      protocolDriftNotice,
     };
 
     async function postProvider(slotName: ProviderSlotName, value: string) {
@@ -641,6 +649,9 @@ const REGISTRATION = {
         const ask = data.ask || { calls: 0, ok: 0, err: 0, msTotal: 0, tokens: 0 };
         const review = data.review || { calls: 0, ok: 0, err: 0, msTotal: 0 };
         const proto = data.protocol || {};
+        // Worded once, rendered once: `''` on an ordinary install (the host sends
+        // no unknown types), so the notice cannot become furniture.
+        const protoNotice = protocolDriftNotice(proto);
         // The model knobs. `null` = an older host that has no provider branch;
         // the rows still render, disabled and WITH a reason, so the panel never
         // shows an empty dropdown (红线 3).
@@ -703,6 +714,11 @@ const REGISTRATION = {
                   '下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。'
               )
             : null,
+          // The SSE-vocabulary twin of the notice above: a renamed event type is
+          // the same class of silent degradation (see protocolDriftNotice), and
+          // it is the one that can disarm the round fuse while every turn keeps
+          // reporting success. Shown whenever the daemon has EVER sent one.
+          protoNotice ? h('div', { style: S.notice }, protoNotice) : null,
           // 评审 CLI 受限时把原因摊开：这是本机配置事实，不是临时故障
           cfg.reviewAvailable
             ? null

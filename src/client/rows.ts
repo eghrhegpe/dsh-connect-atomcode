@@ -11,6 +11,7 @@ import type {
   BoundaryRow,
   ConfigBranch,
   DaemonBranch,
+  ProtocolBranch,
   ProviderBranch,
   ProviderRow,
   ProviderSelectModel,
@@ -46,6 +47,35 @@ export function daemonStatusLine(
       ? d.downMessage
       : '原因未记录（宿主较旧）';
   return `daemon 未运行（${why}${d.autoStart ? '；可自动拉起' : ''}）`;
+}
+
+// ── 协议漂移（面板告警） ──────────────────────────────────────────────────
+
+/**
+ * The sentence for a daemon that sent event types this client does not know, or
+ * `''` when there is nothing to say.
+ *
+ * Pure for the same reason `daemonStatusLine` is one: the rule is then testable
+ * without a browser, and the panel and the tool render cannot word one fact two
+ * ways.
+ *
+ * Silence is the DEFAULT, and here it carries meaning. An older host sends no
+ * `unknownTypes` at all, and a notice that fired on absence would cry wolf on
+ * every stock install — which is how a real warning gets trained out. Only a
+ * NON-EMPTY list is news.
+ */
+export function protocolDriftNotice(protocol: ProtocolBranch | null | undefined): string {
+  const p: ProtocolBranch = protocol && typeof protocol === 'object' ? protocol : {};
+  const types = Array.isArray(p.unknownTypes)
+    ? p.unknownTypes.filter((t) => typeof t === 'string' && t !== '')
+    : [];
+  if (types.length === 0) return '';
+  return (
+    `协议漂移：daemon 发来了本插件不认识的事件类型（${types.slice().sort().join(', ')}），` +
+    'AtomCode 可能已升级或改了事件名。本插件的轮数熔断靠计数 tool_start 生效——' +
+    '若被改名的正是这类被计数的事件，熔断会少计甚至完全不触发，此时 round_count 不可信，' +
+    '请调小 ask 的 max_rounds 或人工盯防。'
+  );
 }
 
 // ── 回合边界 ──────────────────────────────────────────────────────────────

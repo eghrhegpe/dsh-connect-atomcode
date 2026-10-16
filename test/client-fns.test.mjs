@@ -71,7 +71,7 @@ async function loadClient(fakeRequire) {
 }
 
 const mod = await loadClient();
-const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint, daemonStatusLine } = mod.__test;
+const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint, daemonStatusLine, protocolDriftNotice } = mod.__test;
 
 describe('client __test — the formatters are exposed', () => {
   it('exports every pure helper the panel renders through', () => {
@@ -88,6 +88,7 @@ describe('client __test — the formatters are exposed', () => {
       providerRows,
       providerSelectModel,
       daemonStatusLine,
+      protocolDriftNotice,
     })) {
       assert.equal(typeof fn, 'function', `${name} must be callable from tests`);
     }
@@ -117,6 +118,39 @@ describe('daemonStatusLine — the panel shows the HOST\'s cause, never its own'
 
   it('auto-start off is not advertised as recoverable', () => {
     assert.doesNotMatch(daemonStatusLine({ up: false, downMessage: '没有任何进程在监听', autoStart: false }, null), /可自动拉起/);
+  });
+});
+
+describe('protocolDriftNotice — silence is the default, and it is the contract', () => {
+  it('an EMPTY list renders as silence', () => {
+    // 红线 3 asks for a named diagnostic; it does not ask for a permanent one.
+    // A notice that shows on every stock install is furniture, and furniture is
+    // how a real warning gets skipped.
+    assert.equal(protocolDriftNotice({ unknownTypes: [] }), '');
+  });
+
+  it('a host too old to send the field renders as silence too', () => {
+    // Absence must NOT be read as drift: an older host omits the whole field,
+    // and crying wolf at every user who has not upgraded is the failure this
+    // branch is meant to avoid.
+    assert.equal(protocolDriftNotice(undefined), '');
+    assert.equal(protocolDriftNotice(null), '');
+    assert.equal(protocolDriftNotice({ daemonVersion: '5.2.3' }), '');
+    assert.equal(protocolDriftNotice({ unknownTypes: null }), '');
+  });
+
+  it('a drifted type is named, and the fuse consequence is stated', () => {
+    const notice = protocolDriftNotice({ unknownTypes: ['tool_begin', 'a_new_thing'] });
+    assert.match(notice, /tool_begin/, 'the observed type must be named, not summarised');
+    assert.match(notice, /a_new_thing/, 'every type, not just the first');
+    assert.match(notice, /熔断/, 'the notice must say WHY it matters, not merely that something changed');
+  });
+
+  it('junk in the array cannot smuggle a blank or a non-string into the sentence', () => {
+    // The snapshot is host-supplied and an older/other build is free to send
+    // anything. A blank entry would render "（）" — a warning about nothing.
+    assert.equal(protocolDriftNotice({ unknownTypes: ['', null, undefined, 42] }), '');
+    assert.equal(protocolDriftNotice({ unknownTypes: ['ok_type', ''] }), protocolDriftNotice({ unknownTypes: ['ok_type'] }));
   });
 });
 

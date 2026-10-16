@@ -230,6 +230,25 @@ describe('snapshot contract — host snapshot read by the client reader', () => 
     assert.equal(model.warning, '');
   });
 
+  it('the protocol drift field is published by the host AND read by the client', async () => {
+    // The joint, not either half. Both halves of the `endpoints` warning once
+    // had their own passing test while the warning itself was dead — a field the
+    // client never reads looks identical to a feature that works, from the
+    // inside of each half. Assert that the host publishes the drift list and
+    // that the client reads THAT field and stays silent on it.
+    const { body, client } = await snapshotThenRender(LOOPBACK_CONFIG, null);
+    assert.deepEqual(
+      body.protocol.unknownTypes,
+      [],
+      'the host must publish the SSE drift list, empty when nothing drifted',
+    );
+    assert.equal(
+      client.protocolDriftNotice(body.protocol),
+      '',
+      'an empty list must come out as silence, not as a scare',
+    );
+  });
+
   it('a host with no usable provider still renders a disabled control with a reason', async () => {
     const { model } = await snapshotThenRender(['# no providers at all'], null);
     assert.equal(model.disabled, true);

@@ -853,6 +853,19 @@ describe('stats route — auto-start on observation', () => {
       assert.equal(typeof body.protocol, 'object');
       assert.equal(typeof body.protocol.daemonVersion, 'string');
       assert.equal(typeof body.protocol.quotaTextDrift, 'boolean');
+      // The SSE half of the same family, and the sharper instance of it: a
+      // renamed `tool_start` leaves every turn reporting success while the round
+      // fuse counts nothing. Always an ARRAY, so the client can iterate it
+      // unguarded and an older host is the only case that yields `undefined`.
+      assert.ok(
+        Array.isArray(body.protocol.unknownTypes),
+        'the SSE drift list must always be an array, never absent',
+      );
+      assert.deepEqual(
+        body.protocol.unknownTypes,
+        [],
+        'a mount that has run no turn has seen no drift — [] means "checked, nothing", not "unknown"',
+      );
       assert.equal(typeof body.daemon.spawnAttempts, 'number');
       assert.ok(body.config.askMaxRounds > 0, 'the ask round ceiling must be visible');
       assert.equal(typeof body.config.reviewWorkingDir, 'object', 'a missing repo dir is null, not absent');

@@ -73,6 +73,24 @@ export interface DaemonBranch {
   downMessage?: string | null;
 }
 
+/** The `protocol` branch of the stats snapshot — drift/provenance signals. */
+export interface ProtocolBranch {
+  /** Which daemon build the bridged (private, unversioned) protocol is spoken against. */
+  daemonVersion?: string | null;
+  /** The quota parser stopped recognizing the daemon's `status` text. */
+  quotaTextDrift?: boolean;
+  /**
+   * SSE event types the daemon sent that this client did NOT recognize, and `[]`
+   * when the vocabulary matched. Absent on an older host.
+   *
+   * The same species as `quotaTextDrift` one layer sharper: a renamed
+   * `tool_start` leaves every turn looking like a clean success while the
+   * bridge's round fuse — which COUNTS those events — silently stops tripping.
+   * The host publishes it so the panel can say out loud what the turn could not.
+   */
+  unknownTypes?: string[] | null;
+}
+
 /** The `quota` branch, as the renderer consumes it. */
 export interface QuotaBranch {
   available?: boolean;

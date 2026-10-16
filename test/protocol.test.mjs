@@ -62,9 +62,20 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
     assert.match(r.error, /upgrade dsh-connect-atomcode/);
   });
 
-  it('stays quiet when an unknown type rides ALONG a valid turn', async () => {
-    // One new event type among known ones is additive drift, not breakage:
-    // reporting it as a failure would train the model to ignore this error.
+  it('is not a FAILURE — but it is not SILENT either (the drift that survives success)', async () => {
+    // Two halves, and the second one used to be missing (2026-10 review: both
+    // gates above require a turn to have FAILED or produced nothing, so drift
+    // riding along a healthy turn was discarded).
+    //
+    // Half one, unchanged: one new event type among known ones is additive
+    // drift, not breakage — calling it a failure would train the model to
+    // ignore this error.
+    //
+    // Half two, the point of this case: "not a failure" had been rounded up to
+    // "not a fact". When the renamed event is one the bridge COUNTS, the round
+    // fuse goes silent with it — a `tool_start` renamed to anything else leaves
+    // roundCount at 0, so the fuse can never trip and nothing on any surface
+    // says so. The observation therefore has to outlive the success.
     const fake = await startFakeDaemon((req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end(sse([
@@ -78,7 +89,12 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
     const r = await askChat({ message: 'hi', port: fake.port, timeoutMs: 10_000 });
     assert.equal(r.ok, true, 'an additive unknown event must not fail a healthy turn');
     assert.equal(r.reply, 'fine');
-    assert.equal(r.error, '');
+    assert.equal(r.error, '', 'and it must not be dressed up as a failure');
+    assert.deepEqual(
+      r.unknownTypes,
+      ['usage_telemetry'],
+      'but the observation must survive the success — otherwise the fuse can go blind in silence',
+    );
   });
 
   it('a renamed BODY with done still intact is NOT a silent success (half drift)', async () => {
@@ -214,12 +230,12 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
 });
 
 describe('ask render — a completed turn must show its caveat, a clean one must not', () => {
-  it('surfaces value.error on ok:true, and stays silent when error is empty', () => {
-    // The carry-out fix in `askChat` is worthless if render's ok-branch hides
-    // `error` (v0.4.0's ok-branch only printed reply + meta). Pinned here: the
-    // model MUST see the caveat, and a healthy turn must NOT be smeared with
-    // one — both halves, or the next "cleanup" deletes it again.
-    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-render-home-'));
+  // Mounted ONCE for the cases below: `render` is a pure function of the value
+  // it is handed, so the mount exists only to obtain it.
+  let render;
+  let fakeHome;
+  before(() => {
+    fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-render-home-'));
     const tools = [];
     const ctx = {
       get: (name) => (name === 'tools' ? { register: (d) => { tools.push(d); return () => {}; } } : undefined),
@@ -229,22 +245,42 @@ describe('ask render — a completed turn must show its caveat, a clean one must
       effect() {},
       on() {},
     };
-    try {
-      mod.apply(ctx, { auto_start: false, port: 45995, state_path: join(fakeHome, 'sessions.json') });
-      const ask = tools.find((t) => t.name === 'atomcode_ask');
-      const render = ask.output.render; // the descriptor nests render under `output`
-      const base = {
-        reply: 'partial answer', session_id: 's', continued: false, truncated: false,
-        tokens: 1, tool_calls: 0, round_count: 0, tools: [], stop_reason: 'stopped', provider: 'P',
-      };
-      const warned = render({}, { ...base, ok: true, error: 'upstream hiccup' })[0].text;
-      assert.match(warned, /upstream hiccup/, 'the caveat must reach the model');
-      assert.match(warned, /partial answer/, 'the reply itself still comes through');
-      const clean = render({}, { ...base, ok: true, error: '' })[0].text;
-      assert.doesNotMatch(clean, /注意/, 'a healthy turn must not be smeared with a caveat');
-    } finally {
-      rmSync(fakeHome, { recursive: true, force: true });
-    }
+    mod.apply(ctx, { auto_start: false, port: 45995, state_path: join(fakeHome, 'sessions.json') });
+    const ask = tools.find((t) => t.name === 'atomcode_ask');
+    render = ask.output.render; // the descriptor nests render under `output`
+  });
+  after(() => rmSync(fakeHome, { recursive: true, force: true }));
+
+  const base = {
+    reply: 'partial answer', session_id: 's', continued: false, truncated: false,
+    tokens: 1, tool_calls: 0, round_count: 0, tools: [], stop_reason: 'stopped', provider: 'P',
+  };
+
+  it('surfaces value.error on ok:true, and stays silent when error is empty', () => {
+    // The carry-out fix in `askChat` is worthless if render's ok-branch hides
+    // `error` (v0.4.0's ok-branch only printed reply + meta). Pinned here: the
+    // model MUST see the caveat, and a healthy turn must NOT be smeared with
+    // one — both halves, or the next "cleanup" deletes it again.
+    const warned = render({}, { ...base, ok: true, error: 'upstream hiccup' })[0].text;
+    assert.match(warned, /upstream hiccup/, 'the caveat must reach the model');
+    assert.match(warned, /partial answer/, 'the reply itself still comes through');
+    const clean = render({}, { ...base, ok: true, error: '' })[0].text;
+    assert.doesNotMatch(clean, /注意/, 'a healthy turn must not be smeared with a caveat');
+  });
+
+  it('surfaces the SSE drift list on ok:true, and stays silent when it is empty', () => {
+    // The same discipline as the case above, applied to the one drift shape that
+    // rides a SUCCESSFUL turn (see `askChat`'s `unknownTypes`). This is the half
+    // the MODEL reads, and it is the half that matters most: without it the
+    // bridge keeps answering ok while its round fuse counts nothing.
+    const drifted = render(
+      {},
+      { ...base, ok: true, error: '', round_count: 0, protocol_unknown_types: ['tool_begin'] },
+    )[0].text;
+    assert.match(drifted, /tool_begin/, 'the observed type must be named, not summarised');
+    assert.match(drifted, /轮数为 0/, 'and the disarmed fuse stated, since the rounds were undercounted');
+    const tidy = render({}, { ...base, ok: true, error: '', protocol_unknown_types: [] })[0].text;
+    assert.doesNotMatch(tidy, /注意/, 'an empty drift list is silence, not furniture');
   });
 });
 

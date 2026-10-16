@@ -13,6 +13,30 @@
 
 ---
 
+## 未发版 — 自 v0.4.2 起（协议漂移第三道闸门 · 类型纪律进编译期）
+
+### 修复
+
+- **成功回合携带未知 SSE 类型时不再静默**：`askChat` 原有两道具名闸门都要求回合**失败**、或**没产出任何内容**，
+  于是第三种漂移形态——事件照常、只多了一个本插件不认识的类型——被当成正常回合丢掉证据。
+  危险处在于**轮数熔断靠计数 `tool_start` 生效**：被改名的若正是它，`round_count` 会恒为 0，
+  熔断从此刻起永不触发，而每一层界面都还在报成功（红线 3 最忌讳的形态）。
+  现在这种回合照常成功，但把观测带出来：工具输出多一个 `protocol_unknown_types`
+  （**恒有本字段**，空数组 = 词汇表未变，所以「没看到漂移」与「没检查漂移」不会混；已列入 `required`，
+  与 `tools_truncated` 同一纪律——可省略的标记不算契约）。渲染层同时说出类型名与「熔断可能已失效」，
+  面板则由 `protocol.unknownTypes` 常驻提示（与 `quotaTextDrift` 同族，按**并集**累积，后续干净回合不抹除）。
+
+### 变更 / 工程
+
+- **装配边界的配置类型不再被擦除**：三个装配函数的 `config` 参数原为 `Record<string, any>`，
+  30 个字段的解构在此处全部退化为 `any`。实测：解构一个 `readConfig` 从不返回的键，`tsc` 零报错通过。
+  危害不是理论的——字段都有类型兜底，拼错拿到的 `undefined` 会被静默吞掉（如 `daemonStartAttempts` 变 `undefined`
+  则轮询零次、daemon 再也不起来且无任何报错）。现改为 `type HostConfig = ReturnType<typeof readConfig>`，拼错即 `TS2339`。
+- **`noUnusedLocals` / `noUnusedParameters` 开启**：6083 行源码只暴露 2 处死导入（`client/index.ts` 的 `CSSProperties`、
+  `review.ts` 的 `resolve`），已清。未使用检查从"靠自觉"变成编译期强制。
+
+---
+
 ## 0.4.2 — 2026-10-16（daemon 诊断具名 · apply 拆分收尾）
 
 ### 新增

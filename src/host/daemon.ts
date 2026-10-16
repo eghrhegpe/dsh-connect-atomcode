@@ -377,7 +377,7 @@ export async function* streamChat(opts: StreamChatOptions) {
     // Event types observed on the wire but absent from the vocabulary this
     // client understands (see KNOWN_SSE_TYPES above). Counted here so the
     // "ended before done" failure can name them; see the branch at the bottom.
-    const unknownTypeNames = new Set();
+    const unknownTypeNames = new Set<string>();
     // Whether ANY event in this vocabulary was recognized. This is what keeps
     // an ADDITIVE unknown type from being read as a protocol change: a stream
     // carrying real `text`/`tool_start`/`tokens` events that merely got cut
@@ -449,7 +449,8 @@ export async function* streamChat(opts: StreamChatOptions) {
  * @param {Parameters<typeof streamChat>[0]} opts
  * @returns {Promise<{ok:boolean, reply:string, sessionId:string, tokens:number,
  *   toolCalls:number, tools:Array<{name:string, success:boolean}>, stopReason:string,
- *   provider:string, providerReported:boolean, error:string}>} `ok:true` means a
+ *   provider:string, providerReported:boolean, unknownTypes:string[],
+ *   error:string}>} `ok:true` means a
  *   terminal `done` carrying deliverable content (or a legitimately empty turn
  *   with no unknown types); `error` may be non-empty ALONGSIDE ok:true — a
  *   mid-turn error event that a later `done` does not cancel. Callers must
@@ -481,7 +482,7 @@ export async function askChat(opts: StreamChatOptions) {
   // while carrying unknown types is a protocol change, not an empty turn.
   // `streamChat` already throws on the missing `done`; this covers the case
   // where it saw a terminal event of an unknown name.
-  const unknownTypes = new Set();
+  const unknownTypes = new Set<string>();
   for (const ev of events) {
     if (ev.type === 'text') reply += String(ev.content || '');
     else if (ev.type === 'session_assigned' && typeof ev.session_id === 'string') sessionId = ev.session_id;
@@ -545,6 +546,20 @@ export async function askChat(opts: StreamChatOptions) {
     providerReported,
     /** Count of tool_start events in this turn (agent rounds). */
     roundCount,
+    /**
+     * Event types seen on the wire that this client does not recognize, sorted —
+     * and ALWAYS present (`[]` when the vocabulary matched) so a caller can
+     * never confuse "no drift observed" with "drift not checked".
+     *
+     * This is the one drift shape the two `error` gates above cannot report:
+     * both of them require the turn to have FAILED or produced nothing. A
+     * daemon that renames an event while leaving `text`/`done` intact yields a
+     * turn that looks like a clean success — and when the renamed event is
+     * `tool_start`, `roundCount` stays 0 and the round fuse in `streamChat`
+     * can never trip. Red line 3: a fuse that can go blind without a word is
+     * worse than no fuse at all, because the caller believes it is armed.
+     */
+    unknownTypes: [...unknownTypes].sort(),
     // `done` does NOT erase a mid-turn error event (v0.4.0's `ok ? '' : error`
     // did, which turned a partially failed but completed turn into a silent
     // "full success"). A completed turn may therefore carry a non-empty error;
