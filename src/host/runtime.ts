@@ -186,7 +186,7 @@ export function createRuntime({
     pluginVersion,
     port,
     autoStart,
-    binaryConfigured: !!binary,
+    binaryPath: binary ?? null,
     binaryEnv,
     approvalMode,
     defaultWorkingDir: defaultWorkingDir ?? null,

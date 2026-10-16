@@ -312,13 +312,17 @@ describe('stats route — snapshot shape the panel depends on', () => {
   });
 
   it('satisfies the panel binary row fallback chain when no binary is configured', () => {
-    // client.js: `bin.configured || bin.env || '自动探测（PATH）'`
-    assert.equal(body.binary.configured, false);
+    // client.js: `bin.configured || bin.env || '自动探测（PATH）'`. Assert the VALUE
+    // the row prints, not merely that the chain is truthy: the configured-binary
+    // case (the sibling suite) satisfied a truthiness check while producing `true`,
+    // which React renders as nothing at all.
+    assert.equal(body.binary.configured, null);
     assert.equal(body.binary.env, undefined, 'no ATOMCODE_BIN in this process');
     assert.equal(body.binary.source, 'auto');
-    assert.ok(
+    assert.equal(
       body.binary.configured || body.binary.env || '自动探测（PATH）',
-      'the fallback chain must always yield a label',
+      '自动探测（PATH）',
+      'the fallback chain must yield the panel’s label text',
     );
   });
 
@@ -439,7 +443,8 @@ describe('stats route — review endpoints (what the pick DEPENDS on)', () => {
   });
 });
 
-describe('stats route — binary source reporting', () => {  it('reports the env source when ATOMCODE_BIN is set at mount time', async () => {
+describe('stats route — binary source reporting', () => {
+  it('reports the env source when ATOMCODE_BIN is set at mount time', async () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-stats-')), 'sessions.json');
     const saved = process.env.ATOMCODE_BIN;
     process.env.ATOMCODE_BIN = 'C:\\tools\\atomcode.exe';
@@ -448,10 +453,42 @@ describe('stats route — binary source reporting', () => {  it('reports the env
       const r = await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
       assert.equal(r.body.binary.env, 'C:\\tools\\atomcode.exe');
       assert.equal(r.body.binary.source, 'env', 'the panel labels this row from `source`');
-      assert.equal(r.body.binary.configured, false, 'config.binary is unset here');
+      assert.equal(r.body.binary.configured, null, 'config.binary is unset here');
     } finally {
       if (saved === undefined) delete process.env.ATOMCODE_BIN;
       else process.env.ATOMCODE_BIN = saved;
+      rmSync(dirname(statePath), { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * The branch the "no binary configured" test above cannot reach — and the one
+   * that was silently broken.
+   *
+   * `config.binary` used to arrive as `true`, while the panel's row evaluates
+   * `configured || env || '自动探测（PATH）'` and renders the winner. The chain
+   * therefore produced the BOOLEAN `true`, and React renders a boolean child as
+   * NOTHING: the 运行环境 card showed an "AtomCode" row with an empty value
+   * exactly when the user had set `binary` in the patch row, and `env` was masked
+   * by the `true` that short-circuited it. The other three artefacts — this
+   * route's own required-key list, `BinaryBranch.configured` in src/shared, and
+   * the fallback-chain test above — all describe a PATH, so the host was the one
+   * that had drifted.
+   */
+  it('gives the panel a real path when config.binary IS set', async () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-stats-bin-')), 'sessions.json');
+    try {
+      const route = mountRoute({ statePath, extra: { binary: 'C:\\tools\\atomcode.exe' } });
+      const r = await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
+      assert.equal(r.body.binary.source, 'config');
+      assert.equal(r.body.binary.configured, 'C:\\tools\\atomcode.exe');
+      // The panel's own expression, evaluated here: a `true` in `configured` used
+      // to satisfy `||` while being unrenderable, so a truthiness assertion alone
+      // would have passed on the broken build. Assert the VALUE the row prints.
+      const binPath = r.body.binary.configured || r.body.binary.env || '自动探测（PATH）';
+      assert.equal(binPath, 'C:\\tools\\atomcode.exe', 'the row must show a path the user can read');
+      assert.equal(typeof binPath, 'string', 'a boolean here renders as a blank cell, not as text');
+    } finally {
       rmSync(dirname(statePath), { recursive: true, force: true });
     }
   });

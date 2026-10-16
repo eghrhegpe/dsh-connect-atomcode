@@ -8,6 +8,14 @@
  * renderer read, so a renamed key surfaced as a silently empty card — the same
  * species of drift as a regex that quietly stops matching `status` text.
  *
+ * That check is now ENFORCED rather than intended: `buildStatsBody` is annotated
+ * `: StatsSnapshot`, so the producer is compile-checked against this file. The
+ * first run of that annotation found five disagreements (four fields the host
+ * sends that this file never declared, and `binary.configured`, which this file
+ * and the client both describe as a path while the host was sending a boolean —
+ * a live empty panel row). Declaring a wire field here is therefore no longer
+ * optional bookkeeping: a field the host sends without a row here is a TS2353.
+ *
  * `src/shared/loopback.ts` already proved that a fact two halves need can live
  * in one module; this is the same rule applied to a TYPE instead of a function.
  *
@@ -38,6 +46,19 @@ export interface ConfigBranch {
 /** One slot of the `provider` branch — ask and review are NOT the same namespace. */
 export interface ProviderSlot {
   panel?: string | null;
+  /**
+   * The mount-time rung of THIS slot's ladder (ask → `default_provider`, review →
+   * `review_default_provider`), i.e. the same fact as `config.*` but scoped to the
+   * slot it belongs to — 红线 8's two namespaces are two fields upstairs, and a
+   * slot-scoped copy is what a reader who only has the `provider` branch can use.
+   *
+   * Honest scope: the shipped renderer reads the `config` branch for this
+   * (`providerRows(cfg)` → `cfg.defaultProvider` / `cfg.reviewDefaultProvider`),
+   * so nothing dereferences this field TODAY. It is declared because the contract
+   * describes the WIRE, and an undeclared field the host sends is exactly the
+   * `TS2353` this annotation exists to raise.
+   */
+  config?: string | null;
   effective?: string | null;
   source?: string | null;
   /** OBJECTS on the ask path (`/models`), STRINGS on the review path. */
@@ -70,6 +91,10 @@ export interface DaemonBranch {
   starting?: boolean;
   spawnTried?: boolean;
   spawnFailures?: number;
+  /** How many times this mount has TRIED to spawn, failures included. */
+  spawnAttempts?: number | null;
+  /** When the liveness flag was last refreshed — i.e. how fresh `up` is. */
+  lastCheckedAt?: number | null;
   /**
    * WHY it is down, ALREADY WORDED by the host (`describeDaemonDown`), and `''`
    * while up. Render it; never re-derive it. The tool errors carry the same
@@ -85,6 +110,12 @@ export interface DaemonBranch {
 export interface ProtocolBranch {
   /** Which daemon build the bridged (private, unversioned) protocol is spoken against. */
   daemonVersion?: string | null;
+  /**
+   * The generation the private protocol was VALIDATED against (`'5.x'`) — a
+   * constant of this build, shipped so a mismatch against `daemonVersion` is
+   * visible on the panel rather than only in the host's log line.
+   */
+  verifiedGeneration?: string | null;
   /** The quota parser stopped recognizing the daemon's `status` text. */
   quotaTextDrift?: boolean;
   /**
@@ -135,8 +166,20 @@ export interface ToolStats {
 
 /** The `binary` branch — which AtomCode binary the daemon was launched with. */
 export interface BinaryBranch {
+  /**
+   * The patch row's `binary` PATH, or null/absent when it is unset — a PATH, not
+   * a flag. The panel's row renders `configured || env || '自动探测（PATH）'`, so a
+   * host that sent a BOOLEAN here made the row blank exactly when a binary was
+   * configured (React drops a `true` child) and masked `env` with `true`. That
+   * was a live bug, not a hypothetical: this field's type, the client's
+   * expression and the host's own joining test all assumed a path.
+   */
   configured?: string | null;
+  /** The `ATOMCODE_BIN` path. Absent (not null) when the variable is unset. */
   env?: string | null;
+  /** Which rung of `configured > env > auto` answered. */
+  source?: string | null;
+  /** Never sent by this host; reserved for a probe-the-PATH result. */
   detected?: string | null;
 }
 

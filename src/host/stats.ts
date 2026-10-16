@@ -20,6 +20,7 @@
  * @module dsh-connect-atomcode/host/stats
  */
 import type { HealthFailure } from './daemon.ts';
+import type { StatsSnapshot } from '../shared/stats.ts';
 import { DAEMON_PROBE_TIMEOUT_MS } from './config.ts';
 
 /** Host-side status endpoint helper (read-only, same-origin). */
@@ -133,7 +134,13 @@ export interface StatsBag {
   // ── the mount's resolved configuration, mirrored for the panel ────────────
   port: number;
   autoStart: boolean;
-  binaryConfigured: boolean;
+  /**
+   * The patch row's `binary` PATH, or null when it is unset.
+   *
+   * A path, not a flag — see `binary.configured` in `buildStatsBody` for why that
+   * distinction turned out to be a live bug rather than a style choice.
+   */
+  binaryPath: string | null;
   binaryEnv: string | undefined;
   approvalMode: string;
   defaultWorkingDir: string | null;
@@ -197,7 +204,7 @@ export interface StatsSeed {
   pluginVersion: string;
   port: number;
   autoStart: boolean;
-  binaryConfigured: boolean;
+  binaryPath: string | null;
   binaryEnv: string | undefined;
   approvalMode: string;
   defaultWorkingDir: string | null;
@@ -228,7 +235,7 @@ export function createStatsBag(seed: StatsSeed): StatsBag {
     pluginVersion: seed.pluginVersion,
     port: seed.port,
     autoStart: seed.autoStart,
-    binaryConfigured: seed.binaryConfigured,
+    binaryPath: seed.binaryPath,
     binaryEnv: seed.binaryEnv,
     approvalMode: seed.approvalMode,
     defaultWorkingDir: seed.defaultWorkingDir,
@@ -282,8 +289,10 @@ export function createStatsBag(seed: StatsSeed): StatsBag {
  * @param {StatsBag} stats - the live runtime bag.
  * @param {any} quota - the quota report from `buildQuotaReport`, or null to
  *   report "not collected yet".
+ * @returns {StatsSnapshot} the wire shape, which `src/shared/stats.ts` declares
+ *   for BOTH halves — see that file's `StatsSnapshot`.
  */
-export function buildStatsBody(stats: StatsBag, quota: any) {
+export function buildStatsBody(stats: StatsBag, quota: any): StatsSnapshot {
   return {
     ok: true,
     name: 'dsh-connect-atomcode',
@@ -308,9 +317,15 @@ export function buildStatsBody(stats: StatsBag, quota: any) {
       downMessage: stats.daemonUp ? '' : describeDaemonDown(stats.daemonDownReason),
     },
     binary: {
-      configured: stats.binaryConfigured,
+      // The PATH the daemon will be launched with, not a flag. The panel's row
+      // reads `configured || env || '自动探测（PATH）'` and renders the winner, so a
+      // boolean here made the row EMPTY exactly when a binary was configured
+      // (React drops a `true` child) while also masking `env` — the silently
+      // blank row this panel exists to avoid. `source` already answers "where did
+      // it come from", so nothing was lost by making this the value.
+      configured: stats.binaryPath,
       env: stats.binaryEnv,
-      source: stats.binaryConfigured ? 'config' : stats.binaryEnv ? 'env' : 'auto',
+      source: stats.binaryPath ? 'config' : stats.binaryEnv ? 'env' : 'auto',
     },
     config: {
       approvalMode: stats.approvalMode,
