@@ -249,11 +249,17 @@
 	/**
 	* The chip's outer pill, drawn as one of the dock's READOUTS.
 	*
-	* Deliberately weaker than a control: no pill background, no border, and
-	* the tertiary label color. Its neighbours (`7 轮`, `21.4M tok`) are
-	* session-scoped products; this one is an account-scoped environment
-	* fact that happens to be visible here. The visual weight says "different
-	* kind of number" without needing a legend.
+	* Deliberately weaker than a control: no pill background, no border.
+	* Its neighbours (`1 轮 1 步`, `19.1K tok`) are session-scoped products;
+	* this one is an account-scoped environment fact that happens to be
+	* visible here. The `tertiary` token alone carries that distinction.
+	*
+	* It used to ALSO multiply by `opacity: 0.85`, which stacked a second dim
+	* onto the weakest label token — at 11px that is where the readout stopped
+	* being legible at a glance, and the user flagged it twice ("底下这个 atom
+	* 长的也比较暗"). One dimming mechanism is a hierarchy; two is a defect.
+	* The neighbours ship at full strength with an icon, so the chip must not
+	* be quieter than the strip it sits in by more than the token.
 	*
 	* `color` overrides the text color ONLY for the one state that is a real
 	* alarm — an exhausted window throttles turns, so it must not be styled
@@ -266,8 +272,7 @@
 			color,
 			whiteSpace: "nowrap",
 			display: "inline-flex",
-			alignItems: "center",
-			opacity: color === "var(--dsw-alias-label-tertiary)" ? .85 : 1
+			alignItems: "center"
 		};
 	}
 	/**
