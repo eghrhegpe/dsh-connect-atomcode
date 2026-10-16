@@ -31,7 +31,7 @@ import {
   quotaColor,
   windowLabel,
 } from './quota.ts';
-import { protocolDriftNotice, providerRows, turnBoundaryRows } from './rows.ts';
+import { daemonStatusLine, protocolDriftNotice, providerRows, turnBoundaryRows } from './rows.ts';
 
 /** One render prop for `Row` / `Metric` / `CallStat` — see index.ts. */
 type NumProps = { num: number; label: string; color?: string };
@@ -49,8 +49,6 @@ export interface StatusSectionDeps {
     updatedAt: number;
     reload: () => void;
   };
-  /** The `view: 'summary'` one-liner, rendered without the full panel. */
-  SummaryLine: () => ReactElement;
   StatusPill: (props: { up: boolean }) => ReactElement;
   Row: (props: { label: string }, children?: unknown) => ReactElement;
   Metric: (props: NumProps) => ReactElement;
@@ -66,7 +64,33 @@ export interface StatusSectionDeps {
  * @returns {(props: any) => ReactElement} the `StatusSection` component.
  */
 export function createStatusSection(deps: StatusSectionDeps) {
-  const { h, useStats, SummaryLine, StatusPill, Row, Metric, CallStat, ProviderSelectRow } = deps;
+  const { h, useStats, StatusPill, Row, Metric, CallStat, ProviderSelectRow } = deps;
+
+  /**
+   * The bundle card's one-liner (`view: 'summary'`).
+   *
+   * DEFINED HERE, not injected: it has exactly one caller — the `view: 'summary'`
+   * branch of `StatusSection` below — so it travels with the component that
+   * renders it. Injecting it would have made the panel's assembly point carry a
+   * dependency only one of its two branches ever touches.
+   *
+   * Reports LIVE state only. The card already prints the localized description
+   * from `locale/*.json` directly above this line, so any prose here would both
+   * duplicate it and create a second place to keep the same words in sync.
+   * One line, and it says something the description cannot: is the bridge up.
+   */
+  function SummaryLine() {
+    const { data, error } = useStats();
+    if (error || !data) return h('span', { style: S.provLabel }, '状态未知');
+    const d = data.daemon || {};
+    const cfg = data.config || {};
+    const parts = [
+      daemonStatusLine(d, data.protocol && data.protocol.daemonVersion),
+      '端口 ' + (d.port == null ? '—' : d.port),
+    ];
+    if (cfg.reviewAvailable === false) parts.push('评审不可用');
+    return h('span', { style: S.provLabel, title: parts.join(' · ') }, parts.join(' · '));
+  }
 
   return function StatusSection(props: any): any {
     const view = props && props.view;

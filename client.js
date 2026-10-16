@@ -705,7 +705,32 @@
 	* @returns {(props: any) => ReactElement} the `StatusSection` component.
 	*/
 	function createStatusSection(deps) {
-		const { h, useStats, SummaryLine, StatusPill, Row, Metric, CallStat, ProviderSelectRow } = deps;
+		const { h, useStats, StatusPill, Row, Metric, CallStat, ProviderSelectRow } = deps;
+		/**
+		* The bundle card's one-liner (`view: 'summary'`).
+		*
+		* DEFINED HERE, not injected: it has exactly one caller — the `view: 'summary'`
+		* branch of `StatusSection` below — so it travels with the component that
+		* renders it. Injecting it would have made the panel's assembly point carry a
+		* dependency only one of its two branches ever touches.
+		*
+		* Reports LIVE state only. The card already prints the localized description
+		* from `locale/*.json` directly above this line, so any prose here would both
+		* duplicate it and create a second place to keep the same words in sync.
+		* One line, and it says something the description cannot: is the bridge up.
+		*/
+		function SummaryLine() {
+			const { data, error } = useStats();
+			if (error || !data) return h("span", { style: S.provLabel }, "状态未知");
+			const d = data.daemon || {};
+			const cfg = data.config || {};
+			const parts = [daemonStatusLine(d, data.protocol && data.protocol.daemonVersion), "端口 " + (d.port == null ? "—" : d.port)];
+			if (cfg.reviewAvailable === false) parts.push("评审不可用");
+			return h("span", {
+				style: S.provLabel,
+				title: parts.join(" · ")
+			}, parts.join(" · "));
+		}
 		return function StatusSection(props) {
 			const view = props && props.view;
 			const subject = props && props.subject;
@@ -810,6 +835,100 @@
 				} })), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 " + windowLabel(quota.planWindow) + " 窗口已用尽，回合会被限流") : null))));
 			}
 			return body;
+		};
+	}
+
+//#endregion
+//#region src/client/quota-chip.ts
+/**
+	* Build the pair of quota readouts.
+	*
+	* @param {QuotaChipDeps} deps
+	* @returns {{ QuotaChip: () => any, QuotaChipDegraded: () => any }}
+	*/
+	function createQuotaChip(deps) {
+		const { h, useStats, useState, useEffect, useRef, primitives, reactDom } = deps;
+		function QuotaChip() {
+			const { data } = useStats();
+			const [open, setOpen] = useState(false);
+			const [, setTick] = useState(0);
+			const rootRef = useRef(null);
+			const panelRef = useRef(null);
+			const view = quotaView(data && data.quota, Date.now());
+			useEffect(() => {
+				if (!open) return void 0;
+				const id = setInterval(() => setTick((n) => n + 1), 1e3);
+				return () => clearInterval(id);
+			}, [open]);
+			useEffect(() => {
+				if (!open) return void 0;
+				const onKeyDown = (event) => {
+					if (event.key === "Escape") setOpen(false);
+				};
+				document.addEventListener("keydown", onKeyDown);
+				return () => document.removeEventListener("keydown", onKeyDown);
+			}, [open]);
+			const anchored = primitives.useAnchoredPosition({
+				open: open && view.known,
+				anchorRef: rootRef,
+				panelRef,
+				side: "top",
+				gap: 8,
+				margin: 12
+			});
+			primitives.useDismissOnOutsidePointer(rootRef, open && view.known, setOpen, panelRef);
+			if (!view.known) return null;
+			return h("span", {
+				ref: rootRef,
+				"data-quota-percent": view.pct,
+				style: CHIP_STYLE(view.color)
+			}, h(primitives.Tooltip, {
+				label: view.facts.join(" · "),
+				side: "top",
+				delayMs: 200,
+				disabled: open
+			}, h("button", {
+				type: "button",
+				style: CHIP_TRIGGER_STYLE,
+				"aria-haspopup": "dialog",
+				"aria-expanded": open,
+				onClick: () => setOpen(!open)
+			}, view.label)), open && reactDom.createPortal(h("div", {
+				ref: panelRef,
+				role: "dialog",
+				"aria-label": "CodingPlan 额度",
+				style: panelStyle(S.panelSurface, anchored)
+			}, h("div", { style: S.panelHead }, h("span", { style: S.panelTitle }, "CodingPlan 额度"), h("span", { style: S.panelPct }, pctLabel(view.pct), view.limited ? h("span", { style: S.panelLimited }, "已用尽") : null)), h("div", { style: S.panelTrack }, h("div", { style: {
+				height: "100%",
+				width: view.barWidth + "%",
+				background: view.color
+			} })), view.facts.map((fact, index) => h("p", {
+				key: "fact-" + index,
+				style: index === 0 ? S.panelFactLead : S.panelFact
+			}, fact))), document.body));
+		}
+		/**
+		* The seed-less host variant: same number, native `title` instead of a
+		* panel. It calls NO primitive hooks, which is the whole reason it exists
+		* as its own component — a single QuotaChip that branched over
+		* `primitives` would have a conditional hook tail (Rules of Hooks). That
+		* is survivable only because `primitives` is a factory-scope constant, and
+		* it turns into "Rendered fewer hooks than expected" the moment the seed
+		* table is loaded lazily, with the crash site far from the cause.
+		*/
+		function QuotaChipDegraded() {
+			const { data } = useStats();
+			const view = quotaView(data && data.quota, Date.now());
+			if (!view.known) return null;
+			return h("span", {
+				title: view.facts.join(" · "),
+				"data-quota-percent": view.pct,
+				style: CHIP_STYLE(view.color)
+			}, view.label);
+		}
+		return {
+			QuotaChip,
+			QuotaChipDegraded
 		};
 	}
 
@@ -1070,84 +1189,15 @@
 			* costs no layout — a stopped daemon leaves no permanent error badge in
 			* the composer, and the detail page still explains why.
 			*/
-			function QuotaChip() {
-				const { data } = useStats();
-				const [open, setOpen] = useState(false);
-				const [, setTick] = useState(0);
-				const rootRef = useRef(null);
-				const panelRef = useRef(null);
-				const view = quotaView(data && data.quota, Date.now());
-				useEffect(() => {
-					if (!open) return void 0;
-					const id = setInterval(() => setTick((n) => n + 1), 1e3);
-					return () => clearInterval(id);
-				}, [open]);
-				useEffect(() => {
-					if (!open) return void 0;
-					const onKeyDown = (event) => {
-						if (event.key === "Escape") setOpen(false);
-					};
-					document.addEventListener("keydown", onKeyDown);
-					return () => document.removeEventListener("keydown", onKeyDown);
-				}, [open]);
-				const anchored = primitives.useAnchoredPosition({
-					open: open && view.known,
-					anchorRef: rootRef,
-					panelRef,
-					side: "top",
-					gap: 8,
-					margin: 12
-				});
-				primitives.useDismissOnOutsidePointer(rootRef, open && view.known, setOpen, panelRef);
-				if (!view.known) return null;
-				return h("span", {
-					ref: rootRef,
-					"data-quota-percent": view.pct,
-					style: CHIP_STYLE(view.color)
-				}, h(primitives.Tooltip, {
-					label: view.facts.join(" · "),
-					side: "top",
-					delayMs: 200,
-					disabled: open
-				}, h("button", {
-					type: "button",
-					style: CHIP_TRIGGER_STYLE,
-					"aria-haspopup": "dialog",
-					"aria-expanded": open,
-					onClick: () => setOpen(!open)
-				}, view.label)), open && reactDom.createPortal(h("div", {
-					ref: panelRef,
-					role: "dialog",
-					"aria-label": "CodingPlan 额度",
-					style: panelStyle(S.panelSurface, anchored)
-				}, h("div", { style: S.panelHead }, h("span", { style: S.panelTitle }, "CodingPlan 额度"), h("span", { style: S.panelPct }, pctLabel(view.pct), view.limited ? h("span", { style: S.panelLimited }, "已用尽") : null)), h("div", { style: S.panelTrack }, h("div", { style: {
-					height: "100%",
-					width: view.barWidth + "%",
-					background: view.color
-				} })), view.facts.map((fact, index) => h("p", {
-					key: "fact-" + index,
-					style: index === 0 ? S.panelFactLead : S.panelFact
-				}, fact))), document.body));
-			}
-			/**
-			* The seed-less host variant: same number, native `title` instead of a
-			* panel. It calls NO primitive hooks, which is the whole reason it exists
-			* as its own component — a single QuotaChip that branched over
-			* `primitives` would have a conditional hook tail (Rules of Hooks). That
-			* is survivable only because `primitives` is a factory-scope constant, and
-			* it turns into "Rendered fewer hooks than expected" the moment the seed
-			* table is loaded lazily, with the crash site far from the cause.
-			*/
-			function QuotaChipDegraded() {
-				const { data } = useStats();
-				const view = quotaView(data && data.quota, Date.now());
-				if (!view.known) return null;
-				return h("span", {
-					title: view.facts.join(" · "),
-					"data-quota-percent": view.pct,
-					style: CHIP_STYLE(view.color)
-				}, view.label);
-			}
+			const { QuotaChip, QuotaChipDegraded } = createQuotaChip({
+				h,
+				useStats,
+				useState,
+				useEffect,
+				useRef,
+				primitives,
+				reactDom
+			});
 			/**
 			* Which readout the composer dock gets — decided ONCE, at factory time,
 			* from whether the two seed modules resolved. Stable for the life of the
@@ -1155,30 +1205,9 @@
 			* hook sequence in every render.
 			*/
 			const QUOTA_READOUT = primitives && reactDom ? QuotaChip : QuotaChipDegraded;
-			/**
-			* The bundle card's one-liner (`view: 'summary'`).
-			*
-			* Reports LIVE state only. The card already prints the localized description
-			* from `locale/*.json` directly above this line, so any prose here would both
-			* duplicate it and create a second place to keep the same words in sync.
-			* One line, and it says something the description cannot: is the bridge up.
-			*/
-			function SummaryLine() {
-				const { data, error } = useStats();
-				if (error || !data) return h("span", { style: S.provLabel }, "状态未知");
-				const d = data.daemon || {};
-				const cfg = data.config || {};
-				const parts = [daemonStatusLine(d, data.protocol && data.protocol.daemonVersion), "端口 " + (d.port == null ? "—" : d.port)];
-				if (cfg.reviewAvailable === false) parts.push("评审不可用");
-				return h("span", {
-					style: S.provLabel,
-					title: parts.join(" · ")
-				}, parts.join(" · "));
-			}
 			const StatusSection = createStatusSection({
 				h,
 				useStats,
-				SummaryLine,
 				StatusPill,
 				Row,
 				Metric,

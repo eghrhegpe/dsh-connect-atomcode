@@ -19,11 +19,7 @@ import type {
   ProviderBranch,
   ProviderSlotName,
 } from './types.ts';
-import {
-  S,
-  CHIP_STYLE,
-  CHIP_TRIGGER_STYLE,
-} from './styles.ts';
+import { S } from './styles.ts';
 import {
   barWidth,
   fmtCountdown,
@@ -44,6 +40,7 @@ import {
   protocolDriftNotice,
 } from './rows.ts';
 import { createStatusSection } from './status-section.ts';
+import { createQuotaChip } from './quota-chip.ts';
 
 // The loader hands the factory an untyped `require`; the host resolves
 // `react` from the web boot's seed table.
@@ -430,159 +427,21 @@ const REGISTRATION = {
      * costs no layout — a stopped daemon leaves no permanent error badge in
      * the composer, and the detail page still explains why.
      */
-    function QuotaChip() {
-      const { data } = useStats();
-      const [open, setOpen] = useState(false);
-      // 1s tick ONLY while the panel is open: the countdown is the one thing
-      // that goes stale between the 5s polls, and an always-on interval would
-      // re-render every composer in every session on every second.
-      const [, setTick] = useState(0);
-      const rootRef = useRef(null);
-      const panelRef = useRef(null);
-
-      const view = quotaView(data && data.quota, Date.now());
-
-      useEffect(() => {
-        if (!open) return undefined;
-        const id = setInterval(() => setTick((n: number) => n + 1), 1000);
-        return () => clearInterval(id);
-      }, [open]);
-
-      // Escape closes, matching the neighbouring popovers.
-      useEffect(() => {
-        if (!open) return undefined;
-        const onKeyDown = (event: KeyboardEvent) => {
-          if (event.key === 'Escape') setOpen(false);
-        };
-        document.addEventListener('keydown', onKeyDown);
-        return () => document.removeEventListener('keydown', onKeyDown);
-      }, [open]);
-
-      // The two primitive hooks are part of this component's FIXED tail, not an
-      // optional branch: this component is only ever registered when both seeds
-      // resolved (see `QUOTA_READOUT`), so their presence cannot vary between
-      // renders of one instance. That is what makes the early return below legal.
-      const anchored = primitives.useAnchoredPosition({
-        open: open && view.known,
-        anchorRef: rootRef,
-        panelRef,
-        side: 'top',
-        gap: 8,
-        margin: 12,
-      });
-      primitives.useDismissOnOutsidePointer(rootRef, open && view.known, setOpen, panelRef);
-
-      // Every hook has now run unconditionally. Bailing here keeps the dock
-      // empty instead of printing a percent that has not arrived yet.
-      if (!view.known) return null;
-
-      return h(
-        'span',
-        {
-          ref: rootRef,
-          'data-quota-percent': view.pct,
-          style: CHIP_STYLE(view.color),
-        },
-        h(
-          primitives.Tooltip,
-          {
-            label: view.facts.join(' · '),
-            side: 'top',
-            delayMs: 200,
-            // The panel already shows this; two stacked tooltips fight.
-            disabled: open,
-          },
-          h(
-            'button',
-            {
-              type: 'button',
-              style: CHIP_TRIGGER_STYLE,
-              'aria-haspopup': 'dialog',
-              'aria-expanded': open,
-              onClick: () => setOpen(!open),
-            },
-            // Built by quotaView, which cannot produce a label at all unless
-            // the percent is a real number — so `null%` is unconstructable.
-            view.label
-          )
-        ),
-        open &&
-          reactDom.createPortal(
-            h(
-              'div',
-              {
-                ref: panelRef,
-                role: 'dialog',
-                'aria-label': 'CodingPlan 额度',
-                // Same shape the host's ContextMeter uses: `position ?? {hidden,0,0}`.
-                // The merge order is load-bearing, so it lives in `panelStyle`
-                // (guarded by test/client-fns.test.mjs) rather than inline here.
-                style: panelStyle(S.panelSurface, anchored),
-              },
-              h(
-                'div',
-                { style: S.panelHead },
-                h('span', { style: S.panelTitle }, 'CodingPlan 额度'),
-                h(
-                  'span',
-                  { style: S.panelPct },
-                  pctLabel(view.pct),
-                  view.limited ? h('span', { style: S.panelLimited }, '已用尽') : null
-                )
-              ),
-              // Single-hue bar: the daemon's `status` text carries only a
-              // total, so there is no system/tools/message split to draw —
-              // inventing one would be a number this plugin cannot support.
-              h(
-                'div',
-                { style: S.panelTrack },
-                h('div', {
-                  style: {
-                    height: '100%',
-                    width: view.barWidth + '%',
-                    background: view.color,
-                  },
-                })
-              ),
-              view.facts.map((fact, index) =>
-                h(
-                  'p',
-                  {
-                    key: 'fact-' + index,
-                    style: index === 0 ? S.panelFactLead : S.panelFact,
-                  },
-                  fact
-                )
-              )
-            ),
-            document.body
-          )
-      );
-    }
-
-    /**
-     * The seed-less host variant: same number, native `title` instead of a
-     * panel. It calls NO primitive hooks, which is the whole reason it exists
-     * as its own component — a single QuotaChip that branched over
-     * `primitives` would have a conditional hook tail (Rules of Hooks). That
-     * is survivable only because `primitives` is a factory-scope constant, and
-     * it turns into "Rendered fewer hooks than expected" the moment the seed
-     * table is loaded lazily, with the crash site far from the cause.
-     */
-    function QuotaChipDegraded() {
-      const { data } = useStats();
-      const view = quotaView(data && data.quota, Date.now());
-      if (!view.known) return null;
-      return h(
-        'span',
-        {
-          title: view.facts.join(' · '),
-          'data-quota-percent': view.pct,
-          style: CHIP_STYLE(view.color),
-        },
-        view.label
-      );
-    }
+    // The composer dock's two readouts live in `./quota-chip.ts` now — the
+    // portal popover and its seed-less twin. They are BUILT here rather than
+    // imported ready-made because everything they render is made of `h` and
+    // hooks (the app's own React instance, taken at factory time), and because
+    // they need the two seed modules the factory resolved: `react-dom` for the
+    // portal, the primitives package for the anchoring and the Tooltip.
+    const { QuotaChip, QuotaChipDegraded } = createQuotaChip({
+      h,
+      useStats,
+      useState,
+      useEffect,
+      useRef,
+      primitives,
+      reactDom,
+    });
 
     /**
      * Which readout the composer dock gets — decided ONCE, at factory time,
@@ -591,27 +450,6 @@ const REGISTRATION = {
      * hook sequence in every render.
      */
     const QUOTA_READOUT = primitives && reactDom ? QuotaChip : QuotaChipDegraded;
-
-    /**
-     * The bundle card's one-liner (`view: 'summary'`).
-     *
-     * Reports LIVE state only. The card already prints the localized description
-     * from `locale/*.json` directly above this line, so any prose here would both
-     * duplicate it and create a second place to keep the same words in sync.
-     * One line, and it says something the description cannot: is the bridge up.
-     */
-    function SummaryLine() {
-      const { data, error } = useStats();
-      if (error || !data) return h('span', { style: S.provLabel }, '状态未知');
-      const d = data.daemon || {};
-      const cfg = data.config || {};
-      const parts = [
-        daemonStatusLine(d, data.protocol && data.protocol.daemonVersion),
-        '端口 ' + (d.port == null ? '—' : d.port),
-      ];
-      if (cfg.reviewAvailable === false) parts.push('评审不可用');
-      return h('span', { style: S.provLabel, title: parts.join(' · ') }, parts.join(' · '));
-    }
 
     // The detail-page panel itself lives in `./status-section.ts` now. It is
     // BUILT here rather than imported ready-made because everything it renders
@@ -623,7 +461,6 @@ const REGISTRATION = {
     const StatusSection = createStatusSection({
       h,
       useStats,
-      SummaryLine,
       StatusPill,
       Row,
       Metric,
