@@ -1,0 +1,552 @@
+/**
+ * Host runtime — everything the plugin accumulates while it is mounted.
+ *
+ * Extracted from `src/host/index.ts` (v0.4.3 split). One object holds the live
+ * stats bag, the two state stores, daemon liveness + spawning, the quota cache
+ * and the panel-facing provider state; `apply()` hands this object to the two
+ * tool mounters and the route mounter so none of them re-declare closures.
+ *
+ * This block used to be declared inline in `apply()`, ~420 lines of closures.
+ * Length was the lesser problem:
+ *
+ *  - A closure is an INVISIBLE dependency. Six of these functions write the
+ *    same `stats` bag, and the rest of `apply()` could read any of them with no
+ *    parameter in sight. The bag is `Record<string, any>`, so the type system
+ *    had nothing to say about those writes either.
+ *  - The declaration ORDER encoding a real constraint was recorded only in a
+ *    comment: the session store's error observer writes `stats.sessionsError`,
+ *    so the store must not fire it before the bag exists. It is safe today
+ *    because the observer can only run from get/set/drop/count, all of which
+ *    happen long after the mount — see the note at the store below.
+ *
+ * Nothing here is a behaviour change: same code, same order, moved. Whether the
+ * observer should keep leaning on that ordering is a separate question, and a
+ * separate commit.
+ *
+ * @param {{ config: HostConfig, log: (message: any) => void }} deps
+ * @returns {Runtime} the mounted runtime.
+ * @module dsh-connect-atomcode/host/runtime
+ */
+import {
+  healthInfo,
+  listModels,
+  runCommand,
+  spawnDaemon,
+} from './daemon.ts';
+import type { HealthFailure } from './daemon.ts';
+import { createSessionStore } from './sessions.ts';
+import { createProviderStore } from './provider-store.ts';
+import { checkReviewProvision } from './review.ts';
+import { buildQuotaReport } from './quota.ts';
+import {
+  DAEMON_COMMAND_TIMEOUT_MS,
+  DAEMON_PROBE_TIMEOUT_MS,
+  DEFAULT_APPROVAL_MODE,
+  DEFAULT_ASK_MAX_ROUNDS,
+} from './config.ts';
+import type { HostConfig } from './config.ts';
+import { describeDaemonDown } from './stats.ts';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+
+/**
+ * Everything the plugin accumulates while it is mounted, in one object.
+ * @returns {Runtime}
+ */
+export function createRuntime({
+  config,
+  log,
+}: {
+  config: HostConfig;
+  log: (message: any) => void;
+}) {
+  const {
+    port,
+    autoStart,
+    binary,
+    approvalMode,
+    defaultWorkingDir,
+    defaultProvider,
+    reviewDefaultProvider,
+    askMaxRounds,
+    authoredApprovalMode,
+    authoredWorkingDir,
+    authoredAskMaxRounds,
+    sessionKeyPrefix,
+    statePath,
+    reviewWorkingDir,
+    quotaRefreshSecs,
+    daemonStartAttempts,
+    daemonRetrySecs,
+    binaryEnv,
+  } = config;
+
+  // Session glue degrades rather than throws (sessions.ts), and every
+  // degradation is NAMED here instead of swallowed (红线 3): a state file this
+  // process cannot write is a fact about the mount, not a reason to hand a
+  // finished turn back as an error. `''` means recovered — same channel.
+  // The observer writes `stats`, which is declared further down: safe because it
+  // can only fire from get/set/drop/count, and every one of those runs long
+  // after the mount finished. Nothing between here and the declaration may call
+  // the store, or this becomes a temporal-dead-zone throw at mount.
+  const sessions = createSessionStore(statePath, sessionKeyPrefix, {
+    onError: (error) => {
+      stats.sessionsError = error;
+      if (error) log(`会话续接已降级（本轮回复不受影响）：${error}`);
+    },
+  });
+  // The panel's model choice, in the SAME directory so one `state_path` knob
+  // governs both files. Read PER CALL (like sessions, and like the review probe)
+  // so a pick made in the panel applies to the very next turn — no host restart.
+  const providerStore = createProviderStore(join(dirname(statePath), 'provider.json'));
+  /**
+   * The store is total by design (never throws). A throw here means something
+   * moved under us (the state dir was swapped mid-run); that must not take a tool
+   * call down, so it degrades to "no panel pick" AND names itself in the log —
+   * silence would read as "the user never chose anything" (红线 3).
+   */
+  const readProviderPicks = () => {
+    try {
+      return providerStore.read();
+    } catch (error: any) {
+      const reason = String(error && error.message ? error.message : error);
+      log(`provider state read failed, ignoring the panel pick: ${reason}`);
+      return { ask: null, review: null, foreignVersion: false, error: reason };
+    }
+  };
+  /**
+   * One place answers "which provider does this call use, and why", for BOTH
+   * slots with the same ladder:
+   *
+   *   per-call `provider` argument > the panel pick (provider.json) >
+   *   the mount-time patch field > AtomCode's own default (send nothing).
+   *
+   * The panel outranks the patch field deliberately: the patch row is a static
+   * default for people who edit files, while the pick is a click the user just
+   * made, and a click that silently loses to a line in a config file is the kind
+   * of dead control this repo refuses to ship. `source` is reported to the panel
+   * so the two can never be confused about which one won.
+   *
+   * This ladder is the ONLY one: the execute path calls it with the per-call
+   * argument, and `refreshPanelState` calls it with none to answer "what will the
+   * NEXT call use". They used to be two copies — one four rungs, one three — so
+   * the panel could describe a rung (argument) its own snapshot never produced.
+   *
+   * @param {'ask'|'review'} slot
+   * @param {unknown} argument - the per-call `provider` arg ('' = none).
+   * @param {{ask:string|null, review:string|null}} [alreadyRead] - a pick set the
+   *   caller already read, so one panel poll does not read the file twice.
+   */
+  const resolveProvider = (slot: any, argument: any, alreadyRead?: any) => {
+    const arg = typeof argument === 'string' && argument.trim() !== '' ? argument.trim() : '';
+    const picks = alreadyRead || readProviderPicks();
+    const panel = slot === 'ask' ? picks.ask : picks.review;
+    if (arg) return { name: arg, source: 'argument', picks };
+    if (panel) return { name: panel, source: 'panel', picks };
+    const configured = slot === 'ask' ? defaultProvider : reviewDefaultProvider;
+    if (configured) return { name: configured, source: 'config', picks };
+    // The empty-pick fallback differs by slot ON PURPOSE: leaving ask empty means
+    // "the daemon applies its own default profile", while leaving review empty
+    // hands the choice to selectReviewProvider()'s own ladder — a different
+    // thing (红线 8: the two slots are two namespaces, not one knob).
+    return { name: '', source: slot === 'ask' ? 'atomcode' : 'auto', picks };
+  };
+
+  // Probe review CLI availability at mount time (best-effort: no live spawn).
+  const reviewProvision = checkReviewProvision();
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /**
+   * Live status snapshot, mirrored by the plugin detail-page client over the
+   * read-only `/api/atomcode-bridge/stats` route. Counters accumulate for the
+   * life of the plugin mount; `daemonUp`/`lastHealthAt` are refreshed on each
+   * stats poll (5s cache) and on every ask dispatch.
+   */
+  // A mutable bag assembled across the mount and read by the module-level
+  // `buildStatsBody`. Deliberately a plain record: the fields are written
+  // incrementally by several closures (health, catalogue, counters), and the
+  // snapshot's shape is asserted by the offline suites rather than inferred here.
+  const stats: Record<string, any> = {
+    startedAt: Date.now(),
+    port,
+    autoStart,
+    binaryConfigured: !!binary,
+    binaryEnv,
+    approvalMode,
+    defaultWorkingDir: defaultWorkingDir ?? null,
+    reviewWorkingDir: reviewWorkingDir ?? null,
+    defaultProvider: defaultProvider ?? null,
+    reviewDefaultProvider: reviewDefaultProvider ?? null,
+    // The panel's own picks (provider.json) and the model catalogue the dropdown
+    // lists. `modelCatalog === null` means "not fetched yet or the daemon is
+    // down" — the client renders a reason instead of an empty dropdown.
+    panelProvider: { ask: null, review: null },
+    panelStorePath: providerStore.path(),
+    panelStoreError: '',
+    panelStoreForeign: false,
+    effectiveAsk: null,
+    // 'panel' | 'config' | 'atomcode' — who is actually answering for the next
+    // ask call. The review slot uses 'auto' instead of 'atomcode' because that is
+    // what leaving it empty really means there (红线 8).
+    effectiveAskSource: 'atomcode',
+    effectiveReview: null,
+    effectiveReviewSource: 'auto',
+    modelCatalog: null,
+    modelCatalogAt: 0,
+    modelCatalogError: '',
+    reviewCatalog: reviewProvision.providers || [],
+    reviewEndpoints: reviewProvision.endpoints || {},
+    daemonUp: false,
+    daemonVersion: '',
+    // Which probe failure put `daemonUp` at false (`''` while up). One flag for
+    // four different causes was the whole problem — see describeDaemonDown.
+    daemonDownReason: '' as HealthFailure,
+    spawnTried: false,
+    spawnAttempts: 0,
+    spawnFailures: 0,
+    lastSpawnAt: 0,
+    daemonStarting: false,
+    lastHealthAt: 0,
+    reviewAvailable: reviewProvision.available,
+    reviewReason: reviewProvision.reason,
+    sessionsTracked: 0,
+    // Why session glue is degraded right now ('' when healthy) — see the
+    // session store's onError observer. Surfaced on the panel so a state file
+    // that cannot be written is visible rather than merely logged.
+    sessionsError: '',
+    askRounds: askMaxRounds,
+    retrySecs: daemonRetrySecs,
+    // Which patch-only knobs the user authored, and our built-in fallbacks. Both
+    // live on `stats` (not read from the mount closure) because buildStatsBody is
+    // module-level — the panel's "（已改）/（插件默认）" tags must come from the host
+    // rather than a client-side guess at what the default is.
+    authored: {
+      approvalMode: authoredApprovalMode,
+      workingDir: authoredWorkingDir,
+      askMaxRounds: authoredAskMaxRounds,
+    },
+    defaults: { approvalMode: DEFAULT_APPROVAL_MODE, askMaxRounds: DEFAULT_ASK_MAX_ROUNDS },
+    quotaDriftSeen: false,
+    // SSE event types the daemon sent that we did not recognize. Accumulated as
+    // a UNION across every ask turn of this mount: the fact worth keeping is
+    // "has this ever been seen", and letting a later clean turn erase the
+    // evidence would make a one-off (or an intermittent) drift invisible on the
+    // panel — the very silent degradation red line 3 forbids.
+    protocolUnknownTypes: [] as string[],
+    ask: { calls: 0, ok: 0, err: 0, msTotal: 0, tokens: 0 },
+    review: { calls: 0, ok: 0, err: 0, msTotal: 0 },
+  };
+
+  /** Refresh daemon liveness with a short cache (used by both ask + stats). */
+  async function refreshHealth(force = false) {
+    if (!force && Date.now() - stats.lastHealthAt < 5000) return stats.daemonUp;
+    try {
+      const info = await healthInfo(port, AbortSignal.timeout(DAEMON_PROBE_TIMEOUT_MS));
+      stats.daemonUp = info.up;
+      // Carry the CAUSE alongside the flag. Down is one bit; why it is down is
+      // what the error reply and the panel actually need (see describeDaemonDown).
+      stats.daemonDownReason = info.reason;
+      // Surface which daemon protocol generation we are talking to (the panel
+      // shows it; an unknown major is the plugin's earliest drift signal).
+      if (info.version && info.version !== stats.daemonVersion) {
+        stats.daemonVersion = info.version;
+        if (info.version && !/^5\./.test(info.version)) {
+          log(`unverified AtomCode daemon version ${info.version} — the bridged protocol was validated against 5.x`);
+        }
+      }
+    } catch {
+      // `healthInfo` is contractually non-throwing, so this only fires if that
+      // contract breaks. Say so rather than borrowing a cause we did not observe.
+      stats.daemonUp = false;
+      stats.daemonDownReason = 'unreachable';
+    }
+    stats.lastHealthAt = Date.now();
+    return stats.daemonUp;
+  }
+
+  /**
+   * Spawn the daemon once and wait for it to answer.
+   *
+   * Shared and idempotent: the ask path awaits it, while the mount and the panel
+   * poll only kick it off. Sharing one promise is what keeps a panel poll from
+   * leaving a second daemon spawning behind the first.
+   *
+   * A FAILED start is not a tombstone: the promise is cleared and `spawnTried`
+   * stays set (the panel can say "自动拉起失败"), but after `daemonRetrySecs`
+   * the next caller tries again — so installing AtomCode after mount is picked
+   * up instead of the auto-start being dead for the mount's lifetime.
+   *
+   * @returns {Promise<boolean>} whether a daemon answered within the start poll.
+   */
+  let daemonStartPromise: Promise<boolean> | null = null;
+  function ensureDaemonStarted() {
+    if (daemonStartPromise !== null) return daemonStartPromise;
+    if (!autoStart) return Promise.resolve(false);
+    // A previous failure is re-attempted only after the cooldown; otherwise the
+    // panel's 5s poll would hammer spawn attempts every poll.
+    if (stats.spawnTried && Date.now() - stats.lastSpawnAt < daemonRetrySecs * 1000) {
+      return Promise.resolve(false);
+    }
+    // Mark "starting" up front so the very first panel poll says so instead of
+    // reporting a bare "not running" until the health probe resolves.
+    stats.daemonStarting = true;
+    stats.spawnTried = true;
+    stats.spawnAttempts += 1;
+    stats.lastSpawnAt = Date.now();
+    daemonStartPromise = (async () => {
+      // Health first: this is what keeps a host restart — or a second profile —
+      // from spawning a duplicate daemon against a port that is already served.
+      if (await refreshHealth()) return true;
+      await spawnDaemon({
+        port,
+        ...(binary ? { binary } : {}),
+        ...(defaultWorkingDir ? { workingDir: defaultWorkingDir } : {}),
+        log,
+      });
+      let answered = false;
+      for (let i = 0; i < daemonStartAttempts; i++) {
+        await sleep(1500);
+        if (await refreshHealth(true)) {
+          answered = true;
+          break;
+        }
+      }
+      // A 0s budget (daemonStartAttempts === 0) means "spawn and don't poll",
+      // but we must still report whether the daemon actually answered —
+      // otherwise the panel shows a phantom "auto-start failed" even though the
+      // spawn succeeded and the daemon may already be up. Do exactly one
+      // post-spawn probe when there were no poll ticks. (This is why a 0s
+      // budget no longer unconditionally fails; see the config comment above.)
+      if (!answered && daemonStartAttempts === 0) {
+        answered = await refreshHealth(true);
+      }
+      return answered;
+    })()
+      .catch(() => false)
+      .finally(() => {
+        stats.daemonStarting = false;
+        if (stats.daemonUp === false) {
+          // Do not cache the failure: the next call (after the cooldown) retries.
+          daemonStartPromise = null;
+          stats.spawnFailures += 1;
+        }
+      });
+    return daemonStartPromise;
+  }
+
+  /** Resolves `false` as soon as `signal` aborts, so a caller can stop awaiting. */
+  function waitForAbort(signal: AbortSignal) {
+    return new Promise((resolve) => {
+      if (signal.aborted) resolve(false);
+      else signal.addEventListener('abort', () => resolve(false), { once: true });
+    });
+  }
+
+  /**
+   * Daemon liveness, spawning on demand.
+   *
+   * `auto_start: true` means "the daemon is kept running", not "the first tool
+   * call will start it": the mount and the stats route kick the spawn off
+   * themselves, so the panel and the quota chip are live without the model
+   * having to call a tool first.
+   *
+   * Do NOT await this from the mount or the stats route — the start poll can run
+   * for 30s (20 × 1.5s) and would stall the plugin mount / the 5s panel poll.
+   * Use `ensureDaemonStarted()` (fire-and-forget) there instead.
+   *
+   * @param {AbortSignal} [signal]
+   */
+  async function ensureDaemon(signal?: AbortSignal) {
+    if (signal?.aborted) return false;
+    if (await refreshHealth()) return true;
+    if (signal?.aborted) return false;
+    // The daemon is not answering. A start that is still IN FLIGHT must stay
+    // shared: dropping it here would let a second poll spawn a second daemon
+    // against the same port — the exact thing the shared promise exists to
+    // prevent — and would orphan the first start, whose health poll then keeps
+    // running with nobody awaiting it. `stats.daemonStarting` is the honest
+    // in-flight signal; it is set synchronously when the start begins and
+    // cleared in its `finally`.
+    //
+    // Only a SETTLED start may be discarded, so that a start which succeeded
+    // before the daemon idle-exited (30min) or was killed is re-evaluated
+    // instead of being trusted forever.
+    if (daemonStartPromise !== null && !stats.daemonStarting) daemonStartPromise = null;
+    const started = signal
+      ? await Promise.race([ensureDaemonStarted(), waitForAbort(signal)])
+      : await ensureDaemonStarted();
+    if (signal?.aborted) return false;
+    return started === true ? true : refreshHealth(true);
+  }
+
+  /**
+   * CodingPlan quota, read through the daemon's `status` command.
+   *
+   * Cached for `quota_refresh_secs` so the panel's 5s poll does not become a 5s
+   * daemon call. The daemon requires a `working_dir` for ANY command, but the
+   * CodingPlan/usage lines are account-level, so the configured default is used
+   * and the home directory is the fallback (any existing directory will do).
+   *
+   * @returns {Promise<object>} the `quota` branch of the stats snapshot.
+   */
+  let quotaCache: { at: number; value: any } = { at: 0, value: null };
+  async function readQuota() {
+    if (quotaRefreshSecs === 0) {
+      return {
+        available: false,
+        reason: '额度显示已关闭（quota_refresh_secs = 0）',
+        fetchedAt: Date.now(),
+      };
+    }
+    const now = Date.now();
+    if (quotaCache.value !== null && now - quotaCache.at < quotaRefreshSecs * 1000) {
+      return quotaCache.value;
+    }
+    // Type-only: the early return above means only the `buildQuotaReport` shape
+    // survives to the `drift` read below, but the JS reuses one binding.
+    let value: any;
+    if (!(await refreshHealth())) {
+      // While a spawn is in flight, say so and do NOT cache the negative answer —
+      // otherwise the panel would keep showing "not running" for a whole TTL
+      // after the daemon has already come up.
+      value = {
+        available: false,
+        // The quota branch used to say a blanket 'daemon 未运行' for every
+        // daemon-down shape — the same collapse the daemon branch just grew out
+        // of. Name it from the same function so a "额度不可用" red line tells the
+        // user whether the port is empty, held by a stranger, or just silent.
+        reason: stats.daemonStarting ? '正在拉起 daemon…' : describeDaemonDown(stats.daemonDownReason),
+        fetchedAt: now,
+      };
+      if (!stats.daemonStarting) quotaCache = { at: now, value };
+      return value;
+    }
+    // A named budget, and it is DELIBERATELY under the panel's client deadline
+    // (`POLL_MS - 1000` in src/client/index.ts): the client aborts its fetch at
+    // 4s and reports its own timeout string, so a server budget above that
+    // guarantees the host's answer is never read AND leaves a handler running
+    // for the rest of the 15s default. Answer first and the panel gets the
+    // HOST's named reason, which the quota chip and the detail page share.
+    const result = await runCommand({
+      port,
+      command: 'status',
+      workingDir: defaultWorkingDir || homedir(),
+      timeoutMs: DAEMON_COMMAND_TIMEOUT_MS,
+    });
+    // `runCommand` maps a transport abort to a DOMException string ("The
+    // operation was aborted due to timeout"), which as a panel reason is true
+    // but useless. The only transport shape THIS call can hit on a healthy
+    // socket is our own budget, so say that instead of quoting Node.
+    const outcome =
+      result.ok === true || result.kind !== 'transport' || !/abort|timeout/i.test(result.message || '')
+        ? result
+        : { ...result, kind: 'timeout', message: `daemon 未在 ${DAEMON_COMMAND_TIMEOUT_MS}ms 内应答 /command status（daemon 可能卡住）` };
+    value = buildQuotaReport(outcome, Date.now());
+    if (value.drift === true) {
+      if (!stats.quotaDriftSeen) {
+        stats.quotaDriftSeen = true;
+        log('the daemon status text no longer matches any known quota shape (AtomCode may have been upgraded) — the panel will show the raw text');
+      }
+    } else {
+      stats.quotaDriftSeen = false;
+    }
+    quotaCache = { at: now, value };
+    return value;
+  }
+
+  /**
+   * Refresh the panel-facing provider state: the stored picks, what the NEXT call
+   * will actually use (and who decided that), and the review CLI's usable direct
+   * entries. All synchronous and cheap — one small JSON read plus one config.toml
+   * read.
+   *
+   * The review provision is re-read per poll (not frozen at mount) so a
+   * `[providers.X]` added after mount shows up in the dropdown, matching what the
+   * execute path already does.
+   */
+  function refreshPanelState() {
+    const picks = readProviderPicks();
+    stats.panelProvider = { ask: picks.ask, review: picks.review };
+    stats.panelStoreError = picks.error;
+    stats.panelStoreForeign = picks.foreignVersion;
+    // The SAME ladder the execute path runs, asked with no per-call argument:
+    // "what will the NEXT call use, and who decided". Duplicating this here is
+    // how the two answers drifted apart (the copy had no `argument` rung, and
+    // the panel-side wording for a rung its own snapshot never produces).
+    const ask = resolveProvider('ask', '', picks);
+    stats.effectiveAsk = ask.name || null;
+    stats.effectiveAskSource = ask.source;
+    const review = resolveProvider('review', '', picks);
+    stats.effectiveReview = review.name || null;
+    stats.effectiveReviewSource = review.source;
+    const provision = checkReviewProvision();
+    stats.reviewCatalog = provision.providers || [];
+    stats.reviewEndpoints = provision.endpoints || {};
+    stats.reviewAvailable = provision.available;
+    stats.reviewReason = provision.reason;
+  }
+
+  /**
+   * The daemon's model catalogue, feeding the ask dropdown.
+   *
+   * `GET /models` is metadata — no tokens, no quota — but the panel polls every
+   * 5s, so it is cached for `MODEL_CATALOG_TTL_MS`. A FAILED fetch leaves the
+   * catalogue null WITH a named reason, so the dropdown can say why there is
+   * nothing to pick instead of rendering an empty select that reads as a broken
+   * plugin (红线 3). The negative is deliberately NOT cached for the full TTL:
+   * the moment the daemon answers, the next poll should show the list.
+   */
+  const MODEL_CATALOG_TTL_MS = 30_000;
+  async function refreshModelCatalog() {
+    const now = Date.now();
+    if (stats.modelCatalog !== null && now - stats.modelCatalogAt < MODEL_CATALOG_TTL_MS) return;
+    if (!stats.daemonUp) {
+      stats.modelCatalog = null;
+      stats.modelCatalogAt = 0;
+      stats.modelCatalogError = `daemon 未在线（127.0.0.1:${port}：${describeDaemonDown(stats.daemonDownReason)}），列不出档位`;
+      return;
+    }
+    try {
+      const list = await listModels(port, AbortSignal.timeout(DAEMON_PROBE_TIMEOUT_MS));
+      stats.modelCatalog = Array.isArray(list)
+        ? list
+            .filter((m) => m && typeof m.provider === 'string' && m.provider !== '')
+            // ONLY what the panel consumes: the profile name the dropdown sends,
+            // and whether AtomCode itself treats it as the default (the one fact
+            // that tells a user whether pinning is even necessary). `model` and
+            // `effort_levels` used to be mapped in here and read by NOTHING —
+            // payload shipped on every 30s poll to be dropped at the renderer.
+            .map((m) => ({
+              provider: m.provider,
+              isDefault: m.is_default === true,
+            }))
+        : [];
+      stats.modelCatalogAt = Date.now();
+      stats.modelCatalogError = '';
+    } catch (error: any) {
+      const reason = String(error && error.message ? error.message : error);
+      stats.modelCatalog = null;
+      stats.modelCatalogAt = 0;
+      stats.modelCatalogError = reason;
+      log(`model catalog fetch failed: ${reason}`);
+    }
+  }
+
+  return {
+    stats,
+    sessions,
+    providerStore,
+    resolveProvider,
+    refreshHealth,
+    ensureDaemonStarted,
+    ensureDaemon,
+    readQuota,
+    refreshPanelState,
+    refreshModelCatalog,
+    reviewProvision,
+  };
+}
+
+/** The runtime object `createRuntime` returns. */
+export type Runtime = ReturnType<typeof createRuntime>;

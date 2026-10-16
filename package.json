@@ -50,8 +50,8 @@
     "build": "tsdown",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "node test/daemon-parse.test.mjs && node test/daemon-stream.test.mjs && node test/review.test.mjs && node test/review-select.test.mjs && node test/wiring.test.mjs && node test/client-id.test.mjs && node test/client-fns.test.mjs && node test/snapshot-contract.test.mjs && node test/build-gate.test.mjs && node test/ask-glue.test.mjs && node test/stats-route.test.mjs && node test/quota.test.mjs && node test/protocol.test.mjs",
-    "test:live": "node test/daemon-live.test.mjs && node test/review-live.test.mjs"
+    "test": "node scripts/test.mjs",
+    "test:live": "node --test test/daemon-live.test.mjs test/review-live.test.mjs"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",

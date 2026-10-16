@@ -45,6 +45,16 @@ export default defineConfig([
       quota: "src/host/quota.ts",
       sessions: "src/host/sessions.ts",
       "provider-store": "src/host/provider-store.ts",
+      // v0.4.3 split of the former God module: each concern is its own entry so
+      // `lib/` stays "one artifact per source module" and a reader can find a
+      // concern by its file name. These are NEW entries — nothing that already
+      // existed moves, so the suites that reach into a specific `lib/*.js`
+      // (wiring, protocol, ask-glue, stats-route) keep their imports working.
+      config: "src/host/config.ts",
+      stats: "src/host/stats.ts",
+      runtime: "src/host/runtime.ts",
+      routes: "src/host/routes.ts",
+      tools: "src/host/tools.ts",
       // The one module BOTH halves read (`src/client/rows.ts` bundles it too).
       // It gets its own entry so it lands at a stable path instead of being
       // inlined into whichever host module happened to import it first — that

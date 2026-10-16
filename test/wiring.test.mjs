@@ -30,6 +30,9 @@ const BRIDGE = join(__dirname, '..', 'lib', 'index.js');
 const REVIEW = join(__dirname, '..', 'lib', 'review.js');
 const SESSIONS = join(__dirname, '..', 'lib', 'sessions.js');
 const PROVIDER_STORE = join(__dirname, '..', 'lib', 'provider-store.js');
+// v0.4.3 split: `detectProfileKey` lives in config.ts now (lib/config.js), not
+// in the God module — it is a pure config helper, not part of the assembly.
+const CONFIG = join(__dirname, '..', 'lib', 'config.js');
 
 function fileUrl(p) {
   if (p.startsWith('/')) return `file://${p}`;
@@ -1126,7 +1129,7 @@ describe('detectProfileKey — the prefix that keeps two profiles apart', () => 
   it('an explicit DSH_PROFILE is the authority, whatever it says', async () => {
     // The allowlist is what was wrong: 'my-own-profile' is a legitimate value
     // and used to be thrown away in favour of a guess.
-    const { detectProfileKey } = await import(fileUrl(BRIDGE));
+    const { detectProfileKey } = await import(fileUrl(CONFIG));
     for (const value of ['web', 'desktop', 'headless', 'my-own-profile']) {
       process.env.DSH_PROFILE = value;
       assert.equal(detectProfileKey(['node', 'dsh', 'web']), value, `${value} must win over argv`);
@@ -1134,7 +1137,7 @@ describe('detectProfileKey — the prefix that keeps two profiles apart', () => 
   });
 
   it('falls back to the argv subcommand, as its own token', async () => {
-    const { detectProfileKey } = await import(fileUrl(BRIDGE));
+    const { detectProfileKey } = await import(fileUrl(CONFIG));
     delete process.env.DSH_PROFILE;
     assert.equal(detectProfileKey(['node', 'dsh', 'desktop']), 'desktop');
     assert.equal(detectProfileKey(['node', '/usr/local/bin/dsh', 'web']), 'web');
@@ -1142,7 +1145,7 @@ describe('detectProfileKey — the prefix that keeps two profiles apart', () => 
   });
 
   it('does NOT invent a profile out of unrelated arguments', async () => {
-    const { detectProfileKey } = await import(fileUrl(BRIDGE));
+    const { detectProfileKey } = await import(fileUrl(CONFIG));
     delete process.env.DSH_PROFILE;
     // The old `/dsh.*\bweb\b/i` over the JOINED line read this as 'web'.
     assert.equal(detectProfileKey(['node', '/opt/dsh-tools/webpack.config.js']), '');
@@ -1153,8 +1156,7 @@ describe('detectProfileKey — the prefix that keeps two profiles apart', () => 
   });
 
   it('an undetermined profile is NAMED at mount, not left to be discovered later', async () => {
-    const mod = await import(fileUrl(BRIDGE));
-    const { detectProfileKey } = mod;
+    const { detectProfileKey } = await import(fileUrl(CONFIG));
     delete process.env.DSH_PROFILE;
     // Premise of this test: this process genuinely looks underdetermined. If the
     // runner ever starts passing a profile, this line says so instead of letting
@@ -1165,7 +1167,7 @@ describe('detectProfileKey — the prefix that keeps two profiles apart', () => 
     const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-profile-')), 'sessions.json');
     const { ctx } = fakeCtx();
     ctx.logger = { warn: (m) => warnings.push(String(m)), error() {}, info() {} };
-    mod.apply(ctx, { state_path: statePath, auto_start: false });
+    (await import(fileUrl(BRIDGE))).apply(ctx, { state_path: statePath, auto_start: false });
     assert.ok(
       warnings.some((w) => w.includes('session_key_prefix') && w.includes('profile')),
       'an unprefixed key space must be named at mount (红线 3)',

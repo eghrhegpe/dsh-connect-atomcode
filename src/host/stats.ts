@@ -1,0 +1,206 @@
+/**
+ * Host-side status snapshot helpers (read-only, same-origin).
+ *
+ * Extracted from `src/host/index.ts` (v0.4.3 split). Mirrors the
+ * dsh-connect-sensenova-token-plan snapshot route contract so the plugin
+ * detail-page client can poll live startup/usage stats. All four functions are
+ * pure: they take plain values and return plain values, so a caller can build a
+ * snapshot body from a stats bag + a quota report without touching the network.
+ *
+ * The `version` literal is passed in rather than hardcoded here: the release
+ * discipline pins `package.json` and `src/host/index.ts` (the assembly point)
+ * as the two hand-edited places that must agree, and `test/wiring.test.mjs`
+ * asserts the literal lives in `src/host/index.ts`.
+ *
+ * @module dsh-connect-atomcode/host/stats
+ */
+import type { HealthFailure } from './daemon.ts';
+import { DAEMON_PROBE_TIMEOUT_MS } from './config.ts';
+
+/** Host-side status endpoint helper (read-only, same-origin). */
+export function writeJson(res: any, status: number, body: unknown, headers?: Record<string, string>) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...(headers || {}) });
+  res.end(JSON.stringify(body));
+}
+
+/**
+ * Reject cross-origin reads: the panel and the host share one origin.
+ *
+ * Honest scope: this is a CSRF gate, not an authentication gate — a browser
+ * always sends Origin on cross-origin writes, but any same-machine process
+ * can simply omit the header and pass. That is acceptable here because the
+ * only write route (`/provider`) touches the plugin's OWN state file.
+ */
+export function sameOrigin(request: any) {
+  const reqHeaders = request && request.headers;
+  const host = reqHeaders ? reqHeaders.host || reqHeaders.Host : undefined;
+  const origin = reqHeaders ? reqHeaders.origin || reqHeaders.Origin : undefined;
+  if (!origin) return true; // non-browser / same-origin fetch omits Origin
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Say WHY the daemon is not reachable — one cause per sentence, and NO port.
+ *
+ * Every one of these used to read "未监听", and that is true of exactly one of
+ * them. A port held by a different service, a daemon that accepted the
+ * connection and then stopped answering, and a port nobody is listening on look
+ * identical from here and share nothing as problems: one needs the process
+ * started, one needs the other service moved, one needs the daemon looked at. A
+ * message that names the wrong cause costs the reader exactly the time they came
+ * here to save, so an unclassified shape says so rather than picking the
+ * plausible one.
+ *
+ * The port is left to the caller, because its callers disagree about where it
+ * goes: the tool errors embed it in the address they quote, while the panel
+ * prints it on its own line and would otherwise say it twice.
+ *
+ * @param reason - from `healthInfo`; `''` means the daemon is up (callers do not
+ *   ask for a sentence then) or that no probe has finished yet.
+ */
+export function describeDaemonDown(reason: HealthFailure): string {
+  switch (reason) {
+    case 'refused':
+      return '没有任何进程在监听';
+    case 'timeout':
+      return `有进程在监听，但 ${DAEMON_PROBE_TIMEOUT_MS}ms 内无应答`;
+    case 'http-error':
+      return '端口上有服务，但 /health 返回非 2xx';
+    case 'unreadable':
+      return '端口上有服务，但应答不是可解析的 JSON';
+    case 'not-atomcode':
+      return '端口被非 AtomCode 服务占用（/health 未声明 atomcode-daemon）';
+    case 'unreachable':
+      return '探活失败，原因未能归类';
+    case '':
+      // Down, but no probe has finished yet — the panel can ask before the
+      // mount's first probe resolves. Not a failure, and not worth inventing one.
+      return '尚未探活';
+    default:
+      return '探活失败，原因未能归类';
+  }
+}
+
+/**
+ * Snapshot body consumed by the plugin detail-page client.
+ *
+ * The reported version is read off `stats.pluginVersion`, which the assembly
+ * point (`src/host/index.ts`) declares as the hand-edited literal that
+ * `test/wiring.test.mjs` pins against `package.json`.
+ *
+ * @param {Record<string, any>} stats - the live runtime bag.
+ * @param {any} quota - the quota report from `buildQuotaReport`, or null to
+ *   report "not collected yet".
+ */
+export function buildStatsBody(stats: Record<string, any>, quota: any) {
+  return {
+    ok: true,
+    name: 'dsh-connect-atomcode',
+    displayName: 'DSH AtomCode Bridge',
+    version: stats.pluginVersion,
+    uptimeMs: Date.now() - stats.startedAt,
+    daemon: {
+      up: stats.daemonUp,
+      port: stats.port,
+      autoStart: stats.autoStart,
+      spawnTried: stats.spawnTried,
+      spawnAttempts: stats.spawnAttempts,
+      spawnFailures: stats.spawnFailures,
+      // True while the 30s start poll is in flight, so the panel can say
+      // "starting…" instead of "failed" for the first half-minute.
+      starting: stats.daemonStarting,
+      lastCheckedAt: stats.lastHealthAt,
+      // The named cause, already worded, and `''` while up. Sent as a sentence
+      // rather than a code for the renderer to translate: the tool errors say the
+      // same thing from the same function, and a panel that re-derived its own
+      // wording is how the two halves end up telling the user two stories.
+      downMessage: stats.daemonUp ? '' : describeDaemonDown(stats.daemonDownReason),
+    },
+    binary: {
+      configured: stats.binaryConfigured,
+      env: stats.binaryEnv,
+      source: stats.binaryConfigured ? 'config' : stats.binaryEnv ? 'env' : 'auto',
+    },
+    config: {
+      approvalMode: stats.approvalMode,
+      defaultWorkingDir: stats.defaultWorkingDir,
+      reviewWorkingDir: stats.reviewWorkingDir,
+      // The model profile bridged turns ask for when the call names none. On the
+      // snapshot rather than hidden in the mount: a typo'd profile is only
+      // diagnosable if the panel says which default the bridge is pinning.
+      defaultProvider: stats.defaultProvider,
+      // The review CLI's configured direct entry (a DIFFERENT namespace from the
+      // field above — see 红线 8 in AGENTS.md).
+      reviewDefaultProvider: stats.reviewDefaultProvider,
+      askMaxRounds: stats.askRounds,
+      daemonRetrySecs: stats.retrySecs,
+      reviewAvailable: stats.reviewAvailable,
+      // Which of the patch-only knobs the USER actually authored, and what the
+      // built-in fallback is. The panel cannot edit these (no input exists), so
+      // without this it can only print a value and let the reader guess whether it
+      // is a live setting or our own default — and guessing is how the panel ended
+      // up reporting six constant rows. Reporting the default here (rather than
+      // hardcoding it client-side) keeps ONE source of truth for `25`.
+      authored: stats.authored,
+      defaults: stats.defaults,
+      reviewReason: stats.reviewReason,
+    },
+    // The model knobs, one entry per slot. Kept as TWO entries with identical
+    // shape on purpose: merging them would let the panel read them as one knob,
+    // which is the confusion 红线 8 exists to prevent. `effective` answers the
+    // question a click raises — "what will the NEXT call actually use, and why" —
+    // so a pick that did not take effect is visible on the panel instead of
+    // being a mystery that needs a host restart to diagnose.
+    provider: {
+      storePath: stats.panelStorePath,
+      storeError: stats.panelStoreError,
+      foreignVersion: stats.panelStoreForeign,
+      ask: {
+        panel: stats.panelProvider.ask,
+        config: stats.defaultProvider,
+        effective: stats.effectiveAsk,
+        source: stats.effectiveAskSource,
+        catalog: stats.modelCatalog,
+        catalogError: stats.modelCatalogError,
+      },
+      review: {
+        panel: stats.panelProvider.review,
+        config: stats.reviewDefaultProvider,
+        effective: stats.effectiveReview,
+        source: stats.effectiveReviewSource,
+        catalog: stats.reviewCatalog,
+        // name → base_url, so the panel can say what the pick DEPENDS on. A
+        // loopback entry means a local sidecar process (in the one measured
+        // working setup, the proxy that turns CodingPlan quota into a standard
+        // endpoint on a gateway that does not check signatures) — the user is
+        // told at click time instead of when the review dies.
+        endpoints: stats.reviewEndpoints,
+      },
+    },
+    // Drift/provenance signals: which daemon build we talk to, and whether the
+    // quota parser has stopped recognizing the status text. Both are silent
+    // degradations in v0.3 — now they are observable facts on the panel.
+    protocol: {
+      daemonVersion: stats.daemonVersion,
+      verifiedGeneration: '5.x',
+      quotaTextDrift: stats.quotaDriftSeen,
+      // Same species as `quotaTextDrift` above — a silent degradation turned
+      // into an observable fact — and the sharper instance of it. A renamed
+      // `tool_start` leaves every turn looking like a clean success (see
+      // askChat's `unknownTypes`), while the round fuse that counts those
+      // events quietly stops existing. The panel is where a human sees it
+      // without having to read a tool result first.
+      unknownTypes: stats.protocolUnknownTypes,
+    },
+    // CodingPlan quota. Only the daemon's `status` command carries it (as
+    // localized text), so this branch is best-effort and says why when empty.
+    quota: quota ?? { available: false, reason: 'not collected yet', fetchedAt: null },
+    sessions: { tracked: stats.sessionsTracked, error: stats.sessionsError },
+    ask: stats.ask,
+    review: stats.review,
+  };
+}
