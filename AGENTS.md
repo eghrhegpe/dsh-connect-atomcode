@@ -239,7 +239,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 | 加 / 改 client 槽位 | 本文件「宿主 ABI 面」+ `test/client-id.test.mjs` |
 | 协议漂移（daemon 换版本后行为变了） | `test/protocol.test.mjs`（故意说错的假 daemon 载荷）+ `protocol` 分支（面板显示 `daemonVersion` / `quotaTextDrift`） |
 | 改测试前 | `test/` 各套件头注——**头注就是契约**，不是附件 |
-| 想知道某版本改了什么 | `CHANGELOG.md`（**本仓库不打 git tag**，它是版本→提交的唯一回查入口） |
+| 想知道某版本改了什么 | `CHANGELOG.md`（行为史；版本↔提交回查看 `git tag`） |
 | 分不清某件事是「忘了做」还是「决定不做」 | `docs/DECISIONS.md` |
 | 复现 docs/ 里的实测 | `scripts/probes/`（每个脚本头注都写了成本） |
 | 来源与许可 | `THIRD_PARTY_NOTICES.md` |
@@ -255,7 +255,11 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
   （产物 `lib/index.js` 由构建生成，手改它等于没改）。
   **2026-10-16 补上这条断言**：此前这条纪律只写在文档里，而 `build-gate` 只比 `lib/` 与 `src/`、
   从不看 manifest——「只改一处」就是那样能悄悄漂开的。`cordis.patch.yml` 没有 version 字段。
-  **本仓库不打 git tag**，所以「某版本是哪次提交」只能靠 `CHANGELOG.md` + `git log --date=short` 回查。
+  **发版打 git tag**：`git tag v<package.json version>`（两处手改 + `npm run build` 产物落定后再打）。
+  「某版本是哪次提交」回看 `git tag`，行为史靠 `CHANGELOG.md` + `git log --date=short`。
+  发布形态与兄弟插件同款：`package.json` 的 `prepack: npm run build` + `files` 白名单 + `publishConfig.access`；
+  市场投稿见 `docs/submission/Yinyuan34513__dsh-atomcode-bridge.yml`——复制到 awesome-dsh-plugin 的
+  `data/plugins/` 后开 PR，别加 `npm:` 字段、别在 yml 里放截图（市场读仓库根 `screenshots.json`）。
 - **`upstream/atomcode-open-api`** 是参照件（第三方 AtomCode OpenAPI 实现，自带 `.git`），
   已被 `.gitignore` 的 `/upstream/` 排除、**故意不在仓库历史里**（见「工作目录与装载方式」那条）。
   它不是构建输入、不参与测试，只作接口形态的对照。

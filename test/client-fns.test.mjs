@@ -179,7 +179,7 @@ describe('quotaFacts — the panel rows', () => {
     assert.deepEqual(quotaFacts(full, 18, 3 * 3600 + 22 * 60), [
       'CodingPlan Lite-体验版',
       '2026-10-19 · 5d / 共 7d',
-      '5 小时窗口已用 18%',
+      '窗口已用 18%',
       '约 3h22m 后重置',
     ]);
   });
@@ -193,7 +193,7 @@ describe('quotaFacts — the panel rows', () => {
     // This is what replaced the joined `title` string: a missing expiry must
     // not produce "CodingPlan Lite ·  · 已用 18%".
     const rows = quotaFacts({ plan: 'Lite' }, 18, null);
-    assert.deepEqual(rows, ['CodingPlan Lite', '5 小时窗口已用 18%']);
+    assert.deepEqual(rows, ['CodingPlan Lite', '窗口已用 18%']);
     for (const row of rows) {
       assert.ok(!row.includes(' · ·'), `row must not contain an empty segment: ${row}`);
       assert.ok(row.trim() !== '', 'no blank rows');
@@ -387,7 +387,7 @@ describe('quotaView — one snapshot in, one render model out', () => {
   it('never renders the string "null" or "undefined" in the label', () => {
     // The regression stated outright: the old code path could emit this text.
     const v = quotaView(healthy, NOW);
-    assert.equal(v.label, 'atom · 5小时 18%');
+    assert.equal(v.label, 'atom · 5d / 共 7d 18%');
     assert.ok(!/null|undefined|NaN/.test(v.label), v.label);
   });
 

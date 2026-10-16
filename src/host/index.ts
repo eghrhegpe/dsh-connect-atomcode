@@ -84,7 +84,6 @@ function sameOrigin(request: any) {
   }
 }
 
-/** Profile key used to namespace session keys (e.g. "web" or "desktop"). */
 /**
  * Which DSH profile this host process belongs to, as a key-space prefix.
  *
@@ -426,7 +425,9 @@ function readConfig(rawConfig: Record<string, any>) {
     Number.isInteger(config.daemon_start_timeout_secs) && config.daemon_start_timeout_secs >= 0
       ? config.daemon_start_timeout_secs
       : 30;
-  /** The start poll ticks every 1.5s; a 0s budget spawns without waiting. */
+  /** Start poll ticks every 1.5s. A 0s budget (attempts===0) spawns and does
+   *  one post-spawn probe (no polling wait) — see ensureDaemonStarted, which
+   *  reports the real answered state rather than failing unconditionally. */
   const daemonStartAttempts = Math.max(0, Math.ceil((daemonStartTimeoutSecs * 1000) / 1500));
   // Cooldown before a FAILED auto-start is retried. Without this the shared
   // start promise is a permanent tombstone: the first failure (binary not yet
@@ -737,11 +738,24 @@ function createRuntime({
         ...(defaultWorkingDir ? { workingDir: defaultWorkingDir } : {}),
         log,
       });
+      let answered = false;
       for (let i = 0; i < daemonStartAttempts; i++) {
         await sleep(1500);
-        if (await refreshHealth(true)) return true;
+        if (await refreshHealth(true)) {
+          answered = true;
+          break;
+        }
       }
-      return false;
+      // A 0s budget (daemonStartAttempts === 0) means "spawn and don't poll",
+      // but we must still report whether the daemon actually answered —
+      // otherwise the panel shows a phantom "auto-start failed" even though the
+      // spawn succeeded and the daemon may already be up. Do exactly one
+      // post-spawn probe when there were no poll ticks. (This is why a 0s
+      // budget no longer unconditionally fails; see the config comment above.)
+      if (!answered && daemonStartAttempts === 0) {
+        answered = await refreshHealth(true);
+      }
+      return answered;
     })()
       .catch(() => false)
       .finally(() => {
@@ -1245,7 +1259,7 @@ function mountAskTool({
         provider: { type: 'string', description: '可选：点名 AtomCode 模型档位，传它就换本次回合用的模型。名字以 daemon GET /models 的 provider 字段为准（如 "AtomGit-glm5.3-flash"），不要传裸模型 id（"glm5.3-flash"）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
         working_dir: { type: 'string', description: '可选：回合的工作目录，同时是侧边对话的会话键；缺省用插件配置' },
         timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800' },
-        max_rounds: { type: 'number', description: '可选：工具调用轮数上限（按 daemon SSE 的 tool_start 事件计数；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数。默认取插件配置，当前 25；传 0 关掉本端熔断，交回 daemon 自带治理）。超限只中止本端等待并返回错误，不保证停掉 daemon 侧回合' },
+        max_rounds: { type: 'number', description: '可选：工具调用轮数上限（按 daemon SSE 的 tool_start 事件计数；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数。默认取插件配置，当前 ' + askMaxRounds + '；传 0 关掉本端熔断，交回 daemon 自带治理）。超限只中止本端等待并返回错误，不保证停掉 daemon 侧回合' },
       },
       required: ['message'],
     },
@@ -1399,6 +1413,13 @@ function mountAskTool({
           : 30 * 60 * 1000;
       // Same contract as the config field above: an explicit 0 is "no fuse", not
       // a missing value, so it must not fall back to the configured budget.
+      // DELIBERATELY ASYMMETRIC with the review path below (mountReviewTool, this file):
+      // there 0 means "unset -> use default 35", here 0 means "no fuse". Reason:
+      // review forwards its fuse to the CLI as `--max-rounds`, and a literal 0
+      // there aborts the review immediately (see review.ts buildReviewArgs), so
+      // review cannot honour "0 = no fuse" without also changing that argv
+      // contract. Ask governs the fuse in-process and has no such boundary.
+      // Do NOT "unify" these two predicates — they encode different contracts.
       const maxRounds =
         Number.isFinite(args.max_rounds) && args.max_rounds >= 0 ? Math.floor(args.max_rounds) : askMaxRounds;
       const result = await askChat({
@@ -1539,7 +1560,7 @@ function mountReviewTool({
         pr: { type: 'number', description: '可选：GitHub PR 号（需本机 gh CLI）' },
         diff_text: { type: 'string', description: '可选：原始 diff 文本（写临时文件走 --diff-file；适合非 git 场景/CI 产物）' },
         provider: { type: 'string', description: '可选：点名 AtomCode provider，原样透传给 review CLI 的 --provider。名字以 ~/.atomcode/config.toml 的 [providers.<name>] 条目为准（这条路径不看 daemon /models，也不是裸模型 id——别传 "glm5.3-flash"）；要换该 provider 用的模型，改它条目里的 model。留空时按顺序取：面板上选的条目 → 插件配置 review_default_provider → config.toml 的 default_provider → 自动选择（见工具描述）' },
-        max_rounds: { type: 'number', description: '可选：评审 agent 轮数保险丝（默认取插件配置，通常 35）' },
+        max_rounds: { type: 'number', description: '可选：评审 agent 轮数保险丝（默认取插件配置，通常 ' + reviewMaxRounds + '）' },
         max_duration_secs: { type: 'number', description: '可选：墙钟保险丝秒数（默认取插件配置，通常 900）。有效上限约 1740s——进程级兜底取 maxDuration+60s，超过宿主 30min 工具超时就会先被宿主杀掉' },
         enable_web: { type: 'boolean', description: '可选：允许评审用 web_search（默认 false，适配受限网络）' },
       },
@@ -1666,6 +1687,13 @@ function mountReviewTool({
       }
       // Normalize to positive numbers here too (mirrors buildReviewArgs) so the
       // process-level backstop is computed from the same values the CLI gets.
+      // DELIBERATELY ASYMMETRIC with the ask path (mountAskTool, this file): there 0
+      // means "no fuse", here 0 means "unset -> use default 35". An explicit 0
+      // is NOT "no fuse" because review forwards the fuse to the CLI as
+      // `--max-rounds`, and a literal 0 would abort the review immediately
+      // (see review.ts buildReviewArgs). Honouring "0 = no fuse" here would
+      // require changing that argv contract first. The two predicates are
+      // intentionally different; do not merge them blindly.
       const maxRounds =
         Number.isFinite(args.max_rounds) && args.max_rounds > 0
           ? Math.floor(args.max_rounds)

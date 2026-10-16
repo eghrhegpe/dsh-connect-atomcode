@@ -343,7 +343,10 @@ export async function* streamChat(opts: StreamChatOptions) {
     else opts.signal.addEventListener('abort', onAbort, { once: true });
   }
   let toolStartCount = 0;
-  const roundFuse = opts.maxRounds! > 0 ? opts.maxRounds! : 0;
+  // `maxRounds` may be undefined when the caller sets no fuse; treat undefined
+  // (and any non-positive value) as "no fuse" (0). Use an explicit null check
+  // instead of a non-null assertion so an unset value is handled, not lied to.
+  const roundFuse = opts.maxRounds != null && opts.maxRounds > 0 ? opts.maxRounds : 0;
 
   /** Re-throw an abort-flavoured transport error as an actionable message. */
   const describeAbort = (error: unknown) => {

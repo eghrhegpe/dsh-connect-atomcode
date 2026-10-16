@@ -357,9 +357,18 @@
 		return [
 			quota.plan ? "CodingPlan " + quota.plan : "CodingPlan",
 			[quota.expires, quota.planWindow].filter(Boolean).join(" · "),
-			"5 小时窗口已用 " + pct + "%",
+			"窗口已用 " + pct + "%",
 			liveSecs === null ? null : "约 " + fmtCountdown(liveSecs) + " 后重置"
 		].filter(Boolean);
+	}
+	/**
+	* The window descriptor for quota readouts. Prefer the window the daemon
+	* actually reported (`planWindow`, parsed from the status text) over the
+	* historical "5小时" default — a 7-day plan must not be labelled "5小时窗口".
+	* Falls back to "5小时" only when the daemon did not expose a window at all.
+	*/
+	function windowLabel(planWindow) {
+		return typeof planWindow === "string" && planWindow.trim() !== "" ? planWindow.trim() : "5小时";
 	}
 	/**
 	* Everything the readout renders, derived from ONE stats snapshot.
@@ -380,7 +389,7 @@
 			known: true,
 			pct,
 			limited,
-			label: "atom · 5小时 " + pct + "%",
+			label: "atom · " + windowLabel(quota.planWindow) + " " + pct + "%",
 			color: limited || quota.usagePercent >= 100 ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-tertiary)",
 			facts: quotaFacts(quota, pct, liveSecs),
 			barWidth: barWidth(pct)
@@ -768,72 +777,62 @@
 				const [data, setData] = useState(null);
 				const [error, setError] = useState(null);
 				const [updatedAt, setUpdatedAt] = useState(0);
-				const generation = useRef(0);
-				const inFlight = useRef(null);
-				const load = useCallback(async () => {
-					if (statsCache.fetchedAt > 0 && Date.now() - statsCache.fetchedAt < POLL_MS) {
-						setData(statsCache.data);
-						setError(statsCache.error);
-						setUpdatedAt(statsCache.fetchedAt);
-						return;
-					}
-					if (statsCache.promise) {
-						await statsCache.promise;
-						setData(statsCache.data);
-						setError(statsCache.error);
-						setUpdatedAt(statsCache.fetchedAt);
-						return;
-					}
-					generation.current += 1;
-					const mine = generation.current;
-					const isCurrent = () => generation.current === mine;
-					const controller = typeof AbortController === "function" ? new AbortController() : null;
-					inFlight.current = controller;
-					const deadlineMs = Math.max(1e3, 4e3);
-					let timedOut = false;
-					const timer = setTimeout(() => {
-						timedOut = true;
-						if (controller && controller.abort) controller.abort();
-					}, deadlineMs);
-					statsCache.promise = (async () => {
-						try {
-							const response = await fetch(STATS_PATH, {
-								headers: { accept: "application/json" },
-								cache: "no-store",
-								...controller ? { signal: controller.signal } : {}
-							});
-							if (!isCurrent()) return;
-							if (!response.ok) {
-								statsCache.error = "HTTP " + response.status;
-								statsCache.data = null;
-								return;
-							}
-							const body = await response.json();
-							if (!isCurrent()) return;
-							statsCache.data = body && body.ok ? body : null;
-							statsCache.error = null;
-							statsCache.fetchedAt = Date.now();
-						} catch (reason) {
-							if (!isCurrent()) return;
-							statsCache.error = timedOut ? `面板数据 ${deadlineMs / 1e3}s 未返回（daemon 可能卡住）` : reason && reason.message ? reason.message : String(reason);
-							statsCache.data = null;
-						} finally {
-							clearTimeout(timer);
-							statsCache.promise = null;
-						}
-					})();
-					await statsCache.promise;
+				const alive = useRef(true);
+				/** Publish the shared cache to this instance — unless it has unmounted. */
+				const commit = useCallback(() => {
+					if (!alive.current) return;
 					setData(statsCache.data);
 					setError(statsCache.error);
 					setUpdatedAt(statsCache.fetchedAt);
 				}, []);
+				const load = useCallback(async () => {
+					if (statsCache.fetchedAt > 0 && Date.now() - statsCache.fetchedAt < POLL_MS) {
+						commit();
+						return;
+					}
+					if (!statsCache.promise) {
+						const controller = typeof AbortController === "function" ? new AbortController() : null;
+						const deadlineMs = Math.max(1e3, 4e3);
+						let timedOut = false;
+						const timer = setTimeout(() => {
+							timedOut = true;
+							if (controller && controller.abort) controller.abort();
+						}, deadlineMs);
+						statsCache.promise = (async () => {
+							try {
+								const response = await fetch(STATS_PATH, {
+									headers: { accept: "application/json" },
+									cache: "no-store",
+									...controller ? { signal: controller.signal } : {}
+								});
+								if (!response.ok) {
+									statsCache.error = "HTTP " + response.status;
+									statsCache.data = null;
+									return;
+								}
+								const body = await response.json();
+								statsCache.data = body && body.ok ? body : null;
+								statsCache.error = null;
+								statsCache.fetchedAt = Date.now();
+							} catch (reason) {
+								statsCache.error = timedOut ? `面板数据 ${deadlineMs / 1e3}s 未返回（daemon 可能卡住）` : reason && reason.message ? reason.message : String(reason);
+								statsCache.data = null;
+							} finally {
+								clearTimeout(timer);
+								statsCache.promise = null;
+							}
+						})();
+					}
+					await statsCache.promise;
+					commit();
+				}, [commit]);
 				useEffect(() => {
+					alive.current = true;
 					load();
 					const id = setInterval(load, POLL_MS);
 					return () => {
+						alive.current = false;
 						clearInterval(id);
-						generation.current += 1;
-						if (inFlight.current && inFlight.current.abort) inFlight.current.abort();
 					};
 				}, [load]);
 				return {
@@ -1099,7 +1098,7 @@
 						height: "100%",
 						width: barWidth(quotaPct) + "%",
 						background: quotaColor(quotaPct, quota.limited)
-					} })), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 5 小时窗口已用尽，回合会被限流") : null))));
+					} })), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 " + windowLabel(quota.planWindow) + " 窗口已用尽，回合会被限流") : null))));
 				}
 				return body;
 			}

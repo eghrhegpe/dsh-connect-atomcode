@@ -1055,8 +1055,9 @@ describe('version truth — the manifest and the reported version cannot disagre
   //
   // Nothing else could notice a half-bumped version: `build-gate.test.mjs`
   // compares `lib/` against `src/` and never looks at the manifest, so a release
-  // could ship as 0.4.1 while every panel says 0.4.0. This repository keeps no
-  // git tags either, so the version string IS the release identity.
+  // could ship as 0.4.1 while every panel says 0.4.0. The manifest version also
+  // names the release tag (`git tag v<version>`) and the npm publish, so a
+  // mismatch here would mislabel both.
   //
   // Reading `src/` as TEXT (never importing it) is deliberate and safe here. The
   // "tests hit artifacts, not sources" rule exists for module identity — see the

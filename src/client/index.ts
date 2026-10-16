@@ -33,6 +33,7 @@ import {
   quotaColor,
   quotaFacts,
   quotaView,
+  windowLabel,
   panelStyle,
 } from './quota.ts';
 import { providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint, daemonStatusLine } from './rows.ts';
@@ -225,96 +226,103 @@ const REGISTRATION = {
       const [data, setData] = useState(null);
       const [error, setError] = useState(null);
       const [updatedAt, setUpdatedAt] = useState(0);
-      const generation = useRef(0);
-      const inFlight = useRef(null);
+      // Is THIS instance still mounted? The shared request lives on `statsCache`
+      // and is owned by NO instance (see the module-level cache note), so an
+      // unmount must only stop THIS instance's setState — never abort a request
+      // its peers may still be awaiting.
+      //
+      // The previous shape kept the AbortController in a per-instance ref and
+      // aborted it in the cleanup, so whichever instance happened to START the
+      // shared fetch cancelled it for every other consumer the moment it
+      // unmounted — a needless error flash that only healed on the next poll.
+      // The per-instance `generation` counter had the mirror-image flaw: an
+      // unmount bumped it, so the shared request's `isCurrent()` check went
+      // permanently false and it could no longer write the cache for its
+      // surviving peers at all.
+      const alive = useRef(true);
 
-      const load = useCallback(async () => {
-        // Reuse a fresh cache entry: another instance fetched within POLL_MS.
-        if (statsCache.fetchedAt > 0 && Date.now() - statsCache.fetchedAt < POLL_MS) {
-          setData(statsCache.data);
-          setError(statsCache.error);
-          setUpdatedAt(statsCache.fetchedAt);
-          return;
-        }
-        // Share an in-flight fetch: another instance initiated the request.
-        if (statsCache.promise) {
-          await statsCache.promise;
-          setData(statsCache.data);
-          setError(statsCache.error);
-          setUpdatedAt(statsCache.fetchedAt);
-          return;
-        }
-        generation.current += 1;
-        const mine = generation.current;
-        const isCurrent = () => generation.current === mine;
-        const controller = typeof AbortController === 'function' ? new AbortController() : null;
-        inFlight.current = controller;
-        // A HARD DEADLINE, separate from the poll interval.
-        //
-        // Without it a request that never settles (the daemon wedged on
-        // `POST /command`, a half-open socket) leaves this promise pending forever:
-        // the catch never runs, `error` stays null, and the panel keeps rendering
-        // the last good snapshot while `更新于` silently freezes. That is a silent
-        // degradation — the one thing this plugin is not allowed to do — and it is
-        // the LIKELIEST failure mode, because quota polling is the most frequent
-        // daemon call we make.
-        //
-        // Slightly under POLL_MS so a hung request is surfaced before the next tick
-        // replaces it, making the failure visible instead of merely late.
-        const deadlineMs = Math.max(1000, POLL_MS - 1000);
-        let timedOut = false;
-        const timer = setTimeout(() => {
-          timedOut = true;
-          if (controller && controller.abort) controller.abort();
-        }, deadlineMs);
-        // Publish the in-flight promise so other instances can share it.
-        statsCache.promise = (async () => {
-          try {
-            const response = await fetch(STATS_PATH, {
-              headers: { accept: 'application/json' },
-              cache: 'no-store',
-              ...(controller ? { signal: controller.signal } : {}),
-            });
-            if (!isCurrent()) return;
-            if (!response.ok) {
-              statsCache.error = 'HTTP ' + response.status;
-              statsCache.data = null;
-              return;
-            }
-            const body = await response.json();
-            if (!isCurrent()) return;
-            statsCache.data = body && body.ok ? body : null;
-            statsCache.error = null;
-            statsCache.fetchedAt = Date.now();
-          } catch (reason: any) {
-            if (!isCurrent()) return;
-            // An abort we caused is a TIMEOUT, not a user cancellation: say so, or a
-            // wedged daemon reports the AbortError text and reads like a bug in here.
-            statsCache.error =
-              timedOut
-                ? `面板数据 ${deadlineMs / 1000}s 未返回（daemon 可能卡住）`
-                : reason && reason.message
-                  ? reason.message
-                  : String(reason);
-            statsCache.data = null;
-          } finally {
-            clearTimeout(timer);
-            statsCache.promise = null;
-          }
-        })();
-        await statsCache.promise;
+      /** Publish the shared cache to this instance — unless it has unmounted. */
+      const commit = useCallback(() => {
+        if (!alive.current) return;
         setData(statsCache.data);
         setError(statsCache.error);
         setUpdatedAt(statsCache.fetchedAt);
       }, []);
 
+      const load = useCallback(async () => {
+        // Reuse a fresh cache entry: another instance fetched within POLL_MS.
+        if (statsCache.fetchedAt > 0 && Date.now() - statsCache.fetchedAt < POLL_MS) {
+          commit();
+          return;
+        }
+        // No request in flight? WE start one and publish it for peers to share.
+        // From here the request owns its own lifetime — it runs to success,
+        // error or its own deadline and clears itself — regardless of which
+        // consumer unmounts, so no peer's cleanup can cancel it.
+        if (!statsCache.promise) {
+          const controller = typeof AbortController === 'function' ? new AbortController() : null;
+          // A HARD DEADLINE, separate from the poll interval.
+          //
+          // Without it a request that never settles (the daemon wedged on
+          // `POST /command`, a half-open socket) leaves this promise pending forever:
+          // the catch never runs, `error` stays null, and the panel keeps rendering
+          // the last good snapshot while `更新于` silently freezes. That is a silent
+          // degradation — the one thing this plugin is not allowed to do — and it is
+          // the LIKELIEST failure mode, because quota polling is the most frequent
+          // daemon call we make.
+          //
+          // Slightly under POLL_MS so a hung request is surfaced before the next tick
+          // replaces it, making the failure visible instead of merely late.
+          const deadlineMs = Math.max(1000, POLL_MS - 1000);
+          let timedOut = false;
+          const timer = setTimeout(() => {
+            timedOut = true;
+            if (controller && controller.abort) controller.abort();
+          }, deadlineMs);
+          // Publish the in-flight promise so other instances can share it.
+          statsCache.promise = (async () => {
+            try {
+              const response = await fetch(STATS_PATH, {
+                headers: { accept: 'application/json' },
+                cache: 'no-store',
+                ...(controller ? { signal: controller.signal } : {}),
+              });
+              if (!response.ok) {
+                statsCache.error = 'HTTP ' + response.status;
+                statsCache.data = null;
+                return;
+              }
+              const body = await response.json();
+              statsCache.data = body && body.ok ? body : null;
+              statsCache.error = null;
+              statsCache.fetchedAt = Date.now();
+            } catch (reason: any) {
+              // An abort we caused is a TIMEOUT, not a user cancellation: say so, or a
+              // wedged daemon reports the AbortError text and reads like a bug in here.
+              statsCache.error =
+                timedOut
+                  ? `面板数据 ${deadlineMs / 1000}s 未返回（daemon 可能卡住）`
+                  : reason && reason.message
+                    ? reason.message
+                    : String(reason);
+              statsCache.data = null;
+            } finally {
+              clearTimeout(timer);
+              statsCache.promise = null;
+            }
+          })();
+        }
+        await statsCache.promise;
+        commit();
+      }, [commit]);
+
       useEffect(() => {
+        alive.current = true;
         load();
         const id = setInterval(load, POLL_MS);
         return () => {
+          alive.current = false;
           clearInterval(id);
-          generation.current += 1;
-          if (inFlight.current && inFlight.current.abort) inFlight.current.abort();
         };
       }, [load]);
 
@@ -929,7 +937,7 @@ const REGISTRATION = {
                       h(Row, { label: '到期' }, quotaExpiry || '—'),
                       h(Row, { label: '重置于' }, quota.resetAt || '—'),
                       quota.limited
-                        ? h('p', { style: S.error }, '当前 5 小时窗口已用尽，回合会被限流')
+                        ? h('p', { style: S.error }, '当前 ' + windowLabel(quota.planWindow) + ' 窗口已用尽，回合会被限流')
                         : null
                     )
             )

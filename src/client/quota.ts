@@ -90,9 +90,19 @@ export function quotaFacts(quota: QuotaBranch, pct: number, liveSecs: number | n
   return [
     (quota.plan ? 'CodingPlan ' + quota.plan : 'CodingPlan'),
     [quota.expires, quota.planWindow].filter(Boolean).join(' · '),
-    '5 小时窗口已用 ' + pct + '%',
+    '窗口已用 ' + pct + '%',
     liveSecs === null ? null : '约 ' + fmtCountdown(liveSecs) + ' 后重置',
   ].filter(Boolean) as string[];
+}
+
+/**
+ * The window descriptor for quota readouts. Prefer the window the daemon
+ * actually reported (`planWindow`, parsed from the status text) over the
+ * historical "5小时" default — a 7-day plan must not be labelled "5小时窗口".
+ * Falls back to "5小时" only when the daemon did not expose a window at all.
+ */
+export function windowLabel(planWindow: string | null | undefined): string {
+  return typeof planWindow === 'string' && planWindow.trim() !== '' ? planWindow.trim() : '5小时';
 }
 
 /**
@@ -115,7 +125,7 @@ export function quotaView(quota: QuotaBranch | null | undefined, nowMs: number):
     known: true,
     pct,
     limited,
-    label: 'atom · 5小时 ' + pct + '%',
+    label: 'atom · ' + windowLabel(quota.planWindow) + ' ' + pct + '%',
     // `quotaColor` answers "is this an alarm?" and returns the PRIMARY
     // label for the normal case — right for the detail page's big metric,
     // wrong here. In the dock the normal state must read as an ambient

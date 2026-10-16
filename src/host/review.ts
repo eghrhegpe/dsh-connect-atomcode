@@ -237,6 +237,11 @@ export function buildReviewArgs(opts: ReviewOptions = {}): ReviewArgs {
   // `--max-duration 0`) and its meaning becomes the CLI's guess — a zero round
   // cap in particular could abort the review immediately. Fall back to the
   // documented defaults instead of forwarding nonsense.
+  // NOTE: this `> 0` predicate is intentionally asymmetric with the ask path
+  // (src/host/index.ts's max_rounds normalization), where 0 means "no fuse".
+  // Here 0 means "unset -> use default 35" precisely because forwarding
+  // `--max-rounds 0` to the CLI would abort the review. See that comment before
+  // changing this predicate, or you will re-introduce the immediate-abort bug.
   const maxRounds =
     Number.isFinite(opts.maxRounds) && opts.maxRounds! > 0 ? Math.floor(opts.maxRounds!) : 35;
   const maxDurationSecs =
