@@ -71,6 +71,12 @@ for (const suite of liveSkipped) {
 if (withCoverage) {
   // One process for the whole set: coverage is only meaningful aggregated, and a
   // per-file report would print 20+ partial tables whose totals look like truth.
+  //
+  // This is NOT the gate, and it is a WEAKER execution model than the loop below:
+  // one process means node's default per-file concurrency, so the `lib/review.js`
+  // spawner singleton, the hardcoded dead ports and the "this port must be free"
+  // assertions can cross suites. The numbers stay usable; a failure HERE is not
+  // evidence the gate would fail, and a green gate says nothing about coverage.
   console.log(`▶ ${files.length} suites, one process (coverage must aggregate)\n`);
   const result = spawnSync(
     process.execPath,
