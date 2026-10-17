@@ -235,6 +235,7 @@ npm run coverage   # 同一批套件 + node 内置覆盖率报告（单进程聚
 - `stats-route.test.mjs` — 详情页统计路由（唯一被渲染端调用的接口）：方法门（405）、同源门（403/放行）、快照里面板会解引用的**每一个字段**、二进制来源回退链、`sessions.tracked` 实时读盘且**按 prefix 计数**、**失败后按 `daemon_retry_secs` 重试拉起**、以及额度分支（解析 / 必带 working_dir / 跨轮询缓存 / `0` 关闭 / daemon 不在时不编数字 / 文本漂移标记的置位与复位）。
 - `quota.test.mjs` — 额度文本解析器（真实抓取的载荷 + 英文 + 用尽 100% + 空/畸形输入 + 时长解析）。
 - `client-fns.test.mjs` — **渲染端纯函数**（v0.4 新增）：额度格式化与判定（`fmtDuration` / `fmtCountdown` / `quotaColor` / `liveRemaining` / `pctLabel` / `barWidth` / `quotaFacts` / `panelStyle` / `quotaView`）加模型档位与回合边界（`providerRows` / `providerSelectModel` / `turnBoundaryRows`）。v0.3 只测了客户端的**注册契约**（id / inject / 槽位座位），而这些真正会算出错误数字的边界——0ms、负倒计时、null 额度、770% 的进度条、两种目录形状、无证据时的"已改"标签——一条都没测。**名单以 `client.js` 的 `TESTABLE` 为准**，这里只是索引，不追着它改。
+- `client-render.test.mjs` — **面板真的渲染一遍**（无 jsdom、无新依赖：假 `__ModuleLoader__` + 记录式 React + 按调用顺序消费的 hook 脚本）：六张卡的行与文案、空态各说各的因、两个下拉的禁用与原因、chip 文案、座位认领（keyed 与旧 list 座位）、**任何快照形状都不许出现 `undefined` / `NaN` / `[object Object]`**，以及 `useStats` 的生命周期（两个实例共享一次请求、4s 硬截止、5s 轮询、卸载不得 abort 同伴的请求）。它抓到的第一条真缺陷是 `if (error)` 把缓存快照整段丢掉——「已断开」「最后更新」与 in-flight 条在重载失败时全都不可达。
 - `protocol.test.mjs` — **漂移钉子**（v0.4 新增）：daemon 用完全陌生的 SSE 词汇应答时必须**响亮报错**（而不是含糊的 "ended before done"）、加性未知事件**不得**让健康回合失败**但也不得静默**（类型必须带出，否则轮数熔断可静默失效）、`healthInfo` 暴露 daemon 版本、额度文本改词后不编数字、TOML provider 解析的引号名与全引号段名。
 
 Live 套件需要真环境，**缺前置条件时自述原因并跳过**（不会静默变红）：

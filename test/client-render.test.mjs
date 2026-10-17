@@ -36,7 +36,7 @@
  * that reads like data.
  */
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -54,19 +54,56 @@ const NOW = 1_700_000_000_000;
  * render and consumed in call order; an exhausted queue falls back to the
  * initial value, which is what a component that receives no snapshot sees.
  */
-function makeReact(script = []) {
+function makeReact(script = [], { collectEffects = false } = {}) {
   const queue = [...script];
+  // Effects are recorded (not run) and every setState value lands in
+  // `published`, so a test can drive one real lifecycle — mount, request,
+  // settle, unmount — without a reconciler: run the effect, wait for the
+  // publish, re-render with those values as the script.
+  const effects = [];
+  const published = [];
   return {
+    effects,
+    published,
     createElement(type, props, ...kids) {
       const children = kids.length === 0 ? [] : kids.length === 1 ? [kids[0]] : kids;
       if (typeof type === 'function') return type({ ...(props || {}), children });
       return { type: String(type), props: props || {}, children };
     },
-    useState: (init) => [queue.length > 0 ? queue.shift() : init, () => {}],
-    useEffect: () => {},
+    useState: (init) => [
+      queue.length > 0 ? queue.shift() : init,
+      (value) => {
+        published.push(value);
+      },
+    ],
+    useEffect: (fn) => {
+      if (collectEffects) effects.push(fn);
+    },
     useRef: (init) => ({ current: init }),
     useCallback: (fn) => fn,
     useMemo: (fn) => fn(),
+  };
+}
+
+/**
+ * Run the recorded effects SYNCHRONOUSLY, DRAIN them, and hand back their
+ * cleanups.
+ *
+ * Synchronous on purpose (and draining on purpose): `useStats`'s effect arms the
+ * poll interval and calls `load()` without awaiting it, and `load()` runs to its
+ * first `await` synchronously — so the fetch and the deadline timer are already
+ * installed when this returns. That is what lets a test swap the timer globals
+ * around it, and draining keeps a second render from re-running the first
+ * instance's effect.
+ */
+function runEffects(react) {
+  const cleanups = [];
+  for (const fn of react.effects.splice(0)) {
+    const cleanup = fn();
+    if (typeof cleanup === 'function') cleanups.push(cleanup);
+  }
+  return () => {
+    for (const cleanup of cleanups) cleanup();
   };
 }
 
@@ -170,8 +207,8 @@ function rowValue(node, label) {
  * `mounted` latch in `apply` means the FIRST seat that registers wins, so the
  * bundle-config seat takes the panel and the dock seat still gets the chip.
  */
-async function mount({ script = [], seats = ['plugins.bundle.config', 'plugins.detail.section', 'conversation.composer.dock'] } = {}) {
-  const react = makeReact(script);
+async function mount({ script = [], seats = ['plugins.bundle.config', 'plugins.detail.section', 'conversation.composer.dock'], collectEffects = false } = {}) {
+  const react = makeReact(script, { collectEffects });
   const mod = await loadClient(react);
   const injections = [];
   const registrations = [];
@@ -194,7 +231,7 @@ async function mount({ script = [], seats = ['plugins.bundle.config', 'plugins.d
     registrations.find((r) => r.seat === 'plugins.bundle.config') ??
     registrations.find((r) => r.seat === 'plugins.detail.section');
   const chip = registrations.find((r) => r.seat === 'conversation.composer.dock');
-  return { mod, injections, registrations, panel: panel && panel.Component, chip: chip && chip.Component };
+  return { mod, react, injections, registrations, panel: panel && panel.Component, chip: chip && chip.Component };
 }
 
 /** Mount the panel with a snapshot already in `useStats`'s state, then render. */
@@ -570,5 +607,200 @@ describe('client render — no shape of snapshot may produce a placeholder', () 
         assert.ok(!ct.includes(placeholder), `the chip printed "${placeholder}" for ${name}: ${ct}`);
       }
     }
+  });
+});
+
+// ── the panel's own lifecycle: one shared request, one deadline, one poll ───
+
+const POLL_MS = 5_000; // mirror of src/client/index.ts
+const DEADLINE_MS = 4_000; // POLL_MS - 1000, so a hang surfaces before the next tick
+
+/** Poll `cond` until it holds, or fail with the reason the caller named. */
+async function waitFor(cond, what, { timeoutMs = 2_000, stepMs = 5 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (cond()) return;
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+  assert.fail(`timed out after ${timeoutMs}ms waiting for ${what}`);
+}
+
+/**
+ * Install a `fetch` stub for the duration of `body` and put the real one back
+ * however it ends. Every call is recorded WITH its `signal`, because the
+ * interesting question is not only "did it fetch" but "did somebody abort a
+ * request a peer was still waiting for".
+ */
+async function withFetch(handler, body) {
+  const saved = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = (url, init) => {
+    const call = { url, init };
+    calls.push(call);
+    return handler(call);
+  };
+  try {
+    return await body(calls);
+  } finally {
+    if (saved === undefined) delete globalThis.fetch;
+    else globalThis.fetch = saved;
+  }
+}
+
+const okResponse = (snapshot) => ({ ok: true, status: 200, json: async () => snapshot });
+
+/** A request that only the deadline can end, rejecting the way an abort does. */
+const hungFetch = (call) =>
+  new Promise((resolve, reject) => {
+    call.init.signal.addEventListener('abort', () =>
+      reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }))
+    );
+  });
+
+/** Run `body` with the timer globals replaced, then restore them. */
+async function withTimers(replace, body) {
+  const saved = { setTimeout: globalThis.setTimeout, setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval };
+  Object.assign(globalThis, replace);
+  try {
+    return await body();
+  } finally {
+    Object.assign(globalThis, saved);
+  }
+}
+
+/**
+ * Render ONE MORE instance of the panel on an existing `handle`, with its effect
+ * running, and hand back a `leave()`.
+ *
+ * It must be the same `handle`: `mount()` loads `client.js` afresh under a
+ * cache-busting URL, so two `mount()` calls are two module instances and would
+ * each get their own `statsCache` — the very sharing these tests exist to check.
+ *
+ * Every instance is ALSO registered for the `afterEach` sweep: the effect arms a
+ * real `setInterval`, and a live interval outlives the tests — the runner waits
+ * on a node that never exits and the failure you were trying to read never gets
+ * printed. (That is what happened when the first version forgot to unmount.)
+ */
+const armed = [];
+function mountLive(handle) {
+  handle.panel({ view: 'page' });
+  const leave = runEffects(handle.react);
+  armed.push(leave);
+  return { handle, published: handle.react.published, leave };
+}
+
+afterEach(() => {
+  for (const leave of armed.splice(0)) leave();
+});
+
+describe('client render — the shared poll, the hard deadline and the unmount', () => {
+  it('two instances share ONE request, and the second one reads the cache instead of fetching', async () => {
+    await withFetch(
+      async () => okResponse(FULL),
+      async (calls) => {
+        const handle = await mount({ collectEffects: true });
+
+        const a = mountLive(handle);
+        await waitFor(() => a.published.length >= 3, 'A to publish the snapshot');
+        assert.equal(calls.length, 1, 'mounting must issue exactly one request');
+        assert.equal(a.published[0], FULL, 'and publish the body as data');
+        assert.equal(a.published[1], null, 'with no error');
+
+        const b = mountLive(handle); // well inside POLL_MS
+        assert.equal(calls.length, 1, 'a fresh cache entry must NOT be fetched a second time');
+        assert.equal(b.published.length, 6, 'B published its three state values too');
+        assert.equal(b.published[3], FULL, 'B must get the same body from the cache');
+        assert.equal(b.published[4], null, 'and the same (absent) error');
+      }
+    );
+  });
+
+  it('an unmount must not abort a request its peer may still be waiting for', async () => {
+    let settle;
+    await withFetch(
+      (call) =>
+        new Promise((resolve, reject) => {
+          settle = resolve;
+          call.init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+      async (calls) => {
+        const handle = await mount({ collectEffects: true });
+
+        const a = mountLive(handle); // A starts the shared request
+        a.leave(); // …and goes away while it is still in flight
+        assert.equal(calls[0].init.signal.aborted, false, 'an unmount must not abort a request owned by nobody');
+
+        const b = mountLive(handle);
+        assert.equal(calls.length, 1, 'B must adopt the in-flight promise, not start a second request');
+
+        settle(okResponse(FULL));
+        await waitFor(() => b.published.length >= 3, 'B to publish the adopted answer');
+        assert.equal(b.published[0], FULL, 'the survivor must still get the data');
+        assert.equal(b.published[1], null, 'and no error flash for the peer that left');
+        assert.equal(b.published.length, 3, 'the unmounted instance must publish NOTHING');
+      }
+    );
+  });
+
+  it('a hung request is reported as the panel deadline, not as a bare AbortError', async () => {
+    const timers = [];
+    let live;
+    await withFetch(hungFetch, async () => {
+      const handle = await mount({ collectEffects: true });
+      await withTimers({ setTimeout: (fn, ms) => timers.push({ fn, ms }) }, () => {
+        live = mountLive(handle); // arms the deadline synchronously
+      });
+      assert.equal(timers.length, 1, 'exactly one deadline timer per request');
+      assert.equal(timers[0].ms, DEADLINE_MS, 'the deadline must fire before the next poll replaces the request');
+      timers[0].fn(); // the daemon never answers
+    });
+    await waitFor(() => live.published.length >= 3, 'the timeout to reach the panel');
+    assert.equal(
+      live.published[1],
+      '面板数据 4s 未返回（daemon 可能卡住）',
+      'a wedged daemon must be NAMED; the panel cannot report an AbortError from inside itself'
+    );
+    assert.equal(live.published[0], null, 'and it must not keep showing a body it never received');
+  });
+
+  it('arms the poll at POLL_MS and clears it on unmount', async () => {
+    const intervals = [];
+    const cleared = [];
+    await withFetch(async () => okResponse(FULL), async () => {
+      const handle = await mount({ collectEffects: true });
+      await withTimers(
+        {
+          setInterval: (fn, ms) => {
+            intervals.push({ fn, ms });
+            return intervals.length;
+          },
+          clearInterval: (id) => cleared.push(id),
+        },
+        () => {
+          const live = mountLive(handle);
+          assert.equal(intervals.length, 1, 'mounting arms exactly one poll');
+          assert.equal(intervals[0].ms, POLL_MS, 'the poll interval must be POLL_MS');
+          assert.deepEqual(cleared, [], 'nothing is cleared while the panel is up');
+          live.leave();
+        }
+      );
+      assert.deepEqual(cleared, [1], 'unmounting must clear its own poll, or every card leaks one');
+    });
+  });
+
+  it('names an HTTP failure, and treats a body without ok as no data — never a throw', async () => {
+    await withFetch(async () => ({ ok: false, status: 503, json: async () => ({}) }), async () => {
+      const live = mountLive(await mount({ collectEffects: true }));
+      await waitFor(() => live.published.length >= 3, 'the HTTP failure to reach the panel');
+      assert.equal(live.published[1], 'HTTP 503', 'the status must be named');
+      assert.equal(live.published[0], null, 'a failed poll must not present the body as data');
+    });
+
+    await withFetch(async () => ({ ok: true, status: 200, json: async () => ({ ok: false }) }), async () => {
+      const live = mountLive(await mount({ collectEffects: true }));
+      await waitFor(() => live.published.length >= 3, 'the body to be rejected');
+      assert.equal(live.published[0], null, 'a body without ok is not a snapshot');
+      assert.equal(live.published[1], null, 'and it is not an error either — the host said no');
+    });
   });
 });

@@ -16,7 +16,7 @@
 | **额度读数改了不显示 / 位置不对** | 本文件红线 7 | `dsh-cordis-client-runner/lib/client.js` 里 `key: "conversation.composer.dock"` 的契约（`kind`/`scope`/`occupants`） | 见红线 7 |
 | **chip 弹窗 / portal / Tooltip 行为** | `docs/CodingPlan-额度显示.md` §「为什么是弹窗而不是原生 tooltip」（机制档案已从 README 拆出，README 只留用户侧结论） | `dsh-client-ui-conversation` 的 `ContextMeter`（宿主同款交互的抄写对象） | 两个 seed 模块（`react-dom` / `dsh-client-ui-primitives`）是否还在 seed 表里 |
 | 改 host 逻辑 / 加配置字段 / 加路由 | 本文件「三条事实」「红线」 | `src/host/index.ts`（`apply` 是唯一装配点；产物 `lib/index.js` 只用来**读符号**）→ `cordis.patch.yml` 对照字段注释 | `npm test` 里的 `wiring` / `stats-route` |
-| 改额度解析 / 面板渲染 | `src/host/quota.ts`（纯函数，无宿主依赖） | `test/quota.test.mjs` + `test/protocol.test.mjs` | 解析不出来时**必须**回落到原文，不得编数字 |
+| 改额度解析 / 面板渲染 | `src/host/quota.ts`（纯函数，无宿主依赖） | `test/quota.test.mjs` + `test/protocol.test.mjs`；**面板的行与文案改 `test/client-render.test.mjs`**（真渲染门禁，空态与占位符也钉在那里） | 解析不出来时**必须**回落到原文，不得编数字 |
 | 排查"为什么没生效 / 报错" | 本文件「工作目录与装载方式」 | `src/host/daemon.ts`（daemon 探测真源） | 先分清 Host 进程 vs Client 控制台 |
 | daemon 起不来 / 端口被占 | `src/host/runtime.ts` 的 `ensureDaemonStarted`（拉起/重试/单飞在那；`src/host/index.ts` 只是 `apply()` 装配点，`src/host/daemon.ts` 是它调用的传输与探测层，没有这个符号） | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
 | `atomcode_review` 报不可用 | 本文件红线 1 | `src/host/review.ts` 的 `checkReviewProvision` | 这是**本机配置事实**，不是临时故障 |
