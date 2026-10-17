@@ -91,6 +91,58 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
     }
   });
 
+  it('registered schemas stay inside the host-accepted JSON Schema subset (no array-typed `type`)', async () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wiring-')), 'sessions.json');
+    const { ctx, calls } = fakeCtx();
+    const mod = await import(fileUrl(BRIDGE));
+    mod.apply(ctx, { state_path: statePath, auto_start: false });
+
+    // The host accepts a CLOSED subset of JSON Schema at `tools.register`: `type`
+    // must be a single type string. An array-typed union is rejected with a
+    // JsonSchemaError THERE, `apply()` throws, and the plugin never activates —
+    // no tools, no web routes, and the detail-page card shows HTTP 404 on its
+    // stats fetch (the 2026-10 incident: the dev tree gained null-carrying unions,
+    // and against host 0.2.0-rc.1 the whole plugin failed to mount while the
+    // published 0.4.2 on desktop still loaded fine). `hostSubsetSchema` in
+    // src/host/tools.ts is the translation to that subset; this walk pins the
+    // invariant on the very ARTIFACTS the host loads, so removing the sanitizer
+    // (or re-introducing a union) turns this suite red again.
+    const assertHostSubset = (node, where) => {
+      if (node === null || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (const item of node) assertHostSubset(item, where);
+        return;
+      }
+      assert.ok(
+        !Array.isArray(node.type),
+        `${where}: array-typed \`type\` (${JSON.stringify(node.type)}) is not host-acceptable`,
+      );
+      for (const [key, value] of Object.entries(node)) assertHostSubset(value, `${where}.${key}`);
+    };
+
+    for (const def of calls.tools) {
+      assertHostSubset(def.parameters, `${def.name}.parameters`);
+      assertHostSubset(def.output.schema, `${def.name}.output.schema`);
+    }
+
+    // Null must stay a LEGITIMATE value on the null-carrying fields: the host
+    // validates the returned value against output.schema at call time, so these
+    // nodes are annotation-only (no `type` key). Folding one back to a single
+    // type would make every legitimate null throw a ToolOutputError.
+    const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
+    const askFields = [
+      ask.output.schema.properties.tools.items.properties.success,
+      ask.output.schema.properties.working_dir,
+      ask.output.schema.properties.daemon_tool_calls,
+      ask.output.schema.properties.daemon_rounds,
+    ];
+    const review = calls.tools.find((t) => t.name === 'atomcode_review');
+    const reviewFields = ['severity', 'file', 'line'].map((key) => review.output.schema.properties.findings.items.properties[key]);
+    for (const node of [...askFields, ...reviewFields]) {
+      assert.ok(!('type' in node), 'null-carrying field must stay annotation-only (no single-type fold)');
+    }
+  });
+
   it('every tool declares timeoutMs', async () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wiring-')), 'sessions.json');
     const { ctx, calls } = fakeCtx();

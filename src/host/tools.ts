@@ -87,6 +87,41 @@ function capProse(text: string, cap: number, options: { remedy?: string } = {}) 
 }
 
 /**
+ * The DSH host accepts a CLOSED JSON-Schema subset at `tools.register` —
+ * `type` must be a single type string. Array-typed unions
+ * (`type: ['boolean', 'null']`) are rejected there with a `JsonSchemaError`,
+ * which makes `apply()` throw and the plugin NEVER ACTIVATES: no tools, no
+ * web routes, and the detail-page card shows HTTP 404 on its stats fetch
+ * (the 2026-10 incident, reproduced on host 0.2.0-rc.1 against the dev tree
+ * that had gained null-carrying union types).
+ *
+ * Those unions are not decorative: `null` is a LEGITIMATE value on these
+ * fields (an unattributable parallel tool batch, an unattended turn, an
+ * unreported daemon stat), and the host validates the RETURNED value against
+ * `output.schema` at call time — so collapsing a union to one member type
+ * makes every legitimate null throw a `ToolOutputError`. The sanctioned
+ * escape is an annotation-only node: the validator explicitly accepts a
+ * schema without a `type` key ("the standard unconstrained-JSON form"), and
+ * each affected field's `description` already carries its "null = ..."
+ * semantics. So this sanitizer drops exactly the array-typed `type` keys and
+ * nothing else: `required`/`items`/`additionalProperties` survive, which
+ * keeps null values expressible and the fields' nullability documented.
+ *
+ * @param {any} node - a registered output schema (or one of its subnodes).
+ * @returns {any} a host-acceptable copy with no array-typed `type` keys.
+ */
+function hostSubsetSchema(node: any): any {
+  if (node === null || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map((item) => hostSubsetSchema(item));
+  const out: Record<string, any> = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'type' && Array.isArray(value)) continue; // union → annotation-only node
+    out[key] = hostSubsetSchema(value);
+  }
+  return out;
+}
+
+/**
  * `atomcode_ask` — one full autonomous daemon turn, with side-conversation
  * continuity.
  *
@@ -173,7 +208,7 @@ export function mountAskTool({
       required: ['message'],
     },
     output: {
-      schema: {
+      schema: hostSubsetSchema({
         type: 'object',
         properties: {
           ok: { type: 'boolean' },
@@ -227,7 +262,7 @@ export function mountAskTool({
         },
         required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'tools_truncated', 'stop_reason', 'working_dir', 'provider', 'providerReported', 'protocol_unknown_types', 'daemon_tool_calls', 'daemon_rounds', 'error'],
         additionalProperties: false,
-      },
+      }),
       render(_args: any, value: any) {
         const lines = [];
         if (value.ok) {
@@ -717,7 +752,7 @@ export function mountReviewTool({
       required: [],
     },
     output: {
-      schema: {
+      schema: hostSubsetSchema({
         type: 'object',
         properties: {
           ok: { type: 'boolean' },
@@ -753,7 +788,7 @@ export function mountReviewTool({
         },
         required: ['ok', 'report', 'truncated', 'findings_parsed', 'findings_count', 'findings', 'error', 'exit_code', 'duration_ms'],
         additionalProperties: false,
-      },
+      }),
       render(_args: any, value: any) {
         const lines = [];
         if (value.ok) {
