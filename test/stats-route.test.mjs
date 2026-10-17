@@ -123,6 +123,23 @@ async function callRoute(route, { method = 'GET', headers = {}, body } = {}) {
 
 const pick = (obj, path) => path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
 
+/**
+ * Poll a REAL observable until it holds, instead of sleeping past a deadline and
+ * hoping. The auto-start tests below used a fixed 1600ms against a 1s start
+ * budget — a 600ms margin that a loaded CI runner can eat, turning a real
+ * regression and a slow machine into the same red. `callRoute` is the observable
+ * here: it reports `daemon.starting`/`daemon.spawnAttempts` as the host sees them.
+ */
+async function waitFor(cond, what, { timeoutMs = 10_000, stepMs = 20 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await cond();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+  assert.fail(`timed out after ${timeoutMs}ms waiting for ${what}`);
+}
+
 describe('stats route — registration and gates', () => {
   const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-stats-')), 'sessions.json');
   let route;
@@ -883,9 +900,17 @@ describe('stats route — auto-start on observation', () => {
       });
       const first = (await callRoute(route, { headers: { host: '127.0.0.1:3080' } })).body;
       assert.equal(first.daemon.spawnTried, true);
-      // Let the in-flight start settle (its 1s budget), then poll again.
-      await new Promise((resolve) => setTimeout(resolve, 1600));
-      const second = (await callRoute(route, { headers: { host: '127.0.0.1:3080' } })).body;
+      // Poll until the SECOND attempt has happened, i.e. until the first failure
+      // settled and the next poll retried. The call that discovers `>= 2` is the
+      // one that triggered attempt 2, so asserting EXACTLY 2 right after it still
+      // proves there is no spawn storm.
+      const second = await waitFor(
+        async () => {
+          const body = (await callRoute(route, { headers: { host: '127.0.0.1:3080' } })).body;
+          return body.daemon.spawnAttempts >= 2 ? body : null;
+        },
+        'the settled failure to be retried (spawnAttempts >= 2)',
+      );
       assert.equal(
         second.daemon.spawnAttempts,
         2,
@@ -905,7 +930,13 @@ describe('stats route — auto-start on observation', () => {
         extra: { ...failingStart, daemon_retry_secs: 3600 },
       });
       await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
-      await new Promise((resolve) => setTimeout(resolve, 1600));
+      // Wait for the in-flight start to SETTLE (its 1s budget), then poll again:
+      // the point is that the cooldown suppresses a second spawn even once
+      // nothing is in flight any more.
+      await waitFor(async () => {
+        const body = (await callRoute(route, { headers: { host: '127.0.0.1:3080' } })).body;
+        return body.daemon.starting === false ? body : null;
+      }, 'the in-flight start to settle');
       const body = (await callRoute(route, { headers: { host: '127.0.0.1:3080' } })).body;
       assert.equal(body.daemon.spawnAttempts, 1, 'the cooldown must suppress a spawn storm');
     } finally {
