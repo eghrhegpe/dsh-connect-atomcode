@@ -157,7 +157,7 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 
 ```bash
 npm test        # 离线门禁，全部走假 daemon / 假 spawn / 纯函数，零网络零额度
-npm run coverage    # 同一批套件 + node 内置覆盖率报告（单进程聚合，零依赖，仅测量不做门禁）
+npm run coverage    # 同一批套件 + node 内置覆盖率报告（单进程串行聚合，零依赖，仅测量不做门禁）
 npm run test:live   # 需要本机已登录的 AtomCode；真实模型回合需再显式 ATOMCODE_LIVE_TURNS=1
 node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 ```

@@ -220,7 +220,13 @@ npm test           # 离线套件由 scripts/test.mjs 自动发现（排除 *-li
                    # runner 一个套件一个进程：每个套件印在自己的 ── test/x.test.mjs 头下，
                    # 结尾再给一张 per-suite 表；CI 里每个套件是可折叠的 ::group:: 块
                    # 计数自己量：npm test 2>&1 | Select-String '^ℹ tests'（每个套件一行，无总聚合）
-npm run coverage   # 同一批套件 + node 内置覆盖率报告（单进程聚合，零依赖，只测量不做门禁）
+npm run coverage   # 同一批套件 + node 内置覆盖率报告（单进程**串行**聚合，零依赖，只测量不做门禁）
+                   # 串行是必需的：同进程并发时 45995 这类硬编码"死端口"与 lib/review.js 的
+                   # spawner 单例会跨套件串味，覆盖率数字会随调度变（同一棵树两次跑出过 12.82% 与 30.19%）
+                   # ⚠️ client.js 那一行是**产物不是总和**：渲染套件每次挂载都用 cache-busting URL
+                   # 重新 import 整包，V8 里是 N 个同路径脚本，node 按路径折叠后只剩"赢的那个"。
+                   # 要一个能跨时间比的渲染端数字（host 的 lib/*.js 行本来就稳）：
+                   #   node --test --test-concurrency=1 --experimental-test-coverage test/client-render.test.mjs
 ```
 
 各套件用本机 `node:http` 起**假 daemon**（或纯函数），所以把过去只有 live 套件覆盖（而没有 daemon 就直接跳过）的路径全部变成离线可测：

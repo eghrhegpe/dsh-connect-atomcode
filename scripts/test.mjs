@@ -111,15 +111,32 @@ if (withCoverage) {
   // One process for the whole set: coverage is only meaningful aggregated, and a
   // per-file report would print 20+ partial tables whose totals look like truth.
   //
-  // This is NOT the gate, and it is a WEAKER execution model than the loop below:
-  // one process means node's default per-file concurrency, so the `lib/review.js`
-  // spawner singleton, the hardcoded dead ports and the "this port must be free"
-  // assertions can cross suites. The numbers stay usable; a failure HERE is not
+  // `--test-concurrency=1` is NOT optional here. One process is one address space,
+  // so without it node runs the files concurrently and they stop being independent:
+  // `protocol` and `review` both bind the hardcoded "nothing listens here" port
+  // 45995, `lib/review.js` holds the spawner singleton, and two `build-gate` runs
+  // would drive tsdown at the same time. Measured 2026-10-17: without it the run
+  // exited 1 (build-gate red) and `client.js` reported 12.82 % funcs on one run and
+  // 30.19 % on the next — the same tree, i.e. the numbers were an artifact of the
+  // schedule, not of the tests.
+  //
+  // This is still NOT the gate, and still a different execution model than the loop
+  // below (serial in one process, not one process per suite): a failure HERE is not
   // evidence the gate would fail, and a green gate says nothing about coverage.
-  console.log(`▶ ${files.length} suites, one process (coverage must aggregate)\n`);
+  //
+  // The `client.js` row is an artifact, not a sum. The client suites load the bundle
+  // under a cache-busting URL per mount (that is how they get a fresh module
+  // instance), so V8 sees many scripts sharing one path and node collapses them by
+  // path: the row reflects whichever instance won, not everything the tests ran.
+  // Measured 2026-10-17 on one tree — aggregate 15.91 % funcs on one run and 30.19 %
+  // on the next, render suite alone 30.19 %, `client-fns` alone 15.91 %. The host
+  // `lib/*.js` rows are stable (loaded once, by static import). For a client number
+  // you can compare over time, run the client suites on their own:
+  //   node --test --test-concurrency=1 --experimental-test-coverage test/client-render.test.mjs
+  console.log(`▶ ${files.length} suites, one process, serial (coverage must aggregate)\n`);
   const result = spawnSync(
     process.execPath,
-    ['--test', '--test-reporter=spec', '--experimental-test-coverage', ...files],
+    ['--test', '--test-reporter=spec', '--test-concurrency=1', '--experimental-test-coverage', ...files],
     // One process means one budget for all of them: a per-suite ceiling is
     // meaningless here, so the aggregate ceiling is the same number scaled by the
     // suite count. Still bounded, which is the point.
