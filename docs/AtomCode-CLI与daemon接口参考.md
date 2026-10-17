@@ -2,6 +2,12 @@
 
 > 实测记录，不是官方文档转抄。**版本：`atomcode 5.2.3 (d8918f0)`**，采集于 2026-10-14。
 >
+> **2026-10-17 复核**：§1 的 18 个顶层命令与 §2 的 28 个 review 长选项，逐条对过本机 `--help`（只比名字、不比描述），
+> 全一致；§3 那 21 个命令 id 来自 SPA bundle，CLI 侧拿不到，**未被复核**。
+> 复核由 [`scripts/probes/cli-inventory.mjs`](../scripts/probes/cli-inventory.mjs) 做（零额度，只跑 `--help`；
+> 它同时检查每节标题里的「N 个」与列表实际条数是否对得上）。
+> 同批复核发现的**描述层漂移**已就地改正（见 §1 的 `--tui` / `--classic` 行），并补齐该表漏列的五个选项。
+>
 > 来源分三类，下文用标记区分：
 > - `[help]` —— 二进制自己的 `--help` 输出（权威）
 > - `[bundle]` —— daemon 内置 SPA 的 JS 包里出现的字符串（接口面的来源）
@@ -47,8 +53,11 @@ help        打印帮助
 | `--ephemeral` | 不创建/续接/写会话状态（仅无头） |
 | `--no-tools` | 不给模型任何工具（仅无头） |
 | `--seed-config <PATH>` | **首次运行**种子配置（`ATOMCODE_SEED_CONFIG`） |
-| `--tui` / `--classic` | 强制行式界面 / 经典界面 |
-| `--audit` / `--demo` / `--probe-terminal` | 诊断用（配合 `--tui`，`--audit` 不需要终端与 provider） |
+| `--lang <LANG>` | 界面语言（`en` / `zh-CN` / `zh`） |
+| `--prompt-file <PATH>` | 从文件读取提示 |
+| `--tui` / `--classic` | **不加标志默认就是 `--tui` 那个界面**：`--tui` 打开「由插件行装配的全屏界面」，`--classic` 是回到经典界面的逃生门；两者都压过配置里的 `[ui] screen`。（原文写成"强制行式界面 / 经典界面"，把方向说反了——`--tui` 不是逃生门） |
+| `--mascot` / `--theme <auto\|dark\|light>` / `--no-mouse` | 都只作用于行装配界面：显示吉祥物 / 主题（不给则用 `[ui] theme`；`auto` 问终端）/ 把鼠标留给终端（终端自己的选择可用） |
+| `--audit` / `--demo` / `--probe-terminal` | 诊断用。`--audit`、`--demo` 需配合 `--tui`（`--audit` 不需要终端与 provider）；`--probe-terminal` 单独跑：打印终端自报的颜色 + 每个颜色角色在它上面解析成什么，然后退出 |
 | `--dev` / `--no-telemetry` | 禁用本次自动更新 / 遥测 |
 
 ### 环境变量 `[help]`
@@ -135,6 +144,10 @@ plan  reload  remember  resume  review  skills  status  todo  undo  whoami
 ```
 
 ### 哪些能通过 daemon 的 `POST /command` 用 `[实测]`
+
+> 下面这张表只覆盖 21 个 id 里的 **9 个**（外加根本不在名单里的 `usage`）：
+> `build cd compact diff forget memory reload remember resume skills todo undo` 这 **12 个从未实测过**——
+> "没测过"不等于"不能用"，也不等于"能用"，别把这张表的缺席当成结论。
 
 | 命令 | 结果 |
 |---|---|
