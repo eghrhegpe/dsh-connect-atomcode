@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { describe, it, before, after, beforeEach } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -346,8 +346,14 @@ describe('atomcode_ask — session continuity glue', () => {
   it('trailing slashes on working_dir fold onto the same key', async () => {
     const statePath = tempState();
     const ask = await mountAsk(mod, { statePath, port: fake.port });
-    await ask.execute({ message: 'first', working_dir: 'C:\\repo' }, {});
-    const r = await ask.execute({ message: 'again', continue: true, working_dir: 'C:\\repo\\\\' }, {});
+    await ask.execute({ message: 'first', working_dir: WORKDIR }, {});
+    // The trailing separator must be THIS platform's separator. `resolve` folds
+    // only what `path.sep` recognises: on POSIX a Windows-shaped `C:\repo\\` is a
+    // genuinely DIFFERENT path (backslash is an ordinary character there), so
+    // forking the key would be the correct behaviour and this assertion would be
+    // asserting a Windows-only accident. Built from `sep`, the fixture keeps the
+    // invariant on both platforms.
+    const r = await ask.execute({ message: 'again', continue: true, working_dir: WORKDIR + sep + sep }, {});
     assert.equal(r.continued, true, 'trailing separators must not fork the session key');
   });
 
