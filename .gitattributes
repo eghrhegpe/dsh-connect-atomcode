@@ -1,0 +1,16 @@
+# Line endings are load-bearing in this repo, so pin them.
+#
+# `test/build-gate.test.mjs` compares the COMMITTED bytes of `client.js` and
+# `lib/*.js` with the bytes a fresh build emits, and the bundler always emits LF.
+# Git for Windows defaults to `core.autocrlf=true`, which converts text files to
+# CRLF on checkout — on such a clone the gate can never pass, no matter how fresh
+# the artifacts are. It cost a red CI leg on 2026-10-17 (the first run of the
+# Windows matrix leg; the Linux leg is immune because it checks out LF).
+#
+# `eol=lf` makes the checkout LF everywhere, which is what the blobs already are.
+# Do NOT "fix" a red gate by committing CRLF artifacts: the next `npm run build`
+# on any machine rewrites them as LF.
+* text=auto eol=lf
+
+# A PNG is not text; keep git from ever looking inside it.
+*.png binary

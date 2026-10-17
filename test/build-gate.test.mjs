@@ -154,6 +154,23 @@ describe('build gate — committed artifacts match src/', () => {
       );
 
       for (const name of Object.keys(committed)) {
+        // Diagnose the one mismatch that is NOT a stale build before reporting it
+        // as one: a CRLF working tree. The gate compares committed BYTES with the
+        // bytes a fresh build emits, and the bundler always emits LF — so a clone
+        // whose checkout converted line endings (Git for Windows defaults to
+        // core.autocrlf=true) fails here no matter how fresh the artifacts are.
+        // `.gitattributes` pins `eol=lf` for exactly this reason; this branch says
+        // so in one line instead of sending the reader off to rebuild nothing.
+        const eolOnly =
+          rebuilt[name] !== committed[name] &&
+          rebuilt[name].replace(/\r\n/g, '\n') === committed[name].replace(/\r\n/g, '\n');
+        assert.ok(
+          !eolOnly,
+          `${name} matches a fresh build except for LINE ENDINGS: the working tree has CRLF, the build emits LF. ` +
+            'This is a checkout artifact, not a stale build — do NOT commit CRLF artifacts to silence it. ' +
+            '`.gitattributes` pins `eol=lf`; a CRLF working tree means that attribute was ignored ' +
+            '(a clone made before it existed, with core.autocrlf=true). Re-clone, or set core.autocrlf=false.',
+        );
         assert.equal(
           rebuilt[name],
           committed[name],
