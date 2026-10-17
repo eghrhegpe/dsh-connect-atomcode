@@ -107,25 +107,52 @@ function runEffects(react) {
   };
 }
 
-/** The web boot's seed table, with the two seed modules the panel touches. */
-function seededRequire(react) {
+/**
+ * The web boot's seed table, with the two seed modules the panel touches.
+ *
+ * The primitives are RECORDING stubs, not silent ones: `Tooltip`, the anchoring
+ * hook and the dismiss hook are the chip's only blind spot (the real ones live
+ * in the host's seed table and cannot be imported here), so what a test wants to
+ * see is the ARGUMENTS the chip passed them — is the popover anchored while
+ * closed, is outside-dismiss armed, is the tooltip disabled while it is open.
+ *
+ * `seeds` exists to REMOVE them: a host whose seed table lacks `react-dom` or
+ * the primitives package is a real state (that is the entire reason
+ * `QuotaChipDegraded` exists), and `null` is how a test reaches it.
+ */
+function seededRequire(react, seeds = {}) {
+  const record = seeds.record || [];
+  const reactDom =
+    seeds.reactDom === null
+      ? null
+      : seeds.reactDom || {
+          createPortal: (node, container) => ({ type: 'portal', props: { container }, children: [node] }),
+        };
+  const primitives =
+    seeds.primitives === null
+      ? null
+      : seeds.primitives || {
+          Tooltip: (props) => {
+            record.push({ hook: 'Tooltip', props });
+            return props.children || null;
+          },
+          useAnchoredPosition: (args) => {
+            record.push({ hook: 'anchored', args });
+            return { left: 0, top: 0 };
+          },
+          useDismissOnOutsidePointer: (...args) => {
+            record.push({ hook: 'dismiss', args });
+          },
+        };
   return (name) => {
     if (name === 'react') return react;
-    if (name === 'react-dom') {
-      return { createPortal: (node) => ({ type: 'portal', props: {}, children: [node] }) };
-    }
-    if (name === '@deepseek-ai/dsh-client-ui-primitives') {
-      return {
-        Tooltip: ({ children }) => children || null,
-        useAnchoredPosition: () => ({ left: 0, top: 0 }),
-        useDismissOnOutsidePointer: () => {},
-      };
-    }
+    if (name === 'react-dom') return reactDom;
+    if (name === '@deepseek-ai/dsh-client-ui-primitives') return primitives;
     throw new Error(`unexpected require(${name})`);
   };
 }
 
-async function loadClient(react) {
+async function loadClient(react, seeds = {}) {
   const registered = [];
   const savedWindow = globalThis.window;
   globalThis.window = { __ModuleLoader__: { load: (reg) => registered.push(reg) } };
@@ -136,7 +163,7 @@ async function loadClient(react) {
     else globalThis.window = savedWindow;
   }
   assert.equal(registered.length, 1, 'client.js must register exactly one module');
-  return registered[0].factory(seededRequire(react));
+  return registered[0].factory(seededRequire(react, seeds));
 }
 
 // ── reading a rendered tree ────────────────────────────────────────────────
@@ -207,9 +234,9 @@ function rowValue(node, label) {
  * `mounted` latch in `apply` means the FIRST seat that registers wins, so the
  * bundle-config seat takes the panel and the dock seat still gets the chip.
  */
-async function mount({ script = [], seats = ['plugins.bundle.config', 'plugins.detail.section', 'conversation.composer.dock'], collectEffects = false } = {}) {
+async function mount({ script = [], seats = ['plugins.bundle.config', 'plugins.detail.section', 'conversation.composer.dock'], collectEffects = false, seeds = {} } = {}) {
   const react = makeReact(script, { collectEffects });
-  const mod = await loadClient(react);
+  const mod = await loadClient(react, seeds);
   const injections = [];
   const registrations = [];
   const ctx = {
@@ -683,10 +710,10 @@ async function withTimers(replace, body) {
  */
 const armed = [];
 function mountLive(handle) {
-  handle.panel({ view: 'page' });
+  const tree = handle.panel({ view: 'page' });
   const leave = runEffects(handle.react);
   armed.push(leave);
-  return { handle, published: handle.react.published, leave };
+  return { handle, tree, published: handle.react.published, leave };
 }
 
 afterEach(() => {
@@ -802,5 +829,281 @@ describe('client render — the shared poll, the hard deadline and the unmount',
       assert.equal(live.published[0], null, 'a body without ok is not a snapshot');
       assert.equal(live.published[1], null, 'and it is not an error either — the host said no');
     });
+  });
+});
+
+// ── the composer chip: the one surface that is always on screen ─────────────
+
+const STATS_PATH = '/api/atomcode-bridge/stats';
+const PROVIDER_PATH = '/api/atomcode-bridge/provider';
+
+/** First descriptor in the tree matching `pred` (`null` when there is none). */
+function find(node, pred) {
+  let hit = null;
+  (function walk(n) {
+    if (hit !== null || !n || typeof n !== 'object') return;
+    if (Array.isArray(n)) {
+      for (const kid of n) walk(kid);
+      return;
+    }
+    if (pred(n)) {
+      hit = n;
+      return;
+    }
+    walk(n.children);
+  })(node);
+  return hit;
+}
+
+/**
+ * A `document` just real enough for the chip's two browser touches.
+ *
+ * The chip is the ONLY place in the client half that reaches for a browser
+ * global — `createPortal(node, document.body)` and `document.addEventListener`
+ * for Escape — and every case above renders it CLOSED, so the portal, the
+ * open flag and the dismissal had never executed under test at all.
+ */
+async function withDocument(body) {
+  const saved = globalThis.document;
+  const listeners = [];
+  const bodyEl = { nodeName: 'BODY' };
+  globalThis.document = {
+    body: bodyEl,
+    addEventListener(type, fn) {
+      listeners.push({ type, fn, removed: false });
+    },
+    removeEventListener(type, fn) {
+      const found = listeners.find((l) => l.type === type && l.fn === fn);
+      if (found) found.removed = true;
+    },
+  };
+  try {
+    return await body({ bodyEl, listeners, live: () => listeners.filter((l) => !l.removed) });
+  } finally {
+    if (saved === undefined) delete globalThis.document;
+    else globalThis.document = saved;
+  }
+}
+
+/** Render the dock chip with a given `open` flag: `useStats`(3) then [open, tick]. */
+async function renderChip(snapshot, open, extra = {}) {
+  const handle = await mount({ script: [snapshot, null, NOW, open, 0], ...extra });
+  return { ...handle, tree: handle.chip({}) };
+}
+
+describe('client render — the composer dock chip', () => {
+  it('a closed chip shows the reading and arms nothing', async () => {
+    const record = [];
+    const { tree, react, mod } = await renderChip(FULL, false, { seeds: { record } });
+    const view = mod.__test.quotaView(FULL.quota, Date.now());
+    assert.ok(view.known, 'the fixture must produce a readable quota');
+    assert.ok(text(tree).includes(view.label), `the chip must show the reading: ${text(tree)}`);
+    assert.equal(react.published.length, 0, 'a paint may not publish state');
+    const trigger = find(tree, (n) => n.type === 'button');
+    assert.ok(trigger, 'the chip must be a real button, not a span that only looks clickable');
+    assert.equal(trigger.props['aria-haspopup'], 'dialog');
+    assert.equal(trigger.props['aria-expanded'], false);
+    assert.equal(find(tree, (n) => n.type === 'portal'), null, 'a closed chip must not render the popover');
+    assert.deepEqual(
+      record.map((r) => r.hook),
+      ['anchored', 'dismiss', 'Tooltip'],
+      'the two primitive hooks are a fixed tail, called before the tree is built',
+    );
+    assert.equal(record[0].args.open, false, 'a closed popover must not be anchored');
+    assert.equal(record[0].args.side, 'top');
+    assert.equal(record[0].args.gap, 8, 'the gap/margin pair came from the ContextMeter shape');
+    assert.equal(record[0].args.margin, 12);
+    assert.equal(record[1].args[1], false, 'outside-dismiss must be disarmed while closed');
+    assert.equal(record[2].props.disabled, false, 'the tooltip is live while the popover is not');
+  });
+
+  it('an open chip renders the portal dialog, sized from the number it prints', async () => {
+    const record = [];
+    await withDocument(async ({ bodyEl }) => {
+      const { tree, mod } = await renderChip(FULL, true, { seeds: { record } });
+      const view = mod.__test.quotaView(FULL.quota, Date.now());
+      const portal = find(tree, (n) => n.type === 'portal');
+      assert.ok(portal, 'the open chip must render through createPortal');
+      assert.equal(portal.props.container, bodyEl, 'and it must land on document.body');
+      const dialog = find(portal, (n) => n.type === 'div' && n.props.role === 'dialog');
+      assert.ok(dialog, 'the popover must be a dialog');
+      assert.equal(dialog.props['aria-label'], 'CodingPlan 额度');
+      const t = text(dialog);
+      assert.ok(t.includes('CodingPlan 额度'), t);
+      assert.ok(t.includes(view.pctLabel ?? ''), `the percentage must be in the popover: ${t}`);
+      const bar = find(
+        dialog,
+        (n) => n.type === 'div' && typeof n.props.style?.width === 'string' && n.props.style.width.endsWith('%'),
+      );
+      assert.ok(bar, 'the popover must draw the same bar the popover style owns');
+      assert.equal(bar.props.style.height, '100%', 'the fill is the track child, not the frame');
+      assert.equal(bar.props.style.background, view.color, 'and it is coloured from the same reading');
+      assert.equal(bar.props.style.width, view.barWidth + '%', 'the bar width and the printed number must be one fact');
+      const facts = [];
+      (function collect(n) {
+        if (!n || typeof n !== 'object') return;
+        if (Array.isArray(n)) {
+          for (const kid of n) collect(kid);
+          return;
+        }
+        if (n.type === 'p') facts.push(n);
+        collect(n.children);
+      })(dialog);
+      assert.equal(facts.length, view.facts.length, 'every fact must render, and nothing else may claim to be one');
+      for (const fact of view.facts) assert.ok(t.includes(fact), `the fact "${fact}" must be visible: ${t}`);
+      assert.equal(record[0].args.open, true, 'an open popover must be anchored');
+      assert.equal(record[1].args[1], true, 'outside-dismiss must be armed while open');
+      assert.equal(record[2].props.disabled, true, 'the native tooltip must stand down while the popover replaces it');
+      assert.equal(record[2].props.label, view.facts.join(' · '), 'and it carries the facts the popover would show');
+    });
+  });
+
+  it('Escape closes an open chip, and the listener dies with it — a closed chip never listens', async () => {
+    await withDocument(async ({ listeners, live }) => {
+      const closed = await renderChip(FULL, false, { collectEffects: true });
+      const closedLeave = runEffects(closed.react);
+      assert.equal(live().length, 0, 'a closed chip must not hold a keydown listener');
+      closedLeave();
+
+      const open = await renderChip(FULL, true, { collectEffects: true });
+      await withTimers(
+        { setInterval: () => 1, clearInterval: () => {} },
+        async () => {
+          const leave = runEffects(open.react);
+          assert.equal(live().length, 1, 'an open chip listens for Escape');
+          assert.equal(live()[0].type, 'keydown');
+          live()[0].fn({ key: 'Escape' });
+          assert.deepEqual(open.react.published, [false], 'Escape must close the popover');
+          leave();
+          assert.equal(live().length, 0, 'the cleanup must remove it, or every chip leaks a listener');
+        },
+      );
+      assert.equal(listeners.filter((l) => l.removed).length, 1, 'exactly the open chip registered one');
+    });
+  });
+
+  it('a host with no primitives seed gets the native-title chip, not a crash', async () => {
+    const record = [];
+    const { tree, mod, react } = await renderChip(FULL, false, {
+      seeds: { primitives: null, reactDom: null, record },
+    });
+    const view = mod.__test.quotaView(FULL.quota, Date.now());
+    assert.equal(record.length, 0, 'the degraded chip must call no primitive hook at all (Rules of Hooks)');
+    assert.equal(find(tree, (n) => n.type === 'portal'), null, 'it must not try to portal either');
+    assert.equal(tree.props.title, view.facts.join(' · '), 'the facts survive as a native title');
+    assert.equal(tree.props['data-quota-percent'], view.pct);
+    assert.ok(text(tree).includes(view.label));
+    assert.equal(react.published.length, 0, 'and it is still stateless: a chip has nothing to click');
+  });
+
+  it('renders nothing at all when the quota is unreadable — an empty dock beats a fabricated 0%', async () => {
+    const unreadable = { ...FULL, quota: { ...FULL.quota, available: false, usagePercent: null, reason: 'no status text' } };
+    for (const seeds of [{}, { primitives: null, reactDom: null }]) {
+      const { tree } = await renderChip(unreadable, false, { seeds });
+      assert.equal(tree, null, `the chip must be absent, not a zero: ${text(tree)}`);
+    }
+  });
+});
+
+describe('client render — the provider dropdown write path', () => {
+  const ASK_LABEL = '默认档位 · ask';
+  const REVIEW_LABEL = '默认 provider · review';
+  const selectOf = (tree, label) => find(tree, (n) => n.type === 'select' && n.props['aria-label'] === label);
+
+  /** What the route answers after a successful pick: `{ok, ...providerBranch}`. */
+  const writeAnswer = (panel) => ({
+    ok: true,
+    ask: { ...FULL.provider.ask, panel, effective: panel, source: 'panel' },
+    review: FULL.provider.review,
+  });
+
+  it('a pick POSTs the slot and the name, and the answer is ADOPTED instead of waiting for a poll', async () => {
+    await withFetch(
+      async (call) => (call.url === PROVIDER_PATH ? okResponse(writeAnswer('Fake-B')) : okResponse(FULL)),
+      async (calls) => {
+        const handle = await mount({ script: [FULL, null, NOW], collectEffects: true });
+        // Render FIRST (that is what records `useStats`'s effect), then run it:
+        // `mount()` only calls `apply()`, and the panel's data comes from the
+        // script, so this tree already carries the dropdowns.
+        const tree = handle.panel({ view: 'page' });
+        const leave = runEffects(handle.react);
+        try {
+          await waitFor(() => handle.react.published.length >= 3, 'the first poll to land');
+          const select = selectOf(tree, ASK_LABEL);
+          assert.ok(select, 'the ask dropdown must render once the host sends a provider branch');
+          assert.equal(select.props.value, '', 'the fixture pins nothing, so the fallback option is selected');
+
+          await select.props.onChange({ target: { value: 'Fake-B' } });
+
+          assert.equal(calls.length, 2, `one write, then a cache commit — no extra poll: ${calls.map((c) => c.url)}`);
+          assert.equal(calls[0].url, STATS_PATH);
+          assert.equal(calls[1].url, PROVIDER_PATH, 'the pick goes to the plugin route, never to AtomCode config');
+          assert.equal(calls[1].init.method, 'POST');
+          assert.deepEqual(
+            JSON.parse(calls[1].init.body),
+            { slot: 'ask', provider: 'Fake-B' },
+            'the two namespaces must not be merged, and the slot must ride along',
+          );
+          const adopted = handle.react.published.find(
+            (v) => v && v.provider && v.provider.ask && v.provider.ask.panel === 'Fake-B',
+          );
+          assert.ok(adopted, 'without adoption the controlled select re-renders from the stale cache and bounces back');
+          assert.ok(
+            !handle.react.published.some((v) => typeof v === 'string' && v.includes('保存失败')),
+            'a success must not print a failure note',
+          );
+          const after = await renderPanel(adopted);
+          assert.equal(selectOf(after.tree, ASK_LABEL).props.value, 'Fake-B', 'the dropdown must show the new pick');
+          assert.equal(
+            selectOf(after.tree, REVIEW_LABEL).props.value,
+            'atomcode-local',
+            'and the other namespace must be untouched',
+          );
+        } finally {
+          leave();
+        }
+      },
+    );
+  });
+
+  it('a refused write keeps the reason on screen and adopts nothing', async () => {
+    await withFetch(
+      async () => ({ ok: false, status: 409, json: async () => ({ ok: false, error: '状态文件由更新版本的插件写入，本版本不覆盖它' }) }),
+      async (calls) => {
+        const handle = await mount({ script: [FULL, null, NOW] });
+        const select = selectOf(handle.panel({ view: 'page' }), ASK_LABEL);
+        await select.props.onChange({ target: { value: 'Fake-B' } });
+        assert.equal(calls.length, 1, 'a refused write must not trigger a reload');
+        assert.equal(calls[0].url, PROVIDER_PATH);
+        const note = handle.react.published.find((v) => typeof v === 'string' && v.startsWith('保存失败：'));
+        assert.equal(note, '保存失败：状态文件由更新版本的插件写入，本版本不覆盖它', 'the host reason must reach the user verbatim');
+        assert.ok(
+          handle.react.published.every((v) => typeof v === 'string' || typeof v === 'boolean'),
+          'nothing may be adopted from a refusal',
+        );
+      },
+    );
+  });
+
+  it('a write in flight disables its own dropdown — and only its own', async () => {
+    // Hook order for a page render: `useStats`(3), then the two
+    // `ProviderSelectRow`s in `providerRows` order (ask, then review), each one
+    // `[note, pending]` — note first, exactly as the component declares them. If
+    // a row ever gains state, this script moves with it.
+    const handle = await mount({ script: [FULL, null, NOW, '', true, '', false] });
+    const tree = handle.panel({ view: 'page' });
+    assert.equal(selectOf(tree, ASK_LABEL).props.disabled, true, 'the pending write must lock its own control');
+    assert.equal(selectOf(tree, REVIEW_LABEL).props.disabled, false, 'and leave the other namespace alone');
+  });
+
+  it('names an empty catalogue instead of showing an empty dropdown', async () => {
+    const bare = {
+      ...FULL,
+      provider: { ask: { ...FULL.provider.ask, catalog: [], catalogError: null, panel: null }, review: FULL.provider.review },
+    };
+    const { tree } = await renderPanel(bare);
+    const select = selectOf(tree, ASK_LABEL);
+    assert.equal(select.props.disabled, true, 'no catalogue means no control (红线 3)');
+    assert.ok(text(tree).includes('daemon 未列出档位'), `the reason must be on screen: ${text(tree)}`);
   });
 });
