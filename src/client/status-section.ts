@@ -43,6 +43,21 @@ import {
 type NumProps = { num: number; label: string; color?: string };
 
 /**
+ * A counter that arrived as anything but a finite number is ZERO, never the
+ * word "undefined".
+ *
+ * The host always sends numbers for these, but a branch can arrive as an EMPTY
+ * object — `ask: {}`, a partially-built snapshot, an older host mid-upgrade —
+ * and `data.ask || {calls: 0}` does not catch that: an empty object is truthy,
+ * so every field under it reaches the renderer as `undefined` and
+ * `String(undefined)` puts "undefined 调用" on the panel. A placeholder that
+ * reads like a reading is the failure 红线 2 forbids for the quota; a count is
+ * the same class of fact, so it gets the same treatment.
+ */
+const count = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : 0;
+
+/**
  * Everything `StatusSection` needs that is bound to the app's React instance or
  * to the factory's closure. Injected, never imported — see the module header.
  */
@@ -124,8 +139,19 @@ export function createStatusSection(deps: StatusSectionDeps) {
     const { data, error, updatedAt, reload } = useStats();
 
     let body;
-    if (error) {
-      body = h('div', { style: S.notice }, h('p', { style: S.error }, '统计信息加载失败：' + error));
+    // Worded ONCE for both places this failure can appear — the bare notice
+    // (nothing to show yet) and the strip beside a stale panel — so the same
+    // fact never gets two phrasings.
+    const failureNote = error ? '统计信息加载失败：' + error : '';
+    // `error && !data`, not plain `error`: a failed poll must not throw away the
+    // last snapshot. The panel below reports the failure three ways already —
+    // the badge turns 已断开, `最后更新 <time>` dates the reading, and the raw
+    // error is repeated next to them — while blanking the panel would also hide
+    // an in-flight turn and re-flow every card, for a blip that heals on the
+    // next 5s poll. It also made those three branches UNREACHABLE, which is how
+    // this line was found: the bare notice is only for having nothing to show.
+    if (error && !data) {
+      body = h('div', { style: S.notice }, h('p', { style: S.error }, failureNote));
     } else if (!data) {
       body = h('div', { style: S.notice }, '加载中…');
     } else {
@@ -133,8 +159,27 @@ export function createStatusSection(deps: StatusSectionDeps) {
       const bin = data.binary || {};
       const cfg = data.config || {};
       const quota = data.quota || {};
-      const ask = data.ask || { calls: 0, ok: 0, err: 0, msTotal: 0, tokens: 0 };
-      const review = data.review || { calls: 0, ok: 0, err: 0, msTotal: 0 };
+      // Normalized field by field, not `data.ask || {…}`: an EMPTY branch is
+      // truthy, so the fallback object never applies and every field would
+      // render as `undefined` (see `count` above).
+      const rawAsk = data.ask || {};
+      const ask = {
+        calls: count(rawAsk.calls),
+        ok: count(rawAsk.ok),
+        err: count(rawAsk.err),
+        msTotal: count(rawAsk.msTotal),
+        tokens: count(rawAsk.tokens),
+        // Carried through, NOT counted: it is a whole live turn or nothing, and
+        // the strip below renders only when it is truthy.
+        inFlight: rawAsk.inFlight ?? null,
+      };
+      const rawReview = data.review || {};
+      const review = {
+        calls: count(rawReview.calls),
+        ok: count(rawReview.ok),
+        err: count(rawReview.err),
+        msTotal: count(rawReview.msTotal),
+      };
       const proto = data.protocol || {};
       // Worded once, rendered once: `''` on an ordinary install (the host sends
       // no unknown types), so the notice cannot become furniture.
@@ -188,7 +233,7 @@ export function createStatusSection(deps: StatusSectionDeps) {
               )
             : null,
           error
-            ? h('span', { style: { ...S.updated, ...S.staleReason }, title: error }, error)
+            ? h('span', { style: { ...S.updated, ...S.staleReason }, title: error }, failureNote)
             : null
         ),
         // Live strip for a turn that is running RIGHT NOW — the only fact on
@@ -355,7 +400,7 @@ export function createStatusSection(deps: StatusSectionDeps) {
               '启动情况',
               h(StatusPill, { up: !!d.up })
             ),
-            h(Row, { label: '监听端口' }, String(d.port)),
+            h(Row, { label: '监听端口' }, d.port == null ? '—' : String(d.port)),
             h(Row, { label: '自动启动' }, d.autoStart ? '开启' : '关闭'),
             h(Row, { label: '拉起状态' }, spawnNote),
             // WHY it is down, only when it is down. A cause is the one thing
@@ -437,7 +482,7 @@ export function createStatusSection(deps: StatusSectionDeps) {
             // other rows are 12.5px, and this count is plumbing — it does not
             // earn hero typography the way the 额度 headline does. The inline
             // form is the one the 工具调用统计 card already uses.
-            h(CallStat, { num: (data.sessions && data.sessions.tracked) || 0, label: '已跟踪会话' }),
+            h(CallStat, { num: count(data.sessions && data.sessions.tracked), label: '已跟踪会话' }),
             // How stale the oldest surviving key is. Rendered ONLY when the host
             // actually knows the age: an unknown age must not print as `0s`,
             // which reads as "just now". The count above alone could not tell

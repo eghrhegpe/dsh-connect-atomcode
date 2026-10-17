@@ -16,13 +16,20 @@ export function fmtDuration(ms: number | null | undefined): string {
   return (n / 1000).toFixed(1) + ' s';
 }
 
-/** Compact countdown for the CodingPlan rolling-window reset. */
+/**
+ * Compact countdown for the CodingPlan rolling-window reset.
+ *
+ * Rounds ONCE, up front, then does integer arithmetic. Rounding the seconds
+ * remainder on its own (`Math.round(s % 60)`) prints "4m60s" during the half
+ * second before every minute ticks over — 299.99 came out as `4m60s`, a
+ * countdown that reads like a bug in the panel it is meant to reassure.
+ */
 export function fmtCountdown(secs: number | null | undefined): string {
   if (!Number.isFinite(secs) || (secs as number) < 0) return '—';
-  const s = secs as number;
+  const s = Math.round(secs as number);
   if (s >= 3600) return Math.floor(s / 3600) + 'h' + Math.floor((s % 3600) / 60) + 'm';
-  if (s >= 60) return Math.floor(s / 60) + 'm' + Math.round(s % 60) + 's';
-  return Math.round(s) + 's';
+  if (s >= 60) return Math.floor(s / 60) + 'm' + (s % 60) + 's';
+  return s + 's';
 }
 
 /** Quota colour: the window being exhausted is the only true error state. */

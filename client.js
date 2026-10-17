@@ -323,13 +323,20 @@
 		if (n < 1e3) return Math.round(n) + " ms";
 		return (n / 1e3).toFixed(1) + " s";
 	}
-	/** Compact countdown for the CodingPlan rolling-window reset. */
+	/**
+	* Compact countdown for the CodingPlan rolling-window reset.
+	*
+	* Rounds ONCE, up front, then does integer arithmetic. Rounding the seconds
+	* remainder on its own (`Math.round(s % 60)`) prints "4m60s" during the half
+	* second before every minute ticks over — 299.99 came out as `4m60s`, a
+	* countdown that reads like a bug in the panel it is meant to reassure.
+	*/
 	function fmtCountdown(secs) {
 		if (!Number.isFinite(secs) || secs < 0) return "—";
-		const s = secs;
+		const s = Math.round(secs);
 		if (s >= 3600) return Math.floor(s / 3600) + "h" + Math.floor(s % 3600 / 60) + "m";
-		if (s >= 60) return Math.floor(s / 60) + "m" + Math.round(s % 60) + "s";
-		return Math.round(s) + "s";
+		if (s >= 60) return Math.floor(s / 60) + "m" + s % 60 + "s";
+		return s + "s";
 	}
 	/** Quota colour: the window being exhausted is the only true error state. */
 	function quotaColor(percent, limited) {
@@ -744,6 +751,19 @@
 //#endregion
 //#region src/client/status-section.ts
 /**
+	* A counter that arrived as anything but a finite number is ZERO, never the
+	* word "undefined".
+	*
+	* The host always sends numbers for these, but a branch can arrive as an EMPTY
+	* object — `ask: {}`, a partially-built snapshot, an older host mid-upgrade —
+	* and `data.ask || {calls: 0}` does not catch that: an empty object is truthy,
+	* so every field under it reaches the renderer as `undefined` and
+	* `String(undefined)` puts "undefined 调用" on the panel. A placeholder that
+	* reads like a reading is the failure 红线 2 forbids for the quota; a count is
+	* the same class of fact, so it gets the same treatment.
+	*/
+	const count = (value) => typeof value === "number" && Number.isFinite(value) ? value : 0;
+	/**
 	* Build the status panel component.
 	*
 	* @param {StatusSectionDeps} deps
@@ -785,25 +805,29 @@
 			if (view === "summary") return h(SummaryLine, null);
 			const { data, error, updatedAt, reload } = useStats();
 			let body;
-			if (error) body = h("div", { style: S.notice }, h("p", { style: S.error }, "统计信息加载失败：" + error));
+			const failureNote = error ? "统计信息加载失败：" + error : "";
+			if (error && !data) body = h("div", { style: S.notice }, h("p", { style: S.error }, failureNote));
 			else if (!data) body = h("div", { style: S.notice }, "加载中…");
 			else {
 				const d = data.daemon || {};
 				const bin = data.binary || {};
 				const cfg = data.config || {};
 				const quota = data.quota || {};
-				const ask = data.ask || {
-					calls: 0,
-					ok: 0,
-					err: 0,
-					msTotal: 0,
-					tokens: 0
+				const rawAsk = data.ask || {};
+				const ask = {
+					calls: count(rawAsk.calls),
+					ok: count(rawAsk.ok),
+					err: count(rawAsk.err),
+					msTotal: count(rawAsk.msTotal),
+					tokens: count(rawAsk.tokens),
+					inFlight: rawAsk.inFlight ?? null
 				};
-				const review = data.review || {
-					calls: 0,
-					ok: 0,
-					err: 0,
-					msTotal: 0
+				const rawReview = data.review || {};
+				const review = {
+					calls: count(rawReview.calls),
+					ok: count(rawReview.ok),
+					err: count(rawReview.err),
+					msTotal: count(rawReview.msTotal)
 				};
 				const proto = data.protocol || {};
 				const protoNotice = protocolDriftNotice(proto);
@@ -828,7 +852,7 @@
 						...S.staleReason
 					},
 					title: error
-				}, error) : null), ask.inFlight ? h("div", { style: S.inFlight }, h("span", { style: S.inFlightDot }), h("span", {
+				}, failureNote) : null), ask.inFlight ? h("div", { style: S.inFlight }, h("span", { style: S.inFlightDot }), h("span", {
 					style: S.inFlightLabel,
 					title: "有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失。模型并行发多条 ask 时这里只报「最近开始且仍在跑」的那一条（面板装不下第二条）；更早的那条跑完或最新那条先跑完，本行都会改报还活着的那条"
 				}, "ask 回合进行中"), h("span", { style: S.inFlightText }, inFlightText(ask.inFlight))) : null, proto.quotaTextDrift ? h("div", { style: S.notice }, "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。") : null, protoNotice ? h("div", { style: S.notice }, protoNotice) : null, cfg.reviewAvailable ? null : h("div", { style: S.notice }, "代码评审（atomcode_review）当前不可用：" + (cfg.reviewReason || "本机 AtomCode 配置没有可用的直连 provider") + "。侧边咨询（atomcode_ask）不受影响。"), h("div", { style: S.grid }, h("div", { style: S.card }, h("p", { style: S.cardTitle }, "CodingPlan 额度"), !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", null, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", null, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
@@ -848,7 +872,7 @@
 					display: "flex",
 					alignItems: "center",
 					gap: "8px"
-				} }, "启动情况", h(StatusPill, { up: !!d.up })), h(Row, { label: "监听端口" }, String(d.port)), h(Row, { label: "自动启动" }, d.autoStart ? "开启" : "关闭"), h(Row, { label: "拉起状态" }, spawnNote), !d.up && !d.starting ? h(Row, { label: "未就绪原因" }, d.downMessage || "未上报（宿主较旧）") : null, h(Row, { label: "daemon 版本" }, proto.daemonVersion || (d.up ? "未知" : "—")), !d.up && d.spawnFailures > 1 ? h(Row, { label: "拉起重试" }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "运行环境"), h(Row, { label: "AtomCode" }, binPath), h("div", { style: S.provGrid }, providerRows(cfg).map((row) => h(ProviderSelectRow, {
+				} }, "启动情况", h(StatusPill, { up: !!d.up })), h(Row, { label: "监听端口" }, d.port == null ? "—" : String(d.port)), h(Row, { label: "自动启动" }, d.autoStart ? "开启" : "关闭"), h(Row, { label: "拉起状态" }, spawnNote), !d.up && !d.starting ? h(Row, { label: "未就绪原因" }, d.downMessage || "未上报（宿主较旧）") : null, h(Row, { label: "daemon 版本" }, proto.daemonVersion || (d.up ? "未知" : "—")), !d.up && d.spawnFailures > 1 ? h(Row, { label: "拉起重试" }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "运行环境"), h(Row, { label: "AtomCode" }, binPath), h("div", { style: S.provGrid }, providerRows(cfg).map((row) => h(ProviderSelectRow, {
 					key: "provider-" + row.slotName,
 					label: row.label,
 					slotName: row.slotName,
@@ -860,7 +884,7 @@
 					key: "bound-" + row.label,
 					label: row.label
 				}, h("span", { title: row.title }, row.text)))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "侧边会话"), h(CallStat, {
-					num: data.sessions && data.sessions.tracked || 0,
+					num: count(data.sessions && data.sessions.tracked),
 					label: "已跟踪会话"
 				}), data.sessions && typeof data.sessions.oldestAgeMs === "number" ? h(Row, { label: "最旧一条" }, h("span", { title: "这些会话键里最老一条的存活时长。超过插件设定的存活期的键会被丢弃，之后的 continue 会开一条新线（不会静默复用一条死会话）" }, fmtDuration(data.sessions.oldestAgeMs))) : null, h(Row, { label: "运行时长" }, fmtDuration(data.uptimeMs)), data.sessions && data.sessions.error ? h("p", { style: S.error }, "会话续接已降级（回复不受影响）：" + data.sessions.error) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "工具调用统计"), h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
 					num: ask.calls,

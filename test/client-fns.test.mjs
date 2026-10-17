@@ -319,6 +319,16 @@ describe('fmtCountdown', () => {
     assert.equal(fmtCountdown(7199), '1h59m');
   });
 
+  it('never prints a 60 in the seconds slot of a fractional countdown', () => {
+    // The panel passes `liveRemaining()`'s fractional seconds, so the boundary
+    // half-second is reachable: rounding the remainder on its own printed
+    // "4m60s" (299.99) — a countdown that reads like the bug it is.
+    assert.equal(fmtCountdown(299.99), '5m0s');
+    assert.equal(fmtCountdown(59.6), '1m0s');
+    assert.equal(fmtCountdown(3599.6), '1h0m');
+    assert.equal(fmtCountdown(119.4), '1m59s');
+  });
+
   it('renders "—" for a missing or negative countdown, never "-1m"', () => {
     // A negative value reaching this function means the caller forgot to clamp;
     // printing it would surface an impossible countdown on screen.
