@@ -17,6 +17,9 @@
  *   node scripts/release-status.mjs 0.4.3            # 点名一个版本
  *   node scripts/release-status.mjs 0.4.3 --check    # 不完整时退出码 1（默认总是 0）
  *
+ * 除 §1 格子外还填一行 **§3 号规**（`破坏性号`）：最新 CHANGELOG 节声明了「破坏性改动」而版本号是
+ * patch 时给 ✗ 并让 `--check` 退 1；该版已发布则记 ⚠ 历史不判红（号收不回，§2）。
+ *
  * 与 `test/release-consistency.test.mjs` 的分工：**离线不变量进测试**（最新版本节必须在 CHANGELOG 里、
  * tag 若存在必须与版本文件同号），**需要网络/凭据的事实只能在这里查**（npm / Release / CI 结论）——
  * 测试不许联网，这是本仓库的规矩。
@@ -111,6 +114,16 @@ const versions = pkg.version === VERSION && indexVersion === VERSION && changelo
 const dirty = gitUsable ? git(['status', '--porcelain']) : { ok: false, out: '' };
 const treeClean = dirty.ok && dirty.out === '';
 
+// ── C+. 号规：破坏性改动不许落在 patch 号上（§3 的 semver 纪律） ────────────────
+/** 切出 VERSION 自己那一节。注意 CHANGELOG 头部有**非版本号**的 `## ` 前言节，
+ *  不能按「第一个 ## 节」取——那会读到写作示例，把真有破坏声明的版本节整个漏掉。 */
+const secStart = changelog.search(new RegExp(`^##\\s+${VERSION.split('.').join('\\.')}`, 'm'));
+const secTail = secStart >= 0 ? changelog.slice(secStart) : '';
+const secNext = secTail.indexOf('\n## ', 1);
+const latestSection = secNext > 0 ? secTail.slice(0, secNext) : secTail;
+const hasBreaking = /^#{3,4}\s+[^\n]*破坏/m.test(latestSection);
+const patchNumber = Number(VERSION.split('.')[2]);
+
 // ── D. npm 侧：目标版本是否已发 ─────────────────────────────────────────────
 /** Query the registry directly: no dependency on the npm CLI (Windows `npm.cmd` needs a shell) or its text output. */
 async function registry(path, what) {
@@ -181,6 +194,30 @@ say(
   `${pad('版本文件可查', 16)}${mark(versions)} package.json=${pkg.version} / src/host/index.ts=${indexVersion ?? '（没抽到）'} / CHANGELOG 最新节=${changelogVersion ?? '（没有版本号节）'}`,
 );
 detail(treeClean ? '工作树干净（§7 证据①）' : `工作树有未提交改动（§7 证据① 不成立）：\n${dirty.out.split('\n').slice(0, 8).join('\n')}`);
+
+// 号规判定。`?`：版本不同步时本闸只能看当前版节。✗ **只在「破坏 + patch + 未发布」时给**——
+// 发出去就收不回号（§2 不可覆盖），那时记 ⚠ 历史、不判红：拦在发版前才有意义。
+let semver;
+let semverNote;
+if (changelogVersion !== VERSION) {
+  semver = 'unknown';
+  semverNote = `CHANGELOG 最新节（${changelogVersion ?? '无版本号节'}）≠ ${VERSION}——号规只能读当前版本那一节，先把版本文件对齐`;
+} else if (!hasBreaking) {
+  semver = 'yes';
+  semverNote = `本节没有「破坏性改动」声明——${VERSION} 按号安全`;
+} else if (Number.isInteger(patchNumber) && patchNumber === 0) {
+  semver = 'yes';
+  semverNote = `声明了「破坏性改动」，且 ${VERSION} 已升 minor——号与内容相配`;
+} else if (npmPublished === 'no') {
+  semver = 'no';
+  semverNote = `声明了「破坏性改动」而号是 patch（${VERSION}）——发版前按 §3 号规升 minor，或重写这一节去掉「破坏性改动」`;
+} else {
+  semver = 'warn';
+  semverNote = `声明了「破坏性改动」而号是 patch（${VERSION}），且已发布——号收不回（§2 不可覆盖），记为历史，不判红`;
+}
+const semverViolation = semver === 'no';
+const semverMark = semver === 'yes' ? '✓' : semver === 'no' ? '✗' : semver === 'warn' ? '⚠' : '?';
+say(`${pad('破坏性号', 16)}${semverMark} ${semverNote}`);
 
 say(
   `${pad('npm 可查', 16)}${mark(npmPublished)} ${
@@ -255,8 +292,9 @@ if (complete) {
 
 say();
 say(`判定：${state}`);
+if (semverViolation) say(`号规 ✗：破坏性改动落在 patch 号上——发布前先按 §3 升 minor（--check 会因这一行退 1）。`);
 say(`还缺什么 / 下一步：${next}`);
 if (unknown > 0) say(`（有 ${unknown} 条事实查不动，打了 ?——它们既不算成立也不算缺，先解决查询通道再下结论。）`);
 
 console.log(lines.join('\n'));
-if (CHECK && !complete) process.exitCode = 1;
+if (CHECK && (!complete || semverViolation)) process.exitCode = 1;
