@@ -58,8 +58,7 @@ npm tarball 的这份文件（`CHANGELOG.md` 已列入 `package.json` 的 `files
 
 ### 破坏性改动
 
-- **`atomcode_ask` 在没拿到工作目录时不再开跑，而是直接拒绝**：`approval_mode` 默认是 `bypass`（无人值守放行），
-  加上取不到工作目录，等于让 AtomCode 的工具在你的用户目录里自动执行。现在要么传 `working_dir`（或在插件配置里
+- **`atomcode_ask` 在没拿到工作目录时不再开跑，而是直接拒绝**：取不到工作目录等于让 AtomCode 的工具在你的用户目录里自动执行（当前 daemon 对**任何** `approval_mode` 都无人值守自动放行，`bypass` 只是出厂默认）。现在要么传 `working_dir`（或在插件配置里
   设一个默认），要么显式传 `allow_unattended: true` 表示知情同意。此前这种情况只在回合**跑完之后**提示一句。
 
 ### 修复

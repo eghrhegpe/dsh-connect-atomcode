@@ -262,16 +262,20 @@ describe('ask render — a completed turn must show its caveat, a clean one must
 
   it('names the directory the turn ran in — and warns when there was none', () => {
     // An ask with no `working_dir` runs in the daemon's OWN cwd (the user's home,
-    // in the default launch) and asks for bypass approvals: tools auto-approved in
-    // a directory nobody named. `atomcode_review` refuses that case (红线 8); ask
-    // cannot refuse it, so it has to say it — and the directory has to be visible
-    // on the clean path too, or "where did this run" stays a guess.
+    // in the default launch) and asks for unattended auto-approval: tools
+    // auto-approved in a directory nobody named (the headless daemon does this
+    // in EVERY approval_mode — 2026-10-17 probe). `atomcode_review` refuses that
+    // case outright (红线 8) and `atomcode_ask` does too, in `execute()` — so the
+    // render only ever sees a homeless turn the caller waved through with
+    // `allow_unattended: true`. The directory has to be visible on the clean
+    // path too, or "where did this run" stays a guess.
     const pinned = render({}, { ...base, ok: true, error: '' })[0].text;
     assert.match(pinned, /working_dir=\/repo/, 'a named directory must be stated, not implied');
     assert.doesNotMatch(pinned, /未指定/, 'and must not carry the unspecified-directory caveat');
     const homeless = render({}, { ...base, ok: true, error: '', working_dir: null })[0].text;
     assert.match(homeless, /未指定 working_dir/, 'an unattended turn in an unnamed directory must say so');
-    assert.match(homeless, /bypass/, 'the caveat must name WHY it matters (无人值守放行)');
+    assert.match(homeless, /无人值守/, 'the caveat must name WHY it matters (无人值守自动放行)');
+    assert.match(homeless, /allow_unattended=true/, '…and that the caller already acknowledged it');
   });
 
   it('surfaces value.error on ok:true, and stays silent when error is empty', () => {

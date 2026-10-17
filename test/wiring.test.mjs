@@ -591,10 +591,11 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     const { ctx, calls } = fakeCtx();
     const mod = await import(fileUrl(BRIDGE));
     // A working_dir is supplied by DEFAULT here because this suite is about the
-    // provider ladder on the wire, not about directory resolution: with
-    // `approval_mode: bypass` (the shipped default) and no resolvable directory,
-    // `atomcode_ask` now REFUSES the turn before touching the daemon — so every
-    // case below would otherwise fail on the same refusal and test nothing.
+    // provider ladder on the wire, not about directory resolution: with no
+    // resolvable directory, `atomcode_ask` REFUSES the turn before touching the
+    // daemon (the gate is mode-independent — 2026-10-17 probe; bypass is just
+    // the shipped default), so every case below would otherwise fail on the
+    // same refusal and test nothing.
     // `extraConfig` still wins, so a case that wants to exercise the ladder's
     // directory rung can override it.
     mod.apply(ctx, {

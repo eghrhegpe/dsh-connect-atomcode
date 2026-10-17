@@ -823,16 +823,22 @@ describe('atomcode_ask — a renamed daemon event is NAMED, never a silent succe
 });
 
 describe('atomcode_ask — an unnamed directory is REFUSED, not warned about afterwards', () => {
-  // The pairing that matters is `approval_mode: bypass` (the shipped default)
-  // AND no resolvable working_dir: it hands AtomCode a full autonomous tool
-  // loop, auto-approved, running in whatever cwd the daemon was launched in —
-  // the user's home, in the default launch. `atomcode_review` has refused this
-  // case since it existed; ask only MENTIONED it, in the render, which runs
-  // after the turn. A warning delivered with the results cannot stop the thing
-  // it warns about — so the weaker guard sat on the more dangerous tool (review
-  // is one-shot and bounded; ask is the one with the tool loop). These cases pin
-  // the refusal and, just as importantly, the three ways a caller gets a
-  // WORKING turn back.
+  // The case that matters is NO resolvable working_dir: it hands AtomCode a
+  // full autonomous tool loop, auto-approved, running in whatever cwd the
+  // daemon was launched in — the user's home, in the default launch. `atomcode_review`
+  // has refused this case since it existed; ask only MENTIONED it, in the
+  // render, which runs after the turn. A warning delivered with the results
+  // cannot stop the thing it warns about — so the weaker guard sat on the more
+  // dangerous tool (review is one-shot and bounded; ask is the one with the
+  // tool loop). These cases pin the refusal and, just as importantly, the three
+  // ways a caller gets a WORKING turn back.
+  //
+  // The refusal is mode-INDEPENDENT on purpose. It used to fire only on the
+  // `approval_mode: bypass` pairing, on the assumption that a non-bypass turn
+  // had a human approving tools. The 2026-10-17 probe (scripts/probes/approval-mode.mjs)
+  // proved a headless daemon auto-approves ask-class tools in EVERY mode
+  // (`[headless] auto-approved`), so the danger — and the gate — no longer
+  // names a mode.
   const state = { requests: [], counter: 400, mode: 'ok' };
   let fake;
 
@@ -840,7 +846,7 @@ describe('atomcode_ask — an unnamed directory is REFUSED, not warned about aft
   after(() => fake.server.close());
   beforeEach(() => { state.requests.length = 0; });
 
-  it('bypass + no working_dir refuses BEFORE the daemon is touched', async () => {
+  it('no working_dir refuses BEFORE the daemon is touched (shipped default = bypass)', async () => {
     const statePath = tempState();
     const ask = await mountAsk(mod, { statePath, port: fake.port });
     const r = await ask.execute({ message: 'hi' }, {});
@@ -872,14 +878,29 @@ describe('atomcode_ask — an unnamed directory is REFUSED, not warned about aft
     assert.match(text, /allow_unattended=true 放行/, 'the render must present this as the acknowledgement it is');
   });
 
-  it('a NON-bypass approval_mode needs no acknowledgement — the gate is the pairing, not the field', async () => {
-    // With a human in the loop an unnamed directory is not unattended autonomy,
-    // and refusing it would enforce a rule nobody is at risk of breaking.
+  it('a NON-bypass approval_mode is STILL refused — the gate does not couple to the mode', async () => {
+    // The old assumption: with a human in the loop an unnamed directory was
+    // tolerable, so only the bypass pairing was refused. The 2026-10-17 probe
+    // disproved it for the headless daemon — auto-approval holds in every mode,
+    // so an unnamed directory is unattended danger in all of them. `on-request`
+    // (the value the old test used) is not even a legal daemon value (closed
+    // enum build|accept_edits|bypass|plan, 422 gate), so this one pins the
+    // behavior on a real enum value.
     const statePath = tempState();
-    const ask = await mountAsk(mod, { statePath, port: fake.port, config: { approval_mode: 'on-request' } });
+    const ask = await mountAsk(mod, { statePath, port: fake.port, config: { approval_mode: 'accept_edits' } });
     const r = await ask.execute({ message: 'hi' }, {});
-    assert.equal(r.ok, true, 'only the bypass pairing is refused');
-    assert.equal(state.requests.at(-1).approval_mode, 'on-request');
+    assert.equal(r.ok, false, 'the refusal must not depend on the mode');
+    assert.match(r.error, /拒绝了本回合/);
+    assert.equal(state.requests.length, 0, 'the refusal must happen before the daemon is touched');
+  });
+
+  it('allow_unattended:true is the acknowledgement in any mode', async () => {
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port, config: { approval_mode: 'accept_edits' } });
+    const r = await ask.execute({ message: 'hi', allow_unattended: true }, {});
+    assert.equal(r.ok, true, 'the acknowledgement must work regardless of the mode');
+    assert.equal(r.working_dir, null, 'the acknowledgement does not invent a directory');
+    assert.equal(state.requests.at(-1).approval_mode, 'accept_edits');
   });
 
   it('a configured working_dir fills the gap, and reaches the wire', async () => {

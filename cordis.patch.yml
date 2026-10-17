@@ -50,14 +50,14 @@
         # closed enum `build | accept_edits | bypass | plan` (5.2.3: anything
         # else is 422'd before the model call). Measured 2026-10-17
         # (scripts/probes/approval-mode.mjs): an UNATTENDED daemon auto-approves
-        # the ask-class even when this is NOT bypass (`[headless]
-        # auto-approved`), so switching it off buys no human gate and DROPS the
-        # missing-directory refusal below — keep `bypass` plus a pinned
+        # the ask-class in EVERY mode (`[headless] auto-approved`), so switching
+        # off bypass buys no human gate. Keep `bypass` plus a pinned
         # working_dir; point ask at a shared repo only if you mean it.
-        # Because bypass removes the
-        # human from the loop, it also gates the missing-directory case: with
-        # bypass on, an ask turn that resolves no working_dir is refused rather
-        # than run in the daemon's own cwd. See `working_dir` below.
+        # The missing-directory gate no longer couples to this field (the old
+        # "bypass-only" reading would have silently disarmed it on mode
+        # switches): an ask turn that resolves no working_dir is refused in
+        # EVERY mode; the only acknowledgement is `allow_unattended: true` on
+        # the call. See `working_dir` below.
         # No panel input exists for this field: the detail page's 回合边界 card only
         # REPORTS it, and labels whether the value is this default or one you set
         # (the label comes from config.authored, not from comparing the value).
@@ -102,9 +102,12 @@
         # Default working directory for bridged turns (ask + review). Empty =
         # the tool arguments / host session cwd / daemon's own default — and for
         # the ASK path the last of those is not honoured silently: if neither the
-        # call nor this field names a directory, and approval_mode is bypass,
-        # atomcode_ask REFUSES the turn instead of running tools unattended in
-        # the daemon's own cwd (usually your home). Set this if you rely on ask
+        # call nor this field names a directory, atomcode_ask REFUSES the turn
+        # instead of running tools unattended in the daemon's own cwd (usually
+        # your home). The refusal is mode-independent (the headless daemon
+        # auto-approves tools in EVERY approval_mode, 2026-10-17 probe), so
+        # switching `approval_mode` can no longer disarm it; the only opt-out is
+        # `allow_unattended: true` on the call. Set this if you rely on ask
         # without passing working_dir per call. No panel input: the detail page
         # reports it, and shows （会话工作目录） when this stays empty.
         working_dir: ''

@@ -40,6 +40,9 @@
 //      the plugin's missing-directory refusal, which fires only on the
 //      `bypass` pairing. The README's "shared repo: set non-bypass" advice
 //      is therefore retracted; docs/DECISIONS.md records the resolution.
+//      (Follow-up, same day: the refusal was DECOUPLED from `approval_mode` —
+//      it now fires in every mode when no directory resolves, so "DROPS the
+//      refusal" no longer applies; see docs/DECISIONS.md line 35 后续更正.)
 //
 // Reads the token from ~/.atomcode/daemon-<port>.json at runtime; never
 // hardcodes it. Usage: node scripts/probes/approval-mode.mjs [port] [approval_mode]
