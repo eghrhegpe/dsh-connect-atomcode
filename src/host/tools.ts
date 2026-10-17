@@ -28,6 +28,8 @@ import {
   HOST_TOOL_TIMEOUT_MS,
   HOST_TOOL_TIMEOUT_SECS,
   MAX_REVIEW_DURATION_SECS,
+  OUTPUT_CAP,
+  REVIEW_REPORT_FLOOR,
   resolveDurationSecs,
   resolveMaxRounds,
 } from './config.ts';
@@ -50,6 +52,38 @@ import { resolve } from 'node:path';
  */
 function hostSessionCwd(exec: any): string | undefined {
   return exec && typeof exec.cwd === 'string' && exec.cwd.trim() !== '' ? exec.cwd : undefined;
+}
+
+/**
+ * Cut prose down to `cap` characters, with the cut MARKED in the text itself.
+ *
+ * One helper for both tools because there used to be two hand-written markers
+ * (`ask AtomCode to write the full text to a file` on one path, a bare
+ * `N more characters` on the other) and two caps that happened to be equal —
+ * i.e. one convention per copy. A truncation convention that varies by call site
+ * is a truncation the reader learns to miss; the `remedy` is the only part that
+ * legitimately differs, because what to do about a clipped reply is not what to
+ * do about a clipped report.
+ *
+ * The marker goes INSIDE the returned text on purpose. A silent clip reads to the
+ * model as a complete answer, which is how a half-copied document becomes a
+ * confidently wrong summary — the same reason `tools_truncated` and
+ * `findings_parsed` exist as their own fields rather than as omissions.
+ *
+ * @param {string} text - the prose to bound.
+ * @param {number} cap - the character budget for it.
+ * @param {{remedy?: string}} [options] - what the reader should do about it.
+ * @returns {{text: string, cut: boolean}} the text to show, and whether it was cut.
+ */
+function capProse(text: string, cap: number, options: { remedy?: string } = {}) {
+  const body = typeof text === 'string' ? text : '';
+  if (body.length <= cap) return { text: body, cut: false };
+  const omitted = body.length - cap;
+  const remedy = options.remedy ? `; ${options.remedy}` : '';
+  return {
+    text: `${body.slice(0, cap)}\n\n[truncated by dsh-connect-atomcode: ${omitted} more characters${remedy}]`,
+    cut: true,
+  };
 }
 
 /**
@@ -516,9 +550,16 @@ export function mountAskTool({
         if (!stats.protocolUnknownTypes.includes(unknownType)) stats.protocolUnknownTypes.push(unknownType);
       }
       if (result.ok && result.sessionId) sessions.set(sessionKey, result.sessionId);
-      // Truncation is MARKED, never silent: a silently clipped 200KB reply reads
+      // Truncation is MARKED, never silent: a silently clipped reply reads
       // to the model like a complete answer, which is how a half-copied report
-      // becomes a confidently wrong summary.
+      // becomes a confidently wrong summary. Budget and marker both come from
+      // the shared pair (OUTPUT_CAP / capProse) so this path and the review path
+      // cannot drift into two conventions.
+      const capped = capProse(result.reply, OUTPUT_CAP, {
+        remedy: 'ask AtomCode to write the full text to a file and read that instead',
+      });
+      const reply = capped.text;
+      const truncated = capped.cut;
       // A turn that RESUMED a stored side conversation and then failed has one
       // thing to say that no daemon error will: the stored id may be the problem.
       // `sessions.set()` only records SUCCESSFUL turns, so a dead id is never
@@ -541,16 +582,6 @@ export function mountAskTool({
             ? `${result.error}（${resumeHint}）`
             : resumeHint
           : result.error;
-      // Truncation is MARKED, never silent: a silently clipped 200KB reply reads
-      // to the model like a complete answer, which is how a half-copied report
-      // becomes a confidently wrong summary.
-      const REPLY_CAP = 200_000;
-      const truncated = result.reply.length > REPLY_CAP;
-      const reply = truncated
-        ? `${result.reply.slice(0, REPLY_CAP)}\n\n[truncated by dsh-connect-atomcode: ${
-            result.reply.length - REPLY_CAP
-          } more characters; ask AtomCode to write the full text to a file and read that instead]`
-        : result.reply;
       return {
         ok: result.ok,
         reply,
@@ -746,8 +777,45 @@ export function mountReviewTool({
                 'findings_count=0 是"没解析出"，不等于"没有问题"]',
             );
           }
-          lines.push('--- report 原文 ---', value.report || '(空 findings)');
-          if (value.truncated) lines.push('[注意：findings 已截断，末尾内容不完整]');
+          // The report is the SECOND copy of the same review — the digest above
+          // already lists every finding — and it used to be printed at its own
+          // full cap on top of the digest, so ONE return could carry about twice
+          // the intended budget. The budget is per RETURN now: the raw document
+          // gets whatever the digest left, with a floor it can never drop below.
+          //
+          // Both copies stay (a finding can carry fields the digest does not
+          // normalize, so dropping the raw would lose information silently) —
+          // what changed is that the cost of keeping both is now paid out of one
+          // budget instead of being charged twice.
+          const digestChars = lines.join('\n').length;
+          const rawBudget = Math.max(REVIEW_REPORT_FLOOR, OUTPUT_CAP - digestChars);
+          // Same marker shape as the ask path, remedy included: the only thing
+          // that should differ between the two truncations is the advice, not the
+          // sentence that announces the loss.
+          const raw = capProse(value.report || '(空 findings)', rawBudget, {
+            remedy: 're-run with a task that writes the full report to a file, or read the digest above',
+          });
+          lines.push('--- report 原文 ---', raw.text);
+          // Two INDEPENDENT cuts can shorten this document, and a reader who is
+          // told only one of them will size what they got wrongly:
+          //   - `value.truncated` — the FIELD was cut before this render ran, so
+          //     content was already gone when the budget below was computed.
+          //   - `raw.cut` — the combined budget then cut it again, because the
+          //     digest spent part of the return's allowance.
+          // Reported in one note with both reasons rather than two notes that
+          // each read as THE reason.
+          const shortfalls = [];
+          if (value.truncated) shortfalls.push('findings 原文早已被字段上限截断，末尾不完整');
+          if (raw.cut) {
+            shortfalls.push(
+              `report 原文又按本回合预算收到 ${rawBudget} 字（上面的 findings 清单已占用 ${digestChars} 字）`,
+            );
+          }
+          if (shortfalls.length) {
+            // What to DO about it lives in the inline marker above, so this note
+            // only has to explain WHY: two independent cuts, named separately.
+            lines.push(`[注意：${shortfalls.join('；')}]`);
+          }
         } else {
           lines.push(`AtomCode 评审失败: ${value.error}`);
           if (value.report) lines.push('--- 部分输出 ---', value.report.slice(0, 5000));
@@ -892,17 +960,14 @@ export function mountReviewTool({
       stats.review.msTotal += Date.now() - t0;
       if (result.ok) stats.review.ok += 1;
       else stats.review.err += 1;
-      const REPORT_CAP = 200_000;
-      const truncated = result.report.length > REPORT_CAP;
+      const capped = capProse(result.report, OUTPUT_CAP, {
+        remedy: 're-run with a task that writes the full report to a file, or read the digest above',
+      });
       const parsed = result.findings || { parsed: false, count: 0, findings: [] };
       return {
         ok: result.ok,
-        report: truncated
-          ? `${result.report.slice(0, REPORT_CAP)}\n\n[truncated by dsh-connect-atomcode: ${
-              result.report.length - REPORT_CAP
-            } more characters]`
-          : result.report,
-        truncated,
+        report: capped.text,
+        truncated: capped.cut,
         findings_parsed: parsed.parsed === true,
         findings_count: typeof parsed.count === 'number' ? parsed.count : 0,
         findings: Array.isArray(parsed.findings) ? parsed.findings : [],

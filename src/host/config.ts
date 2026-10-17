@@ -64,6 +64,41 @@ export const HOST_TOOL_TIMEOUT_MS = 30 * 60 * 1000;
 export const HOST_TOOL_TIMEOUT_SECS = HOST_TOOL_TIMEOUT_MS / 1000;
 
 /**
+ * How much PROSE one tool return may carry, in CHARACTERS.
+ *
+ * Characters, not tokens: this side never sees the model's tokenizer, and a
+ * character count is the one number that can be checked without one. It is a
+ * budget for what the MODEL reads (`render`), not for the wire.
+ *
+ * ONE constant for both tools, deliberately. There used to be two literals —
+ * `REPLY_CAP` in the ask path and `REPORT_CAP` in the review path, both
+ * `200_000` — plus `TOOLS_CAP` and `FINDINGS_CAP` for the two array limits: four
+ * numbers, no shared notion of "this turn's budget". And the review pair was
+ * applied PER FIELD while the render prints the findings digest AND the raw
+ * document, so a single return could carry roughly twice the intended budget. A
+ * budget only some of the copies obey is not a budget — which is why the review
+ * render now spends this constant across the whole return instead of per field.
+ *
+ * The markers that announce a cut are one helper too (`capProse` in tools.ts):
+ * two truncations following two conventions is how a reader learns to trust one
+ * and miss the other.
+ */
+export const OUTPUT_CAP = 200_000;
+
+/**
+ * The floor the review's raw document keeps even after the findings digest has
+ * eaten into `OUTPUT_CAP`.
+ *
+ * Not zero: the digest normalizes severity/file/line/message, so a finding may
+ * carry fields it drops, and a render that said "…the full text is below" while
+ * printing none of it would be the silent amputation this budget exists to
+ * prevent. The floor is also what makes the worst case a number someone can
+ * hold — `OUTPUT_CAP + REVIEW_REPORT_FLOOR` — instead of a rule with an
+ * exception nobody can size.
+ */
+export const REVIEW_REPORT_FLOOR = 20_000;
+
+/**
  * Ceiling for every round-count knob (`max_rounds` on both tools, and the
  * `ask_max_rounds` / `review_max_rounds` config fields behind them).
  *

@@ -38,6 +38,11 @@
   - 顺带修掉的一处结构问题：`usedTools` 原本靠类型推断，`report()` 这个闭包在第一次 `push` 之前就读它，推断失败（`TS7034`）。显式标了元素类型——闭包引用会把数组类型钉在读它那一刻
 - **会话键按 daemon 身份判死，TTL 退化为兜底**（2026-10-17）。侧边对话的主要死因是 daemon 重启/空闲退出（~30min 级），而 24h 挂钟 TTL 看不见它：三小时前写的 id，daemon 十分钟前重启过，TTL 判定「还活着」，每次 `continue` 都拿它撞一次失败、烧一个回合，恢复手段（`reset_session`）只在失败文本里出现。现在 `set()` 随条目记录 daemon 指纹（`readDaemonIdentity`：`port:pid:token` 的 sha256 前 16 位——token 哈希而非原文，state 文件不是凭证库；pid 单独不够，刚释放的 pid 最容易被复用），`get()/count()/prune()` 走同一个 `isResumable`：指纹不符即死，与年龄无关。**未知永不等于死**：没有指纹字段（旧数据）、身份文件读不到（daemon 没起、`--no-auth` 不写文件）、探针抛错，都按"无法判定"放行，退化到纯 TTL 行为——误杀一条活会话是这条规则唯一不能引入的失败模式。顺带：`count()`+`oldestAgeMs()` 两次全量读合并为 `snapshot()` 一次读（5s 轮询的同文件双读双 parse），单因子入口保留给只要一个事实的调用方
 
+- **一次返回只有一份上下文预算，而且预算算的是「模型读到的东西」**（2026-10-17）。此前有四个数各管一段：ask 的 `REPLY_CAP`、review 的 `REPORT_CAP`（都是 200_000）、`TOOLS_CAP`、`FINDINGS_CAP`——没有任何一个概念叫「本回合的预算」。真正的缺陷不在常量多，而在**review 的截断是按字段而不是按返回**：render 先把 findings 清单打出来，再把原文打出来，两个字段各自被各自的 cap 放行，于是一次返回可以携带接近**两倍**预算的内容。一个只有部分副本遵守的预算不是预算。现在：`OUTPUT_CAP` 是唯一常量，两条路径共用 `capProse`；review 的 render 先算 `rawBudget = max(REVIEW_REPORT_FLOOR, OUTPUT_CAP - digestChars)`，把清单已经吃掉的字数从原文预算里扣掉——**扣在有清单的那一侧，因为清单是这一侧的产物**。截断标记的文案也合成一处（`capProse`），只有 `remedy` 分段：被砍的回复和被砍的报告该做的事不一样，而标记本身的写法不许可调用点各自发明（此前一处写 "ask AtomCode to write the full text to a file"、一处只写裸的 "N more characters"，两种约定就是教读者信任其中一个、错过另一个）。标记写在返回文本**内部**：静默截断在模型眼里是一份完整答案，半个文档变成一段自信的错误总结正是这么来的——与 `tools_truncated` / `findings_parsed` 各自成字段而不是靠"没写"来表达，是同一条理由
+  - `REVIEW_REPORT_FLOOR = 20_000` 是刻意的下限，不是"0 也能跑"：清单归一化过 severity/file/line/message，会丢掉原始行里的其它字段，所以一条 render 说"原文见下"却一个字都不打，正是这个预算要防的那种静默截肢。有了下限，最坏情况就是一个**能被人拿在手里的数**（`OUTPUT_CAP + REVIEW_REPORT_FLOOR`），而不是一条带例外、没人量得清大小的规则
+  - 预算是**字符数**不是 token：这一侧永远看不到模型的 tokenizer，而字符数是唯一不用它也能核对的度量。它是给模型读的量（`render`），不是线上的量
+  - 两处独立的截断同时发生时（findings 被字段上限截断 + 原文被本回合预算收到 `rawBudget`），`shortfalls` 会把**两条各自的**原因都写出来，而不是合并成一句"内容不完整"——读者需要知道该去调哪一个旋钮
+
 > 机制层的硬约束（为什么不做 provider 接管、额度为什么只能靠文本解析、三条私有无版本协议怎么办）
 > 写在 `../AGENTS.md` 的「三条事实」——那里是给改代码的人的入口，本文件不重复。
 

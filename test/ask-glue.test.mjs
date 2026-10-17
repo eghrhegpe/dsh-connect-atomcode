@@ -23,6 +23,10 @@ const BRIDGE = join(ROOT, 'lib', 'index.js');
 
 // Module scope: `await` is not allowed inside a synchronous describe callback.
 const mod = await import(pathToFileURL(BRIDGE).href);
+// The ONE budget constant (src/host/config.ts → lib/config.js). Imported rather
+// than spelled out here: the case below asserts where the cut happens, and a
+// second copy of the number would quietly stop asserting that.
+const { OUTPUT_CAP } = await import(pathToFileURL(join(ROOT, 'lib', 'config.js')).href);
 
 const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
 
@@ -401,7 +405,10 @@ describe('atomcode_ask — bounded default and reply truncation', () => {
         }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         res.end(sse([
-          { type: 'text', content: 'x'.repeat(200_100) },
+          // `OUTPUT_CAP + 100`, not a hardcoded 200_100: the number lives in one
+          // place now, and a test that spelled it out again would keep passing
+          // after the constant moved.
+          { type: 'text', content: 'x'.repeat(OUTPUT_CAP + 100) },
           { type: 'done', session_id: 'sess-long', tokens: 1, stop_reason: 'stopped' },
         ]));
       });
