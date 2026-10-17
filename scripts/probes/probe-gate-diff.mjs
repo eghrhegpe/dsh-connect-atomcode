@@ -17,6 +17,10 @@
  * during a parallel host edit is one command away from being attributed.
  *
  * Usage: node scripts/probes/probe-gate-diff.mjs
+ *
+ * 成本：**零额度**。只在本地把 host 的 tsdown 配置重跑到一个临时目录并比对字节，
+ * 不联网、不起 daemon、不碰模型、不动仓库里的产物（写完自己 rm 掉）。
+ * 需要 devDependency `tsdown`（与 `test/build-gate.test.mjs` 同一套依赖）。
  */
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

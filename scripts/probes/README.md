@@ -18,6 +18,10 @@
 | `probe-gate-diff.mjs` | （直接入库） | ✅ **零额度**（重建到临时目录，不碰磁盘上的 `lib/`） | 本机 `tsdown`（devDependency）+ 已构建的工作树 |
 | `cli-inventory.mjs` | （直接入库） | ✅ **零额度**（只跑两条 `--help`，不启动 daemon） | 本机 `atomcode` 二进制（`--binary` 或 `$ATOMCODE_BIN` 可覆盖路径） |
 
+这张表是**门禁**不是装饰：[`../../test/probes-index.test.mjs`](../../test/probes-index.test.mjs) 拿目录里的实际文件与表的第一列对账——
+新增探针没有表行、脚本头注没写成本、或者表里点了一个已经不存在的脚本，`npm test` 当场红。
+（「原名」那一列不参与对账：那是归位之前仓库根里被 `.gitignore` 挡住的旧临时名，本来就不是文件。）
+
 `signature-gate.mjs` 之所以零额度：它用**不存在的模型名 + 畸形 body**，请求必然卡在模型门或参数门，
 到不了真正的补全。这是刻意设计的——探签名门不该花钱。
 
