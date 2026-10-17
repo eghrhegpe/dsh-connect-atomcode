@@ -24,6 +24,7 @@
 import type { ReactElement } from 'react';
 import { CHIP_STYLE, CHIP_TRIGGER_STYLE, S } from './styles.ts';
 import { panelStyle, pctLabel, quotaView } from './quota.ts';
+import { inFlightText } from './rows.ts';
 
 /** Everything the chips need that is bound to the app's React instance or to the
  * factory's resolved seeds. Injected, never imported — see the module header. */
@@ -96,6 +97,8 @@ export function createQuotaChip(deps: QuotaChipDeps) {
     // empty instead of printing a percent that has not arrived yet.
     if (!view.known) return null;
 
+    const inFlight = data && data.ask ? data.ask.inFlight : null;
+
     return h(
       'span',
       {
@@ -106,7 +109,7 @@ export function createQuotaChip(deps: QuotaChipDeps) {
       h(
         primitives.Tooltip,
         {
-          label: view.facts.join(' · '),
+          label: inFlight ? view.facts.join(' · ') + ' · ' + inFlightText(inFlight) : view.facts.join(' · '),
           side: 'top',
           delayMs: 200,
           // The panel already shows this; two stacked tooltips fight.
@@ -126,6 +129,35 @@ export function createQuotaChip(deps: QuotaChipDeps) {
           view.label
         )
       ),
+      // In-flight indicator: a pulsing dot + one-line progress, visible only
+      // while a turn is running. Lives beside the quota button in the dock so
+      // the user sees "it is still working" without navigating to the panel.
+      inFlight &&
+        h(
+          'span',
+          {
+            style: {
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              marginLeft: 6,
+              fontSize: 11,
+              color: 'var(--dsw-alias-label-secondary)',
+              whiteSpace: 'nowrap',
+            },
+            title: inFlightText(inFlight),
+          },
+          h('span', {
+            style: {
+              width: 5,
+              height: 5,
+              borderRadius: '50%',
+              background: 'var(--dsw-alias-state-success-primary)',
+              flexShrink: 0,
+            } as any,
+          }),
+          inFlightText(inFlight)
+        ),
       open &&
         reactDom.createPortal(
           h(
@@ -193,14 +225,40 @@ export function createQuotaChip(deps: QuotaChipDeps) {
     const { data } = useStats();
     const view = quotaView(data && data.quota, Date.now());
     if (!view.known) return null;
+    const inFlight = data && data.ask ? data.ask.inFlight : null;
     return h(
       'span',
       {
-        title: view.facts.join(' · '),
+        title: inFlight ? view.facts.join(' · ') + ' · ' + inFlightText(inFlight) : view.facts.join(' · '),
         'data-quota-percent': view.pct,
         style: CHIP_STYLE(view.color),
       },
-      view.label
+      view.label,
+      inFlight &&
+        h(
+          'span',
+          {
+            style: {
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              marginLeft: 6,
+              fontSize: 11,
+              color: 'var(--dsw-alias-label-secondary)',
+              whiteSpace: 'nowrap',
+            },
+          },
+          h('span', {
+            style: {
+              width: 5,
+              height: 5,
+              borderRadius: '50%',
+              background: 'var(--dsw-alias-state-success-primary)',
+              flexShrink: 0,
+            } as any,
+          }),
+          inFlightText(inFlight)
+        )
     );
   }
 

@@ -36,58 +36,73 @@ export interface ConfigBranch {
    * `null`/absent = the resolved value is legal.
    */
   approvalModeRejected?: string | null;
+  /**
+   * The resolved `review_brief_mode` (always / when-empty / never): which prompt
+   * shape a review with empty user text takes. Absent on old hosts.
+   */
+  reviewBriefMode?: string | null;
+  /**
+   * The off-enum `review_brief_mode` spelling the patch supplied (null/absent =
+   * the resolved value is legal). Same fail-visible shape as
+   * `approvalModeRejected`.
+   */
+  reviewBriefModeRejected?: string | null;
   defaultWorkingDir?: string | null;
-  reviewWorkingDir?: string | null;
   defaultProvider?: string | null;
-  reviewDefaultProvider?: string | null;
   askMaxRounds?: number | null;
   daemonRetrySecs?: number | null;
-  reviewAvailable?: boolean;
-  reviewReason?: string | null;
   /** Which patch-only knobs DEPART from the shipped default. Absent on old hosts. */
-  authored?: { approvalMode?: boolean; workingDir?: boolean; askMaxRounds?: boolean } | null;
+  authored?: { approvalMode?: boolean; workingDir?: boolean; askMaxRounds?: boolean; reviewBriefMode?: boolean } | null;
   /** The shipped defaults themselves, for the `（插件默认）` label. */
-  defaults?: { approvalMode?: string; askMaxRounds?: number } | null;
+  defaults?: { approvalMode?: string; askMaxRounds?: number; reviewBriefMode?: string } | null;
+  /**
+   * The panel's brief-mode override (always / when-empty / never).
+   * `null`/absent = no override, the patch value applies.
+   */
+  panelBriefMode?: string | null;
+  /**
+   * The panel's working-dir override. `null`/absent = no override,
+   * the patch value applies.
+   */
+  panelWorkingDir?: string | null;
+  /**
+   * The panel's approval-mode override (build / accept_edits / bypass / plan).
+   * `null`/absent = no override, the patch value applies.
+   */
+  panelApprovalMode?: string | null;
+  /**
+   * The panel's ask max-rounds override. `null`/absent = no override.
+   */
+  panelAskMaxRounds?: number | null;
+  /** Where panel-settings.json lives (the panel names it). */
+  panelSettingsStorePath?: string | null;
+  /** Why the panel-settings file is degraded (`''` when healthy). */
+  panelSettingsError?: string | null;
 }
 
-/** One slot of the `provider` branch — ask and review are NOT the same namespace. */
-export interface ProviderSlot {
-  panel?: string | null;
-  /**
-   * The mount-time rung of THIS slot's ladder (ask → `default_provider`, review →
-   * `review_default_provider`), i.e. the same fact as `config.*` but scoped to the
-   * slot it belongs to — 红线 8's two namespaces are two fields upstairs, and a
-   * slot-scoped copy is what a reader who only has the `provider` branch can use.
-   *
-   * Honest scope: the shipped renderer reads the `config` branch for this
-   * (`providerRows(cfg)` → `cfg.defaultProvider` / `cfg.reviewDefaultProvider`),
-   * so nothing dereferences this field TODAY. It is declared because the contract
-   * describes the WIRE, and an undeclared field the host sends is exactly the
-   * `TS2353` this annotation exists to raise.
-   */
-  config?: string | null;
-  effective?: string | null;
-  source?: string | null;
-  /** OBJECTS on the ask path (`/models`), STRINGS on the review path. */
-  catalog?: ReadonlyArray<string | { provider?: string; isDefault?: boolean }> | null;
-  catalogError?: string | null;
-  /**
-   * base_url per usable provider name, so the pick's dependency is nameable.
-   * REVIEW-ONLY: it lives on the SLOT, not on the `provider` branch root, because
-   * that is where the host writes it (`buildStatsBody` → `provider.review`).
-   * Reading it from the root is what made the loopback warning dead — the two
-   * halves each had a test, and neither test joined them.
-   */
-  endpoints?: Record<string, string> | null;
-}
-
-/** The `provider` branch of the stats snapshot. */
+/**
+ * The `provider` branch of the stats snapshot — ONE ladder, not two.
+ *
+ * It used to be `{ask: ProviderSlot, review: ProviderSlot}`, two identically
+ * shaped entries for two namespaces (红线 8), and every reader had to know
+ * which one it was looking at. The `[providers.<name>]` namespace died with the
+ * review CLI, so there is one question left ("which model profile do bridged
+ * turns ask for") and one flat answer; `catalog` is now objects-only because
+ * the daemon's `/models` is its only source.
+ */
 export interface ProviderBranch {
   storePath?: string | null;
   storeError?: string | null;
   foreignVersion?: boolean;
-  ask?: ProviderSlot | null;
-  review?: ProviderSlot | null;
+  /** The stored panel pick (`''` / `null` = none). */
+  panel?: string | null;
+  /** The mount-time rung of the ladder (`default_provider`), restated here. */
+  config?: string | null;
+  effective?: string | null;
+  source?: string | null;
+  /** Daemon model profiles (`/models`) — objects, one per entry. */
+  catalog?: ReadonlyArray<string | { provider?: string; isDefault?: boolean; effortLevels?: string[]; currentEffort?: string | null }> | null;
+  catalogError?: string | null;
 }
 
 /** The `daemon` branch of the stats snapshot. */
@@ -158,9 +173,6 @@ export interface QuotaBranch {
 
 /** Anything an index access might return when the key is absent. */
 export type UnknownRecord = Record<string, unknown>;
-
-/** Which of the two provider namespaces a control addresses. They are NOT interchangeable. */
-export type ProviderSlotName = 'ask' | 'review';
 
 /**
  * A turn that is running RIGHT NOW, as read by a panel poll.

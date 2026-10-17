@@ -12,22 +12,24 @@
 # and re-feeds O(N²) tokens per turn). What the bridge offers instead:
 #   - atomcode_ask    side-conversation relay over the daemon /chat SSE,
 #                     with per-working_dir session continuity
-#   - atomcode_review  one-shot bounded code review via the CLI `review`
-#                     subcommand (round + wall-clock fuses, structured JSON)
+#   - atomcode_review  a code review run as an ordinary daemon turn, over the
+#                     SAME channel as ask (round + wall-clock fuses). It used to
+#                     spawn the CLI `review` subcommand; that path is gone — see
+#                     the note below.
 #
 # Every knob is plain configuration — edit here, or override the same row id
 # in the profile's cordis.patch.yml, then reload. There is no BRIDGE-side API
-# key: the bridge authenticates with the local ~/.atomcode daemon token (ask)
-# and the ~/.atomcode config (review).
+# key: the bridge authenticates with the local ~/.atomcode daemon token.
 #
-# KNOWN LIMITATION (measured on atomcode 5.2.2): the review CLI cannot use
-# AtomGit-gateway or account-resolved providers — it resolves providers from
-# direct `[providers.<name>]` entries with a plain base_url + api_key only, and
-# refuses the AtomGit gateway outright ("signing-enforced gateway ... cannot
-# authenticate"). The daemon path (atomcode_ask) is unaffected. The plugin
-# probes ~/.atomcode/config.toml at mount and downgrades the atomcode_review
-# tool description when no usable direct provider exists, so the model is told
-# before it calls, not after it fails.
+# ONE CHANNEL (2026-10): both tools now go through the daemon. The CLI path
+# could not use AtomGit-gateway or account-resolved providers (it resolved only
+# direct `[providers.<name>]` entries with a plain base_url + api_key, and
+# refused the gateway outright: "signing-enforced gateway ... cannot
+# authenticate"), which made `atomcode_review` unusable on a machine that only
+# had the gateway — the common case, and the one this plugin exists for. A
+# review is now a prompt to the same daemon turn ask uses, and AtomCode runs
+# `git diff` itself. The cost, stated plainly: there is no structured
+# `findings[]` any more, only the report prose.
 - insert:
     - id: dsh-connect-atomcode
       name: dsh-connect-atomcode
@@ -72,7 +74,8 @@
         # bare model id ("glm5.3-flash"). Measured on atomcode 5.2.x: sending it in
         # POST /chat switches the model (SSE runtime_info reports the one that ran).
         # ASK path only (daemon POST /chat): maps to that request's `provider`.
-        # REVIEW has its own knob below — the two paths do NOT share a namespace.
+        # Both tools and `/atomcode-review` share this one knob now — they all
+        # resolve a daemon model profile through the same ladder.
         # Precedence: per-call `provider` argument > the pick made in the plugin
         # detail page (persisted to <state_path dir>/provider.json) > this field >
         # AtomCode's own default. Empty = send nothing at all, so AtomCode's
@@ -82,37 +85,30 @@
         # AtomCode client is an AtomCode-side edit
         # (default_provider + default_model, then POST /config/reload).
         default_provider: ''
-        # REVIEW path only (CLI `atomcode review --provider`). A DIFFERENT
-        # namespace from `default_provider` above: this must be a direct
-        # `[providers.<name>]` entry in config.toml (e.g. "atomcode-local"),
-        # because the review CLI resolves providers from those entries only.
-        # Handing it a daemon profile name ("AtomGit-...") would point the CLI at
-        # a provider it cannot bill against.
-        # Precedence: per-call `provider` argument > the panel pick (provider.json,
-        # its own separate slot) > this field > config.toml's default_provider if
-        # usable, else the single usable direct entry, else refuse and ask the
-        # caller to name one (never a guess about which channel gets billed).
-        # A name this plugin does not recognize is passed through for the CLI to
-        # judge — we never block here.
-        review_default_provider: ''
-        # Default review working directory (atomcode_review only). Empty does NOT
-        # fall back to the host process cwd: a review against the wrong tree (or
-        # nothing) that still reports success is worse than a refusal, so an empty
-        # value here AND no `working_dir` on the call makes the tool REFUSE and tell
-        # the caller to name a repository. Set it if you rely on review without
-        # passing working_dir per call.
-        review_working_dir: ''
+        # Persistent reasoning-effort default sent with every bridged /chat turn.
+        # Empty = the daemon's own persistent value applies (model-dependent, see
+        # GET /models `reasoning_effort`). A per-call `reasoning_effort` argument
+        # on atomcode_ask / atomcode_review overrides this for that turn only.
+        # The daemon answers `{"ok":false,"error":"reasoning_effort not supported
+        # by <provider>"}` when the level is not in the model's effort_levels —
+        # the plugin passes the value through and does not pre-validate.
+        # No panel input: the detail page shows the effort levels the selected
+        # model supports and the daemon's current persistent value, but the
+        # write point for the persistent value is the daemon's own
+        # POST /live/reasoning_effort (this plugin's /reasoning-effort route
+        # wraps it for the panel).
+        default_reasoning_effort: ''
         # Default working directory for bridged turns (ask + review). Empty =
-        # the tool arguments / host session cwd / daemon's own default — and for
-        # the ASK path the last of those is not honoured silently: if neither the
-        # call nor this field names a directory, atomcode_ask REFUSES the turn
-        # instead of running tools unattended in the daemon's own cwd (usually
-        # your home). The refusal is mode-independent (the headless daemon
-        # auto-approves tools in EVERY approval_mode, 2026-10-17 probe), so
-        # switching `approval_mode` can no longer disarm it; the only opt-out is
-        # `allow_unattended: true` on the call. Set this if you rely on ask
-        # without passing working_dir per call. No panel input: the detail page
-        # reports it, and shows （会话工作目录） when this stays empty.
+        # the tool arguments / host session cwd / daemon's own default — and the
+        # last of those is not honoured silently: if neither the call nor this
+        # field names a directory, the tool REFUSES the turn instead of running
+        # tools unattended in the daemon's own cwd (usually your home). The
+        # refusal is mode-independent (the headless daemon auto-approves tools in
+        # EVERY approval_mode, 2026-10-17 probe), so switching `approval_mode` can
+        # no longer disarm it; the only opt-out is `allow_unattended: true` on the
+        # call. Set this if you rely on ask/review without passing working_dir per
+        # call. No panel input: the detail page reports it, and shows
+        # （会话工作目录） when this stays empty.
         working_dir: ''
         # Where the side-conversation session map lives. Empty = the DSH home
         # convention (~/.dsh/state/dsh-connect-atomcode/sessions.json).
@@ -141,15 +137,35 @@
         # desktop) that share one state_path. Empty = auto-detect from
         # $DSH_PROFILE / argv. Set explicitly when running a custom profile.
         session_key_prefix: ''
-        # Disable web_search for review runs (default true: this host's
-        # network is proxy-gated; a stalled web_search would abort the run).
-        # Set false to let reviews search the web when egress is available.
-        review_no_web: true
-        # Review agent fuses: hard round cap and absolute wall-clock cap.
-        # 0 = 不设轮数熔断（与 ask_max_rounds: 0 同义）：桥接层直接不发 --max-rounds，
-        # 由 CLI 自己的 UNLIMITED 兜底。墙钟 review_max_duration_secs 仍然生效。
+        # A review turn's two fuses: the same round cap and wall-clock cap an ask
+        # turn gets, applied to the daemon turn a review now is.
+        # 0 = 不设轮数熔断（与 ask_max_rounds: 0 同义）：桥接层不再计数 tool_start，
+        # 交回 daemon 自己的治理。墙钟 review_max_duration_secs 仍然生效。
+        # The `review_no_web` knob died with the CLI path: web search was a CLI
+        # flag (`--no-web`), and a daemon turn's tool set is the daemon's own
+        # business — the plugin has no lever on it.
         review_max_rounds: 35
         review_max_duration_secs: 900
+        # Whether a review entry point fills in its own standard brief when the
+        # user leaves the composer text / `task` argument empty. Three values:
+        #   always     — the brief is sent on every review; non-empty user text
+        #                 is appended after it (「另外：…」). The pre-2026-10-18
+        #                 behaviour: a greeting like 「打个招呼」 still ran a full
+        #                 review because the brief was never omitted.
+        #   when-empty — the brief is sent ONLY when the text is empty; non-empty
+        #                 text goes through verbatim, without the brief. The
+        #                 shipped default, so 「打个招呼」 stays a greeting and
+        #                 a bare `/atomcode-review` still reviews uncommitted
+        #                 changes.
+        #   never      — the brief is never sent; the user text goes through
+        #                 verbatim, and an EMPTY text is refused by the caller
+        #                 (a review with no target fails fast and visibly
+        #                 instead of asking AtomCode to guess).
+        # Applies to BOTH review entry points: the `/atomcode-review` composer
+        # line and the `atomcode_review` tool's `task` argument. The value is a
+        # closed plugin-side enum; a misspelling falls back to the default and
+        # is reported on the panel as a rejection.
+        review_brief_mode: when-empty
         # CodingPlan quota refresh interval (seconds) for the detail-page panel.
         # The daemon exposes no quota endpoint, so this drives a cached
         # `POST /command {"command":"status"}` whose localized text is parsed.

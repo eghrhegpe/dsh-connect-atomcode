@@ -213,7 +213,7 @@ export async function health(port: number = DEFAULT_PORT, signal?: AbortSignal) 
  * GET /models — the AtomCode-configured model catalogue.
  * @param {number} port
  * @param {AbortSignal} [signal]
- * @returns {Promise<Array<{provider:string, model:string, is_default:boolean, provider_type:string, effort_levels?:string[]}>>}
+ * @returns {Promise<Array<{provider:string, model:string, is_default:boolean, provider_type:string, effort_applicable?:boolean, reasoning_effort?:string|null, effort_levels?:string[]}>>}
  */
 export async function listModels(port: number = DEFAULT_PORT, signal?: AbortSignal) {
   const token = readToken(port);
@@ -223,6 +223,43 @@ export async function listModels(port: number = DEFAULT_PORT, signal?: AbortSign
     signal,
   });
   if (!res.ok) throw new Error(`atomcode /models -> HTTP ${res.status}`);
+  return res.json();
+}
+
+/**
+ * One session entry from `GET /sessions`.
+ *
+ * The daemon keeps a per-project_hash list of sessions; each entry carries the
+ * fields the SPA uses to render its session picker. The plugin does not filter
+ * by working_dir here — the panel does that (a session is useful only when its
+ * working_dir matches the current session's, so the filter belongs on the
+ * render side where the working_dir is known).
+ */
+export interface SessionEntry {
+  project_hash: string;
+  id: string;
+  name: string;
+  working_dir: string;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+  file_size: number;
+}
+
+/**
+ * GET /sessions — the daemon's session index (all projects, not filtered).
+ * @param {number} port
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<SessionEntry[]>}
+ */
+export async function listSessions(port: number = DEFAULT_PORT, signal?: AbortSignal): Promise<SessionEntry[]> {
+  const token = readToken(port);
+  const res = await fetch(`${baseUrl(port)}/sessions`, {
+    method: 'GET',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    signal,
+  });
+  if (!res.ok) throw new Error(`atomcode /sessions -> HTTP ${res.status}`);
   return res.json();
 }
 
@@ -329,6 +366,8 @@ export interface StreamChatOptions {
   sessionId?: string;
   workingDir?: string;
   approvalMode?: string;
+  /** Per-turn reasoning effort override (e.g. "low", "medium", "high", "xhigh"). */
+  reasoningEffort?: string;
   timeoutMs?: number;
   maxRounds?: number;
   /** Budget for the `POST /chat/stop` sent after a turn dies early (tests only). */
@@ -389,6 +428,7 @@ export async function* streamChat(opts: StreamChatOptions) {
   if (opts.provider) payload.provider = opts.provider;
   if (opts.sessionId) payload.session_id = opts.sessionId;
   if (opts.workingDir) payload.working_dir = opts.workingDir;
+  if (opts.reasoningEffort) payload.reasoning_effort = opts.reasoningEffort;
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(opts.extraHeaders || {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -623,10 +663,10 @@ export async function askChat(opts: StreamChatOptions) {
    * The array version held every event of the turn in memory until the stream
    * ended, with no cap: a long autonomous turn emits thousands of `text`
    * deltas, and this module caps everything else it takes from the wire (reply
-   * 200KB in tools.ts, `tools` at TOOLS_CAP, review stdout at
-   * OUTPUT_CAP_BYTES) — this was the one unbounded buffer left, and the one
-   * with no marker to say it had grown. Streaming also means the turn's cost
-   * tracks its content rather than its event count.
+   * prose at OUTPUT_CAP in tools.ts, `tools` at TOOLS_CAP) — this was the one
+   * unbounded buffer left, and the one with no marker to say it had grown.
+   * Streaming also means the turn's cost tracks its content rather than its
+   * event count.
    *
    * The two error channels are kept APART rather than sharing one variable,
    * because their precedence is real: an aborted/truncated stream (thrown by
@@ -934,6 +974,49 @@ export function appendStopOutcome(error: string, stop: StopChatResult): string {
     `${base}（已请求 daemon 停止该回合但未成功：${stop.message}；` +
     'daemon 侧可能仍在继续跑并消耗额度与工具调用）'
   );
+}
+
+/**
+ * POST /live/reasoning_effort — set the persistent reasoning effort for the
+ * daemon's active provider.
+ *
+ * The daemon answers `{"ok":true}` on success, or `{"ok":false,"error":"reasoning_effort
+ * not supported by <provider>"}` when the requested level is not in the model's
+ * `effort_levels` list. The value persists on the daemon side until the provider
+ * is switched or the daemon restarts.
+ *
+ * @param {{port?:number, effort:string, timeoutMs?:number}} opts
+ * @returns {Promise<{ok:boolean, message:string}>}
+ */
+export async function setReasoningEffort(opts: {
+  port?: number;
+  effort: string;
+  timeoutMs?: number;
+}): Promise<{ ok: boolean; message: string }> {
+  const port = opts.port ?? DEFAULT_PORT;
+  const token = readToken(port);
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    const res = await fetch(`${baseUrl(port)}/live/reasoning_effort`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ reasoning_effort: opts.effort }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
+    });
+    const text = await res.text().catch(() => '');
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && parsed.ok === false) {
+        return { ok: false, message: parsed.error || `HTTP ${res.status}` };
+      }
+      return { ok: true, message: parsed.message || 'ok' };
+    } catch {
+      return { ok: res.ok, message: res.ok ? 'ok' : `HTTP ${res.status}` };
+    }
+  } catch (error: any) {
+    return { ok: false, message: String(error && error.message ? error.message : error) };
+  }
 }
 
 /**

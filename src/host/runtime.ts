@@ -34,13 +34,15 @@
 import {
   healthInfo,
   listModels,
+  listSessions,
   readDaemonIdentity,
   runCommand,
+  setReasoningEffort,
   spawnDaemon,
 } from './daemon.ts';
 import { createSessionStore } from './sessions.ts';
 import { createProviderStore } from './provider-store.ts';
-import { checkReviewProvision } from './review.ts';
+import { createPanelSettingsStore } from './panel-settings-store.ts';
 import { buildQuotaReport } from './quota.ts';
 import {
   APPROVAL_MODES_TEXT,
@@ -48,6 +50,8 @@ import {
   DAEMON_PROBE_TIMEOUT_MS,
   DEFAULT_APPROVAL_MODE,
   DEFAULT_ASK_MAX_ROUNDS,
+  DEFAULT_REVIEW_BRIEF_MODE,
+  REVIEW_BRIEF_MODES,
 } from './config.ts';
 import type { HostConfig } from './config.ts';
 import { describeDaemonDown, createStatsBag } from './stats.ts';
@@ -80,21 +84,90 @@ export function createRuntime({
     binary,
     approvalMode,
     approvalModeRejected,
+    reviewBriefMode,
+    reviewBriefModeRejected,
     defaultWorkingDir,
     defaultProvider,
-    reviewDefaultProvider,
     askMaxRounds,
     authoredApprovalMode,
     authoredWorkingDir,
     authoredAskMaxRounds,
+    authoredReviewBriefMode,
     sessionKeyPrefix,
     statePath,
-    reviewWorkingDir,
     quotaRefreshSecs,
     daemonStartAttempts,
     daemonRetrySecs,
     binaryEnv,
   } = config;
+
+  // The panel's brief-mode and working-dir overrides, in the SAME directory so
+  // one `state_path` knob governs all three files. Read PER CALL so a pick made
+  // in the panel applies to the very next turn — no host restart.
+  const panelSettingsStore = createPanelSettingsStore(join(dirname(statePath), 'panel-settings.json'));
+  /**
+   * The panel settings store is total by design (never throws). A throw means the
+   * state dir was swapped mid-run; it degrades to "no panel override" AND names
+   * itself in the log (红线 3: silence reads as "the user never chose anything").
+   */
+  const readPanelSettings = () => {
+    try {
+      return panelSettingsStore.read();
+    } catch (error: any) {
+      const reason = String(error && error.message ? error.message : error);
+      log(`panel-settings state read failed, ignoring the override: ${reason}`);
+      return { briefMode: null, workingDir: null, approvalMode: null, askMaxRounds: null, foreignVersion: false, error: reason };
+    }
+  };
+
+  /**
+   * Resolve the effective review brief mode: panel pick > mount-time patch field.
+   * The panel pick is `null` when the user never chose one (or explicitly cleared
+   * it), in which case the mount-time value (already defaulted by `readConfig`)
+   * applies. This makes the panel a live override without touching the patch.
+   */
+  const resolveBriefMode = (): { mode: string; source: 'panel' | 'config' } => {
+    const settings = readPanelSettings();
+    if (settings.briefMode !== null && settings.briefMode !== undefined) {
+      return { mode: settings.briefMode, source: 'panel' };
+    }
+    return { mode: reviewBriefMode, source: 'config' };
+  };
+
+  /**
+   * Resolve the effective default working directory: panel pick > mount-time
+   * patch field. Returns `''` (falsy) when neither names one, so the caller's
+   * "no directory → refuse" gate still fires.
+   */
+  const resolveDefaultWorkingDir = (): string => {
+    const settings = readPanelSettings();
+    if (typeof settings.workingDir === 'string' && settings.workingDir !== '') {
+      return settings.workingDir;
+    }
+    return defaultWorkingDir || '';
+  };
+
+  /**
+   * Resolve the effective approval mode: panel pick > mount-time patch field.
+   */
+  const resolveApprovalMode = (): string => {
+    const settings = readPanelSettings();
+    if (settings.approvalMode !== null && settings.approvalMode !== undefined) {
+      return settings.approvalMode;
+    }
+    return approvalMode;
+  };
+
+  /**
+   * Resolve the effective ask max-rounds: panel pick > mount-time patch field.
+   */
+  const resolveAskMaxRounds = (): number => {
+    const settings = readPanelSettings();
+    if (settings.askMaxRounds !== null && settings.askMaxRounds !== undefined) {
+      return settings.askMaxRounds;
+    }
+    return askMaxRounds;
+  };
 
   // The panel's model choice, in the SAME directory so one `state_path` knob
   // governs both files. Read PER CALL (like sessions, and like the review probe)
@@ -112,12 +185,12 @@ export function createRuntime({
     } catch (error: any) {
       const reason = String(error && error.message ? error.message : error);
       log(`provider state read failed, ignoring the panel pick: ${reason}`);
-      return { ask: null, review: null, foreignVersion: false, error: reason };
+      return { ask: null, foreignVersion: false, error: reason };
     }
   };
   /**
-   * One place answers "which provider does this call use, and why", for BOTH
-   * slots with the same ladder:
+   * One place answers "which provider does this call use, and why", for every
+   * entry point with the same ladder:
    *
    *   per-call `provider` argument > the panel pick (provider.json) >
    *   the mount-time patch field > AtomCode's own default (send nothing).
@@ -133,28 +206,26 @@ export function createRuntime({
    * NEXT call use". They used to be two copies — one four rungs, one three — so
    * the panel could describe a rung (argument) its own snapshot never produced.
    *
-   * @param {'ask'|'review'} slot
    * @param {unknown} argument - the per-call `provider` arg ('' = none).
-   * @param {{ask:string|null, review:string|null}} [alreadyRead] - a pick set the
-   *   caller already read, so one panel poll does not read the file twice.
+   * @param {{ask:string|null}} [alreadyRead] - a pick set the caller already
+   *   read, so one panel poll does not read the file twice.
    */
-  const resolveProvider = (slot: any, argument: any, alreadyRead?: any) => {
+  const resolveProvider = (argument: any, alreadyRead?: any) => {
     const arg = typeof argument === 'string' && argument.trim() !== '' ? argument.trim() : '';
     const picks = alreadyRead || readProviderPicks();
-    const panel = slot === 'ask' ? picks.ask : picks.review;
+    const panel = picks.ask;
     if (arg) return { name: arg, source: 'argument', picks };
     if (panel) return { name: panel, source: 'panel', picks };
-    const configured = slot === 'ask' ? defaultProvider : reviewDefaultProvider;
+    const configured = defaultProvider;
     if (configured) return { name: configured, source: 'config', picks };
-    // The empty-pick fallback differs by slot ON PURPOSE: leaving ask empty means
-    // "the daemon applies its own default profile", while leaving review empty
-    // hands the choice to selectReviewProvider()'s own ladder — a different
-    // thing (红线 8: the two slots are two namespaces, not one knob).
-    return { name: '', source: slot === 'ask' ? 'atomcode' : 'auto', picks };
+    // Nothing picked: send NO provider field and let AtomCode apply its own
+    // default profile. This used to be two answers — ask said 'atomcode' and
+    // review said 'auto', meaning respectively "the daemon's default" and "the
+    // CLI's own auto-selection". The CLI died with the second one (红线 8's two
+    // namespaces are now one), so there is one remaining case and it is named
+    // for what actually happens.
+    return { name: '', source: 'atomcode', picks };
   };
-
-  // Probe review CLI availability at mount time (best-effort: no live spawn).
-  const reviewProvision = checkReviewProvision();
 
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -180,15 +251,12 @@ export function createRuntime({
     binaryEnv,
     approvalMode,
     approvalModeRejected,
+    reviewBriefMode,
+    reviewBriefModeRejected,
     defaultWorkingDir: defaultWorkingDir ?? null,
-    reviewWorkingDir: reviewWorkingDir ?? null,
     defaultProvider: defaultProvider ?? null,
-    reviewDefaultProvider: reviewDefaultProvider ?? null,
     panelStorePath: providerStore.path(),
-    reviewCatalog: reviewProvision.providers || [],
-    reviewEndpoints: reviewProvision.endpoints || {},
-    reviewAvailable: reviewProvision.available,
-    reviewReason: reviewProvision.reason,
+    panelSettingsStorePath: panelSettingsStore.path(),
     askRounds: askMaxRounds,
     retrySecs: daemonRetrySecs,
     // Which patch-only knobs the user authored, and our built-in fallbacks. Both
@@ -199,8 +267,13 @@ export function createRuntime({
       approvalMode: authoredApprovalMode,
       workingDir: authoredWorkingDir,
       askMaxRounds: authoredAskMaxRounds,
+      reviewBriefMode: authoredReviewBriefMode,
     },
-    defaults: { approvalMode: DEFAULT_APPROVAL_MODE, askMaxRounds: DEFAULT_ASK_MAX_ROUNDS },
+    defaults: {
+      approvalMode: DEFAULT_APPROVAL_MODE,
+      askMaxRounds: DEFAULT_ASK_MAX_ROUNDS,
+      reviewBriefMode: DEFAULT_REVIEW_BRIEF_MODE,
+    },
   });
 
   // `approval_mode` is a closed enum the daemon 422s on, so `readConfig` refuses
@@ -212,6 +285,17 @@ export function createRuntime({
     log(
       `config.approval_mode「${approvalModeRejected}」不是 AtomCode 接受的取值（${APPROVAL_MODES_TEXT}）；` +
         `已回落到 ${DEFAULT_APPROVAL_MODE}，面板的文件行会标明被拒的值`,
+    );
+  }
+
+  // Same fail-visible shape for the plugin-side closed enum: a misspelt
+  // `review_brief_mode` falls back to the shipped default HERE, and the raw
+  // spelling is named in the mount log and on the panel instead of surviving
+  // silently as a value nobody chose.
+  if (reviewBriefModeRejected !== null) {
+    log(
+      `config.review_brief_mode「${reviewBriefModeRejected}」不是本插件接受的取值（${REVIEW_BRIEF_MODES.join(' / ')}）；` +
+        `已回落到 ${DEFAULT_REVIEW_BRIEF_MODE}，面板的文件行会标明被拒的值`,
     );
   }
 
@@ -467,35 +551,35 @@ export function createRuntime({
   }
 
   /**
-   * Refresh the panel-facing provider state: the stored picks, what the NEXT call
-   * will actually use (and who decided that), and the review CLI's usable direct
-   * entries. All synchronous and cheap — one small JSON read plus one config.toml
-   * read.
+   * Refresh the panel-facing provider state: the stored pick, and what the NEXT
+   * call will actually use (and who decided that). One small JSON read — no
+   * subprocess.
    *
-   * The review provision is re-read per poll (not frozen at mount) so a
-   * `[providers.X]` added after mount shows up in the dropdown, matching what the
-   * execute path already does.
+   * The `[providers.X]` advisory used to be re-read here too, so a direct entry
+   * added after mount would show up in a second dropdown. That dropdown is gone
+   * along with the CLI that needed those entries, so nothing here reads
+   * `~/.atomcode/config.toml` any more.
    */
   function refreshPanelState() {
     const picks = readProviderPicks();
-    stats.panelProvider = { ask: picks.ask, review: picks.review };
+    stats.panelProvider = picks.ask;
     stats.panelStoreError = picks.error;
     stats.panelStoreForeign = picks.foreignVersion;
     // The SAME ladder the execute path runs, asked with no per-call argument:
     // "what will the NEXT call use, and who decided". Duplicating this here is
     // how the two answers drifted apart (the copy had no `argument` rung, and
     // the panel-side wording for a rung its own snapshot never produces).
-    const ask = resolveProvider('ask', '', picks);
+    const ask = resolveProvider('', picks);
     stats.effectiveAsk = ask.name || null;
     stats.effectiveAskSource = ask.source;
-    const review = resolveProvider('review', '', picks);
-    stats.effectiveReview = review.name || null;
-    stats.effectiveReviewSource = review.source;
-    const provision = checkReviewProvision();
-    stats.reviewCatalog = provision.providers || [];
-    stats.reviewEndpoints = provision.endpoints || {};
-    stats.reviewAvailable = provision.available;
-    stats.reviewReason = provision.reason;
+    // Panel settings (briefMode + workingDir + approvalMode + askMaxRounds overrides):
+    // read per poll so the detail page shows the current picks and the source label.
+    const panelSettings = readPanelSettings();
+    stats.panelBriefMode = panelSettings.briefMode;
+    stats.panelWorkingDir = panelSettings.workingDir;
+    stats.panelApprovalMode = panelSettings.approvalMode;
+    stats.panelAskMaxRounds = panelSettings.askMaxRounds;
+    stats.panelSettingsError = panelSettings.error;
   }
 
   /**
@@ -524,13 +608,13 @@ export function createRuntime({
         ? list
             .filter((m) => m && typeof m.provider === 'string' && m.provider !== '')
             // ONLY what the panel consumes: the profile name the dropdown sends,
-            // and whether AtomCode itself treats it as the default (the one fact
-            // that tells a user whether pinning is even necessary). `model` and
-            // `effort_levels` used to be mapped in here and read by NOTHING —
-            // payload shipped on every 30s poll to be dropped at the renderer.
+            // whether AtomCode treats it as the default, the effort levels the
+            // model supports, and the daemon's current persistent effort for it.
             .map((m) => ({
               provider: m.provider,
               isDefault: m.is_default === true,
+              effortLevels: Array.isArray(m.effort_levels) ? m.effort_levels : undefined,
+              currentEffort: typeof m.reasoning_effort === 'string' ? m.reasoning_effort : null,
             }))
         : [];
       stats.modelCatalogAt = Date.now();
@@ -548,6 +632,12 @@ export function createRuntime({
     stats,
     sessions,
     providerStore,
+    panelSettingsStore,
+    readPanelSettings,
+    resolveBriefMode,
+    resolveDefaultWorkingDir,
+    resolveApprovalMode,
+    resolveAskMaxRounds,
     resolveProvider,
     refreshHealth,
     ensureDaemonStarted,
@@ -555,7 +645,8 @@ export function createRuntime({
     readQuota,
     refreshPanelState,
     refreshModelCatalog,
-    reviewProvision,
+    setReasoningEffort: (effort: string) => setReasoningEffort({ port, effort }),
+    listSessions: () => listSessions(port),
   };
 }
 

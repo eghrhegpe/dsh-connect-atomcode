@@ -234,7 +234,14 @@ async function claimSeats() {
       },
     });
     assert.deepEqual(
-      claims.filter((c) => c.name !== 'conversation.composer.dock').map((c) => c.name),
+      claims
+        .filter(
+          (c) =>
+            c.name !== 'conversation.composer.dock' &&
+            c.name !== 'conversation.input.left' &&
+            c.name !== 'conversation.chat.assistant-actions',
+        )
+        .map((c) => c.name),
       ['plugins.detail.section'],
       'the fallback seat takes the panel when the preferred seat is missing',
     );
@@ -251,6 +258,53 @@ async function claimSeats() {
     assert.equal(dock.id, 'atomcode-bridge-quota', 'a fresh id, so the host entry is not replaced');
     assert.ok(dock.order > 0, `must sort after the host stats pills (order 0); got ${dock.order}`);
     assert.ok(dock.order < 5, `must sort before decorations (template order 5); got ${dock.order}`);
+  });
+
+  it('claims the composer TOOL row for a null-rendering rail, not the readout dock', async () => {
+    // 方针 A: the plugin owns no control in the composer. What it still needs
+    // from `conversation.input.left` — "compact controls at the left of the
+    // composer tool row" — is the seat's `inputActions` rail, because the 锐评
+    // row in `conversation.chat.assistant-actions` is handed `{ messageId }` and
+    // NOT that rail (see src/client/review-handoff.ts). The occupant renders
+    // `null`; the seat choice is the plumbing decision turned into a tripwire.
+    const claims = await claimSeats();
+    const rail = claims.find((c) => c.name === 'conversation.input.left');
+    assert.ok(rail, 'the insertion rail must claim conversation.input.left');
+    assert.equal(rail.id, 'atomcode-bridge-rail', 'a fresh id: the seat had no occupants, so nothing is displaced');
+    // After whatever the host may add to the left row later.
+    assert.ok(rail.order > 0, `a third-party occupant sorts last in the row; got ${rail.order}`);
+    // It must NOT be in the dock (that is the readout strip below the card) nor
+    // in the submit-adjacent right row (mic/send cluster).
+    const dock = claims.find((c) => c.name === 'conversation.composer.dock');
+    assert.equal(dock.id, 'atomcode-bridge-quota', 'the dock keeps the quota readout alone');
+    assert.ok(
+      !claims.some((c) => c.name === 'conversation.input.right'),
+      'a control must not crowd the submit cluster',
+    );
+    // And the left row is a DIFFERENT seat from the single-occupancy activity
+    // seat the voice-input bundle owns.
+    assert.ok(
+      !claims.some((c) => c.name === 'conversation.input.activity'),
+      'must not displace the single-occupancy activity seat',
+    );
+  });
+
+  it('puts 锐评 in the per-message action row, beside (not over) the shipped feedback entry', async () => {
+    // `conversation.chat.assistant-actions` is the ONE seat whose owner passes a
+    // `messageId`; that prop is what lets the button read the clicked reply's
+    // text out of the chat projection (see src/client/message-ask.ts). Placing
+    // it anywhere else would leave the paste slot as the only route.
+    const claims = await claimSeats();
+    const messageAsk = claims.find((c) => c.name === 'conversation.chat.assistant-actions');
+    assert.ok(messageAsk, 'the per-message 锐评 entry must claim conversation.chat.assistant-actions');
+    assert.equal(
+      messageAsk.id,
+      'atomcode-bridge-review',
+      'a FRESH id: reusing a shipped id replaces that entry, and `feedback` is not ours to replace',
+    );
+    // The shipped occupant is `feedback` at order 10; a control that lands on
+    // the same order is ordered by id, which is not a decision anyone made.
+    assert.equal(messageAsk.order, 10, 'sits right after the shipped feedback control');
   });
 
   it('survives a shell without the composer seat (degrades, does not throw)', async () => {

@@ -50,12 +50,16 @@ const offsetUsers = scanned
 
 describe('dead-port sentinels — unique, literal-free, and below every dynamic band', () => {
   it('every sentinel offset is taken by exactly one use site', () => {
-    // Liveness: the scan must actually see the sites the helper documents (1..12
-    // across seven suites). A near-zero count means the predicate broke, not
-    // that the discipline holds.
+    // Liveness: the scan must actually see the sites the helper documents. A
+    // near-zero count means the predicate broke, not that the discipline holds.
+    //
+    // The number is a FLOOR rather than the exact count: suites come and go
+    // (the review CLI took three sites with it), and a census that has to be
+    // edited every time a suite is deleted is a census nobody trusts. 9 is
+    // comfortably below today's count and far above "the scan stopped working".
     assert.ok(
-      offsetUsers.length >= 12,
-      `扫描面不对：只认出 ${offsetUsers.length} 处 sentinelPort 调用（应 ≥10）——判据本身失效时这里就会红`,
+      offsetUsers.length >= 8,
+      `扫描面不对：只认出 ${offsetUsers.length} 处 sentinelPort 调用（应 ≥8）——判据本身失效时这里就会红`,
     );
     const byOffset = new Map();
     for (const u of offsetUsers) {

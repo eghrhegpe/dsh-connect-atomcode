@@ -1,20 +1,29 @@
 /**
  * loopback.ts — "is this base_url a process on THIS machine?", asked once.
  *
- * Two halves need the same answer about the same string:
+ * Both halves once needed the same answer about the same string:
  *
- *  - the HOST, before spawning a review, decides whether to probe the endpoint
+ *  - the HOST, before spawning a review, decided whether to probe the endpoint
  *    first (a dead local proxy deserves a named diagnosis, not the CLI's bare
  *    `Cancelled`);
- *  - the RENDERER, when the user picks that entry, words the dependency warning
- *    ("评审经本机进程转发计费，它一停 review 立刻断").
+ *  - the RENDERER, when the user picked that entry, worded the dependency
+ *    warning ("评审经本机进程转发计费，它一停 review 立刻断").
  *
- * Those two used to be two hand-written copies of the same four-line predicate.
- * The copies agreed, which is exactly why nobody noticed — and the day one of
- * them learned about, say, `0.0.0.0` or a bracketed IPv6 form, the panel would
- * warn about an endpoint the host never probes (or stay silent about one it
- * does). This repository's rule is one fact, one place; a predicate shared by
- * two bundles is the case that rule exists for.
+ * BOTH CONSUMERS ARE GONE. The review CLI was deleted and a review is now an
+ * ordinary daemon turn, so the host has nothing to probe and the panel has no
+ * direct-entry list to warn about. What survives is the predicate itself, still
+ * correct and still exported (`isLoopbackEndpoint` on the client), for the next
+ * caller that has to tell a local process from a remote one. Deleting it is a
+ * separate decision from deleting its callers: it is small, tested, and the
+ * alternative is somebody re-deriving `0.0.0.0` and bracketed-IPv6 handling by
+ * hand a third time.
+ *
+ * That is the history worth keeping: those were two hand-written copies of the
+ * same four-line predicate. The copies agreed, which is exactly why nobody
+ * noticed — and the day one of them learned about, say, `0.0.0.0` or a bracketed
+ * IPv6 form, the panel would warn about an endpoint the host never probes (or
+ * stay silent about one it does). This repository's rule is one fact, one place;
+ * a predicate shared by two bundles is the case that rule exists for.
  *
  * ## Why not a `shared/` type-only module
  *

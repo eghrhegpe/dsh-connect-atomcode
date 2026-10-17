@@ -1,39 +1,35 @@
 /**
  * The two tools this plugin registers — `atomcode_ask` (a full autonomous
- * daemon turn with side-conversation continuity) and `atomcode_review` (a
- * one-shot code review through the CLI subcommand).
+ * daemon turn with side-conversation continuity) and `atomcode_review` (a code
+ * review through the SAME daemon turn).
+ *
+ * BOTH GO THROUGH THE DAEMON. `atomcode_review` used to spawn the `atomcodex
+ * review` CLI, which returned a structured `findings[]` document but demanded a
+ * direct-provider endpoint (in practice a local sidecar on 8899) — so it went
+ * dark whenever the sidecar was down while `atomcode_ask` kept working, and it
+ * gave one plugin two provider namespaces. The user's call was one channel;
+ * AtomCode is a full agent that can run `git diff` itself, so a review is now a
+ * prompt plus a normal turn. The cost, stated plainly: no structured findings.
  *
  * Extracted from `src/host/index.ts` (apply() split). They live together because
  * they share the one `tools.register` surface and the one `runtime`; each tool
- * still owns its description string end to end, which is why the two
- * `providerHint` strings are built HERE next to the `register()` calls that
- * consume them — a description separated by hundreds of lines from the code it
- * describes goes quietly stale with nothing failing.
+ * still owns its description string end to end, which is why the `providerHint`
+ * strings are built HERE next to the `register()` calls that consume them — a
+ * description separated by hundreds of lines from the code it describes goes
+ * quietly stale with nothing failing.
  *
  * @module dsh-connect-atomcode/host/tools
  */
 import { askChat, TOOLS_CAP } from './daemon.ts';
-import {
-  checkReviewProvision,
-  FINDINGS_CAP,
-  probeLocalEndpoint,
-  PROVIDER_FIX,
-  runReview,
-  selectReviewProvider,
-} from './review.ts';
-import { isLoopbackBaseUrl } from '../shared/loopback.ts';
 import { beginInFlight, describeDaemonDown, endInFlight } from './stats.ts';
 import type { LiveTurn } from './stats.ts';
 import {
   HOST_TOOL_TIMEOUT_MS,
   HOST_TOOL_TIMEOUT_SECS,
-  MAX_REVIEW_DURATION_SECS,
   OUTPUT_CAP,
-  REVIEW_REPORT_FLOOR,
-  resolveDurationSecs,
   resolveMaxRounds,
 } from './config.ts';
-import type { HostConfig } from './config.ts';
+import type { HostConfig, ReviewBriefMode } from './config.ts';
 import type { Runtime } from './runtime.ts';
 import { resolve } from 'node:path';
 
@@ -122,6 +118,311 @@ function hostSubsetSchema(node: any): any {
 }
 
 /**
+ * The shared ask runner — the ONE body behind every entry point into a bridged
+ * AtomCode turn: the model-facing `atomcode_ask` tool, the `atomcode_review`
+ * tool, and the `/atomcode-review` slash command. (The HTTP
+ * `/api/atomcode-bridge/ask` route that once posted here is GONE — 方针 A,
+ * 2026-10-18 — so this runner has three callers, not a route among them.)
+ *
+ * Everything that decides WHICH turn runs lives here, so the entry points
+ * cannot drift apart: the repo ladder, the 红线 8 refusal, the provider ladder,
+ * the timeout and round fuses, the daemon-readiness gate, the in-flight
+ * bookkeeping and the stats accounting are identical for a tool call and for a
+ * command. A refusal one entry point makes is the refusal the others make.
+ *
+ * `exec` is the per-call context the host hands a tool. A tool call gets
+ * `{ signal, cwd }`; the `/atomcode-review` command has no host tool-call
+ * context, so it passes only the composer's `signal` (or `{}` with none) and
+ * the working_dir comes from the session header. Only `signal` is read (for
+ * cancellation) and `cwd` through `hostSessionCwd` (for the ladder), so an
+ * empty object is a complete, valid argument.
+ *
+ * The return shape is both the tool's `output` schema and the command's outcome
+ * object — one shape, not two adapters, so a field added here reaches the model
+ * and the human. Errors are reported as `ok: false` + `error`, never thrown:
+ * every caller reads `ok`, and none needs an exception to tell the user what
+ * went wrong.
+ */
+export async function runAsk(
+  args: any,
+  exec: any,
+  { config, runtime }: { config: HostConfig; runtime: Runtime },
+) {
+  const { port, autoStart, defaultReasoningEffort } = config;
+  const { stats, sessions, resolveProvider, ensureDaemon } = runtime;
+  // The runner's own clock, started before every branch that can return —
+  // including the refusal below. It used to start after the ladder, so the
+  // one early return that is NOT a failure (a refused call) had no elapsed
+  // time to report and the panel's average would have been built from a
+  // subset of the calls that reached it. Same reason `refuse()` in
+  // `atomcode_review` counts calls, errors and milliseconds together.
+  const t0 = Date.now();
+  // Resolved ONCE, before any failure path, so a refused/failed turn still
+  // reports which model the bridge was asking for (`empty()` below) instead
+  // of a misleading 'default'. Ladder: argument > panel pick > patch field >
+  // AtomCode's own default (send nothing).
+  const askProvider = resolveProvider(args.provider).name;
+  // Repo ladder: explicit arg > host session cwd (ready-to-use hook) > panel
+  // pick (panel-settings.json) > plugin config `working_dir` > (nothing ->
+  // the daemon's own home fallback).
+  //
+  // Declared BEFORE `empty()` on purpose: the closure reads `workDir`, and if
+  // this `const` came later the only thing keeping it out of the temporal dead
+  // zone would be the order in which `empty()` happens to be CALLED today.
+  // That is invisible to `tsc` and one refactor away from a ReferenceError.
+  const panelWorkDir = runtime.resolveDefaultWorkingDir();
+  const workDir =
+    typeof args.working_dir === 'string' && args.working_dir.trim() !== ''
+      ? args.working_dir
+      : hostSessionCwd(exec) ?? panelWorkDir;
+  const empty = (error: any) => ({
+    ok: false,
+    reply: '',
+    session_id: '',
+    continued: false,
+    truncated: false,
+    tokens: 0,
+    tool_calls: 0,
+    round_count: 0,
+    tools: [],
+    tools_truncated: false,
+    stop_reason: '',
+    // Reported on FAILURE too: a refused turn has to be able to say which
+    // directory it would have run in — the fallback is the daemon's own cwd,
+    // and "unspecified" is not the same fact as "this repo".
+    working_dir: workDir || null,
+    provider: askProvider || 'default',
+    providerReported: false,
+    protocol_unknown_types: [],
+    // null, not 0: a refused turn never reached the daemon, so the daemon
+    // reported nothing. "It said zero" and "it never got to say anything"
+    // are different facts, and the render compares this field against our
+    // own count.
+    daemon_tool_calls: null,
+    daemon_rounds: null,
+    // Wall-clock ms from `t0` (the runner's entry) to THIS return. Reported on
+    // every early return too: the gate that starts the clock before the refusal
+    // is exactly so a refused/unreachable turn can say how long it spent failing,
+    // instead of the panel's average silently excluding them.
+    elapsed_ms: Date.now() - t0,
+    error,
+  });
+  // 红线 8, ask side — the same rule `atomcode_review` has enforced from the
+  // start: NO resolvable directory means AtomCode's own tools run unattended
+  // inside whatever cwd the daemon was launched in, which in the default
+  // launch is the user's home.
+  //
+  // This gate used to fire only on that danger PLUS `approval_mode: bypass`
+  // — the assumption being that a non-bypass turn had a human approving
+  // tools, so an unnamed directory was tolerable there. The 2026-10-17
+  // probe (scripts/probes/approval-mode.mjs) disproved it for the headless
+  // daemon: it auto-approves ask-class tools in EVERY mode
+  // (`[headless] auto-approved`), so the danger is mode-independent and the
+  // gate no longer names a mode — switching `approval_mode` can no longer
+  // silently disarm it.
+  //
+  // This case used to be handled by a sentence in the RENDER — which runs
+  // after the turn. A warning that arrives with the results cannot prevent
+  // the thing it warns about, and review is the BOUNDED path (one-shot,
+  // no tool loop) while ask is the one with a full autonomous tool loop.
+  // The weaker guard sat on the more dangerous tool. Now both refuse.
+  //
+  // Refused rather than silently redirected to a sandbox directory: a model
+  // that named no directory may still mean "read the files under my home",
+  // and quietly running it somewhere else trades a visible risk for an
+  // invisible wrong answer. The caller knows where the work belongs; the
+  // message names all three ways forward, so the retry is one call away.
+  // Nothing has been spawned, written, or resolved into a session key yet.
+  if (!workDir && args.allow_unattended !== true) {
+    stats.ask.calls += 1;
+    stats.ask.err += 1;
+    stats.ask.msTotal += Date.now() - t0;
+    return empty(
+      'atomcode_ask 拒绝了本回合：取不到 working_dir，而 daemon 无人值守自动放行（[headless] auto-approved——对任何 approval_mode 都成立），AtomCode 的工具会跑在它自己的 cwd（通常是用户 home）里——' +
+        '这正是 atomcode_review 一直直接拒绝的那个情况（红线 8）。三种走法：' +
+        '① 传 working_dir 指定本回合的目录；② 在插件配置 working_dir 里设一个默认目录；' +
+        '③ 本回合确实只做通用问答、不涉及任何目录时，显式传 allow_unattended=true 表示知情同意。',
+    );
+  }
+  // Normalise the working directory so that `C:\Repo`, `c:\repo` and
+  // `C:\repo\` all map to the SAME session key. `resolve` on Windows
+  // uppercases the drive letter and collapses trailing slashes; on
+  // POSIX it makes the path absolute. Without this, Windows users
+  // silently get two session lines for the same repo.
+  const sessionKey = workDir ? resolve(workDir) : 'default';
+
+  let sessionId =
+    typeof args.session_id === 'string' && args.session_id.trim() !== ''
+      ? args.session_id.trim()
+      : args.continue === true
+        ? sessions.get(sessionKey)
+        : undefined;
+
+  // `reset_session` clears the stale mapping WITHOUT ending this turn's own
+  // resume. An explicit `session_id` is the caller's own pin and always
+  // wins: it is (re)recorded so the NEXT `continue: true` resumes it
+  // instead of the stale one. Without a pin, the stale mapping is dropped
+  // AND this turn does not resume it — "forget that line, start fresh".
+  // This is the escape hatch the old code lacked (its `drop()` had no
+  // caller, so a stale id could only be cleared by editing sessions.json).
+  if (args.reset_session === true) {
+    const pinned =
+      typeof args.session_id === 'string' && args.session_id.trim() !== ''
+        ? args.session_id.trim()
+        : undefined;
+    sessions.drop(sessionKey);
+    if (pinned) sessions.set(sessionKey, pinned);
+    else if (args.continue === true) sessionId = undefined;
+  }
+  // Computed AFTER the reset, so `continued` describes the session this
+  // turn actually replayed (not the one that was just discarded).
+  const continued = sessionId !== undefined;
+
+  stats.ask.calls += 1;
+  if (!(await ensureDaemon(exec?.signal))) {
+    stats.ask.err += 1;
+    stats.ask.msTotal += Date.now() - t0;
+    // Cancel-during-startup is not a daemon outage; say which it was.
+    return empty(
+      exec?.signal?.aborted
+        ? '已取消：调用方在等待 AtomCode daemon 就绪期间中止了本次调用'
+        : `AtomCode daemon 不可用（http://127.0.0.1:${port}：${describeDaemonDown(stats.daemonDownReason)}${autoStart ? '，自动拉起也失败' : ''}）`,
+    );
+  }
+  const timeoutMs =
+    Number.isFinite(args.timeout_secs) && args.timeout_secs > 0
+      ? // Clamped to the declared host timeout rather than trusted: the
+        // description used to promise "上限也是 1800" while the code passed
+        // any magnitude through, so an inflated value did not fail safe —
+        // it failed as a host-side cancel with no timeout to show for it.
+        Math.min(HOST_TOOL_TIMEOUT_SECS, Math.floor(args.timeout_secs)) * 1000
+      : HOST_TOOL_TIMEOUT_MS;
+  // Same contract as the config field above, and the SAME resolver the review
+  // path uses: an explicit 0 is "no fuse", not a missing value. See
+  // resolveMaxRounds — the two tools used to disagree about that word.
+  const maxRounds = resolveMaxRounds(args.max_rounds, runtime.resolveAskMaxRounds());
+  // Live progress for the panel's 5s poll — the whole point being that an
+  // ask turn runs for minutes and used to be a black box for every one of
+  // them. `startedAt` is taken BEFORE the request goes out rather than on
+  // the first event, so a turn that spends 40s before its first token still
+  // shows an honest age instead of appearing to start late.
+  const live: LiveTurn = {
+    startedAt: Date.now(),
+    workingDir: workDir || null,
+    provider: askProvider || 'default',
+    rounds: 0,
+    completed: 0,
+    chars: 0,
+    sessionId: '',
+    lastTool: '',
+    tokens: 0,
+  };
+  beginInFlight(stats, live);
+  let result: Awaited<ReturnType<typeof askChat>>;
+  try {
+    result = await askChat({
+      message: String(args.message || ''),
+      port,
+      approvalMode: runtime.resolveApprovalMode(),
+      timeoutMs,
+      // Forwarded unconditionally, 0 included: dropping it here would be the
+      // same "0 is not honoured" bug one layer down.
+      maxRounds,
+      ...(sessionId ? { sessionId } : {}),
+      ...(askProvider ? { provider: askProvider } : {}),
+      ...(workDir ? { workingDir: workDir } : {}),
+      // Per-turn reasoning-effort override: call arg wins, then the config
+      // default, then nothing (daemon's own persistent value applies).
+      ...((args.reasoning_effort || defaultReasoningEffort)
+        ? { reasoningEffort: args.reasoning_effort || defaultReasoningEffort }
+        : {}),
+      ...(exec?.signal ? { signal: exec.signal } : {}),
+      onProgress: (progress) => Object.assign(live, progress),
+    });
+  } finally {
+    // Retire THIS turn and hand the slot to whatever is still running —
+    // see `endInFlight`. Neither ordering of two overlapping asks may leave
+    // the panel claiming nothing is in flight while a turn executes; the
+    // row describes the newest turn that is still alive.
+    endInFlight(stats, live);
+  }
+  stats.ask.msTotal += Date.now() - t0;
+  if (result.ok) {
+    stats.ask.ok += 1;
+    if (Number.isFinite(result.tokens)) stats.ask.tokens += result.tokens;
+  } else {
+    stats.ask.err += 1;
+  }
+  // Accumulate protocol drift for the panel, on EVERY turn rather than only
+  // successful ones: drift is a fact about the wire, not a property of the
+  // reply, and a failed turn that still named an unknown type is exactly the
+  // evidence a later diagnosis needs. Union, never replace — see the bag.
+  for (const unknownType of result.unknownTypes) {
+    if (!stats.protocolUnknownTypes.includes(unknownType)) stats.protocolUnknownTypes.push(unknownType);
+  }
+  if (result.ok && result.sessionId) sessions.set(sessionKey, result.sessionId);
+  // Truncation is MARKED, never silent: a silently clipped reply reads
+  // to the model like a complete answer, which is how a half-copied report
+  // becomes a confidently wrong summary. Budget and marker both come from
+  // the shared pair (OUTPUT_CAP / capProse) so this path and the review path
+  // cannot drift into two conventions.
+  const capped = capProse(result.reply, OUTPUT_CAP, {
+    remedy: 'ask AtomCode to write the full text to a file and read that instead',
+  });
+  const reply = capped.text;
+  const truncated = capped.cut;
+  // A turn that RESUMED a stored side conversation and then failed has one
+  // thing to say that no daemon error will: the stored id may be the problem.
+  // `sessions.set()` only records SUCCESSFUL turns, so a dead id is never
+  // overwritten — every later `continue: true` replays it and fails again,
+  // forever. The escape hatch exists (`reset_session`), but nothing told the
+  // caller it was the move, so the failure reads as transient and gets
+  // retried into the same dead id.
+  //
+  // Deliberately NOT auto-dropping the key: a resumed turn can also fail for
+  // reasons that leave the session perfectly alive (our own timeout, a
+  // network blip, the round fuse), and dropping it would silently end a
+  // conversation the user wanted continued. Name the recovery instead —
+  // that is the caller's decision to make, with the evidence in hand.
+  const resumeHint =
+    '本次接续的是本工作目录记录的侧边会话；若该会话已失效（daemon 重启或空闲退出后常见），' +
+    '可用 reset_session=true 清掉它再开一条新线';
+  const reportedError =
+    !result.ok && continued
+      ? result.error
+        ? `${result.error}（${resumeHint}）`
+        : resumeHint
+      : result.error;
+  return {
+    ok: result.ok,
+    reply,
+    session_id: result.sessionId,
+    continued,
+    truncated,
+    tokens: result.tokens,
+    tool_calls: result.toolCalls,
+    round_count: result.roundCount ?? 0,
+    tools: result.tools,
+    tools_truncated: result.toolsTruncated === true,
+    stop_reason: result.stopReason,
+    working_dir: workDir || null,
+    provider: result.provider,
+    providerReported: result.providerReported,
+    protocol_unknown_types: result.unknownTypes,
+    // The daemon's own counts, passed through untouched so the render can
+    // compare them against ours. Null means it did not report them — the
+    // comparison is then impossible rather than favourable.
+    daemon_tool_calls: result.daemonToolCalls,
+    daemon_rounds: result.daemonRounds,
+    error: reportedError,
+    // The model's cue for "this turn was slow — split the task / switch strategy":
+    // it knows rounds, not wall time, until this field is here. Same `t0`, so a
+    // turn and its refusal are measured on one clock (see `empty()` above).
+    elapsed_ms: Date.now() - t0,
+  };
+}
+
+/**
  * `atomcode_ask` — one full autonomous daemon turn, with side-conversation
  * continuity.
  *
@@ -142,20 +443,8 @@ export function mountAskTool({
   config: HostConfig;
   runtime: Runtime;
 }) {
-  const {
-    port,
-    autoStart,
-    approvalMode,
-    defaultWorkingDir,
-    defaultProvider,
-    askMaxRounds,
-  } = config;
-  const {
-    stats,
-    sessions,
-    resolveProvider,
-    ensureDaemon,
-  } = runtime;
+  const { defaultProvider, askMaxRounds, approvalMode } = config;
+
 
   // Said out loud in BOTH tool descriptions. The most common wrong move against
   // this bridge is assuming `provider` takes a model id — it does not: AtomCode
@@ -179,8 +468,14 @@ export function mountAskTool({
   const disposeAsk = tools.register({
     name: 'atomcode_ask',
     description:
+      '何时主动调用：当用户想听 AtomCode 的意见（"帮我问 AtomCode"、"让 AtomCode 看看"）时必须用；' +
+      '需要一段自主代码调查/改写时也用（它有完整工具循环、能跑 shell、能读写文件，比你逐个读文件再总结更适合"让一个 agent 跑一圈"的任务）。' +
+      '第二意见是本工具的主用途：你自己写完代码再自查，读的是同一份上下文、容易顺着原来的思路放过问题；AtomCode 是另一套上下文独立读一遍，能看出你没看出来的东西。' +
+      '但它一次是完整自主回合、烧的是用户自己的 CodingPlan 配额（不是无限量），所以"要不要主动跑一轮"是有代价的判断，别把它当默认动作：' +
+      '改动涉及核心逻辑、并发/安全/数据正确性、或用户对结果表达了不确定——这些值得主动跑一轮；' +
+      '样式微调、改文案、用户没要求复查的小改动——不主动跑，等用户点名。拿不准时先问一句，比默默消耗配额好。' +
       '把一条消息转发给本机 AtomCode（终端 AI 编程助手，官方二进制）的 daemon 执行一个完整自主回合（它自带工具循环，approval_mode 默认 bypass 无人值守放行），取回整轮回复。' +
-      '用于"帮我问 AtomCode / 让 AtomCode 处理 / 侧边咨询"场景；拿到结果后把 reply 转达给用户。' +
+      '用于"帮我问 AtomCode / 让 AtomCode 处理 / 侧边咨询 / 独立复查"场景；拿到结果后把 reply 转达给用户，并说清哪些判断是 AtomCode 下的、哪些还需你自己核实。' +
       '调用时请给出 working_dir（要处理的仓库/目录）——它同时是它的读写边界和侧边对话的会话键；缺省优先级：参数 > 宿主会话 cwd > 插件配置 working_dir，' +
       '三者都取不到时本工具直接拒绝该回合（不放行无人值守的工具调用跑在用户 home 里），除非显式传 allow_unattended=true。' +
       'continue=true 接续本工作目录上一次侧边对话（自动恢复 session，无需记 id）；默认开新线。续线接到死会话时用 reset_session=true 重新开线。' +
@@ -200,10 +495,11 @@ export function mountAskTool({
         session_id: { type: 'string', description: '可选：显式接续某个 AtomCode 会话（优先于 continue）' },
         reset_session: { type: 'boolean', description: '可选：清掉本工作目录记录的侧边会话（续线接到一条已过期的 daemon 会话、或想彻底开新线时用；不影响本回合）' },
         provider: { type: 'string', description: '可选：点名 AtomCode 模型档位，传它就换本次回合用的模型。名字以 daemon GET /models 的 provider 字段为准（如 "AtomGit-glm5.3-flash"），不要传裸模型 id（"glm5.3-flash"）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
-        working_dir: { type: 'string', description: '回合的工作目录，同时是侧边对话的会话键。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 插件配置 working_dir。三者都没有时本工具**拒绝**该回合（见 allow_unattended）——让 AtomCode 的工具在 daemon 自己的 cwd（通常是用户 home）里无人值守跑，是 atomcode_review 一直直接拒绝的那个情况' },
+        working_dir: { type: 'string', description: '回合的工作目录，同时是侧边对话的会话键。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 面板选择 > 插件配置 working_dir。以上都没有时本工具**拒绝**该回合（见 allow_unattended）——让 AtomCode 的工具在 daemon 自己的 cwd（通常是用户 home）里无人值守跑，是 atomcode_review 一直直接拒绝的那个情况' },
         allow_unattended: { type: 'boolean', description: '可选，默认 false。上面三条都取不到目录时才需要它：那种情况下本工具默认拒绝（红线 8——无人值守的工具调用跑在一个没人指定的目录里；当前 daemon 对任何 approval_mode 都是无人值守自动放行，所以这道门与 mode 无关）。确实只做通用问答、不需要任何目录时，显式传 true 表示知情同意；能给出目录就优先给 working_dir，别用它绕开' },
         timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800；上限 1800（本工具向宿主声明的超时上限就是 30 分钟），超过按 1800 计——代码里钳制，不是"传了更大的值但悄悄不生效"' },
         max_rounds: { type: 'number', description: '可选：工具调用次数上限（按 daemon SSE 的 tool_start 事件计数；一个 agent 回合可能并行发起多次工具调用，故事件数 ≥ agent 轮数——把它当轮数理解，会在更少的 agent 轮数上就熔断）。默认取插件配置，当前 ' + askMaxRounds + '；上限 1000，超过按 1000 计（钳制在代码里，inflate 关不掉熔断）。传 0 关掉本端熔断，交回 daemon 自带治理——与 atomcode_review 的 max_rounds: 0 同义）。超限时本端中止等待并返回错误，同时向 daemon 发 POST /chat/stop 请求停掉该回合（以 daemon 应答为准；回合刚开始还没拿到 session_id 时无法请求，错误文本会说明这一种情况）' },
+        reasoning_effort: { type: 'string', description: '可选：本回合的推理力度（per-turn override，不改 daemon 持久值）。支持的档位取决于当前模型（见 GET /models 的 effort_levels），常见值 "low"/"medium"/"high"/"xhigh"。留空 = 用 daemon 当前的持久值（或模型默认）。传了不支持的档位 daemon 会拒绝并说明哪个档位可用' },
       },
       required: ['message'],
     },
@@ -258,9 +554,13 @@ export function mountAskTool({
             type: ['number', 'null'],
             description: 'daemon 自报的 agent 轮数（done.stats.rounds），null = 没报。与 daemon_tool_calls 不是同一个数字：一个 agent 轮可以并行发起多次工具调用，所以轮数 ≤ 工具调用数。用于判断漂移的是哪一边',
           },
+          elapsed_ms: {
+            type: 'number',
+            description: '本回合墙钟毫秒数（从调用进入到返回，含被拒绝/daemon 不可达的失败回合——那些也计时，故与成功回合同一把尺）。模型据此判断"这回合是不是太慢、要不要拆小任务或换策略"；它能看到轮数，但在此之前看不到时间',
+          },
           error: { type: 'string' },
         },
-        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'tools_truncated', 'stop_reason', 'working_dir', 'provider', 'providerReported', 'protocol_unknown_types', 'daemon_tool_calls', 'daemon_rounds', 'error'],
+        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'tools_truncated', 'stop_reason', 'working_dir', 'provider', 'providerReported', 'protocol_unknown_types', 'daemon_tool_calls', 'daemon_rounds', 'elapsed_ms', 'error'],
         additionalProperties: false,
       }),
       render(_args: any, value: any) {
@@ -382,6 +682,14 @@ export function mountAskTool({
           if (typeof value.daemon_tool_calls === 'number') {
             meta.push(`daemon_tool_calls=${value.daemon_tool_calls}`);
           }
+          // Wall time, guarded the same way `daemon_tool_calls` is: printed only
+          // when it is a number, so a caller (or an older fixture) that omits it
+          // does not read `elapsed_ms=undefined` as a value. This is the line that
+          // actually reaches the model — the raw field alone is invisible to it,
+          // since the model reads this render, not the JSON.
+          if (typeof value.elapsed_ms === 'number') {
+            meta.push(`elapsed_ms=${value.elapsed_ms}`);
+          }
           meta.push(`stop_reason=${value.stop_reason}`);
           // Always present, so "which directory did this run in" is never a
           // guess — `null` is printed as what it means rather than as a blank.
@@ -400,354 +708,181 @@ export function mountAskTool({
         return [{ type: 'text', text: lines.join('\n') }];
       },
     },
-    async execute(args: any, exec: any) {
-      // The tool's own clock, started before every branch that can return —
-      // including the refusal below. It used to start after the ladder, so the
-      // one early return that is NOT a failure (a refused call) had no elapsed
-      // time to report and the panel's average would have been built from a
-      // subset of the calls that reached it. Same reason `refuse()` in
-      // `atomcode_review` counts calls, errors and milliseconds together.
-      const t0 = Date.now();
-      // Resolved ONCE, before any failure path, so a refused/failed turn still
-      // reports which model the bridge was asking for (`empty()` below) instead
-      // of a misleading 'default'. Ladder: argument > panel pick > patch field >
-      // AtomCode's own default (send nothing).
-      const askProvider = resolveProvider('ask', args.provider).name;
-      const empty = (error: any) => ({
-        ok: false,
-        reply: '',
-        session_id: '',
-        continued: false,
-        truncated: false,
-        tokens: 0,
-        tool_calls: 0,
-        round_count: 0,
-        tools: [],
-        tools_truncated: false,
-        stop_reason: '',
-        // Reported on FAILURE too: a refused turn has to be able to say which
-        // directory it would have run in — the fallback is the daemon's own cwd,
-        // and "unspecified" is not the same fact as "this repo".
-        working_dir: workDir || null,
-        provider: askProvider || 'default',
-        providerReported: false,
-        protocol_unknown_types: [],
-        // null, not 0: a refused turn never reached the daemon, so the daemon
-        // reported nothing. "It said zero" and "it never got to say anything"
-        // are different facts, and the render compares this field against our
-        // own count.
-        daemon_tool_calls: null,
-        daemon_rounds: null,
-        error,
-      });
-      // Repo ladder: explicit arg > host session cwd (ready-to-use hook) > plugin
-      // config `working_dir` > (nothing -> the daemon's own home fallback).
-      const workDir =
-        typeof args.working_dir === 'string' && args.working_dir.trim() !== ''
-          ? args.working_dir
-          : hostSessionCwd(exec) ?? defaultWorkingDir;
-      // 红线 8, ask side — the same rule `atomcode_review` has enforced from the
-      // start: NO resolvable directory means AtomCode's own tools run unattended
-      // inside whatever cwd the daemon was launched in, which in the default
-      // launch is the user's home.
-      //
-      // This gate used to fire only on that danger PLUS `approval_mode: bypass`
-      // — the assumption being that a non-bypass turn had a human approving
-      // tools, so an unnamed directory was tolerable there. The 2026-10-17
-      // probe (scripts/probes/approval-mode.mjs) disproved it for the headless
-      // daemon: it auto-approves ask-class tools in EVERY mode
-      // (`[headless] auto-approved`), so the danger is mode-independent and the
-      // gate no longer names a mode — switching `approval_mode` can no longer
-      // silently disarm it.
-      //
-      // This case used to be handled by a sentence in the RENDER — which runs
-      // after the turn. A warning that arrives with the results cannot prevent
-      // the thing it warns about, and review is the BOUNDED path (one-shot,
-      // no tool loop) while ask is the one with a full autonomous tool loop.
-      // The weaker guard sat on the more dangerous tool. Now both refuse.
-      //
-      // Refused rather than silently redirected to a sandbox directory: a model
-      // that named no directory may still mean "read the files under my home",
-      // and quietly running it somewhere else trades a visible risk for an
-      // invisible wrong answer. The caller knows where the work belongs; the
-      // message names all three ways forward, so the retry is one call away.
-      // Nothing has been spawned, written, or resolved into a session key yet.
-      if (!workDir && args.allow_unattended !== true) {
-        stats.ask.calls += 1;
-        stats.ask.err += 1;
-        stats.ask.msTotal += Date.now() - t0;
-        return empty(
-          'atomcode_ask 拒绝了本回合：取不到 working_dir，而 daemon 无人值守自动放行（[headless] auto-approved——对任何 approval_mode 都成立），AtomCode 的工具会跑在它自己的 cwd（通常是用户 home）里——' +
-            '这正是 atomcode_review 一直直接拒绝的那个情况（红线 8）。三种走法：' +
-            '① 传 working_dir 指定本回合的目录；② 在插件配置 working_dir 里设一个默认目录；' +
-            '③ 本回合确实只做通用问答、不涉及任何目录时，显式传 allow_unattended=true 表示知情同意。',
-        );
-      }
-      // Normalise the working directory so that `C:\Repo`, `c:\repo` and
-      // `C:\repo\` all map to the SAME session key. `resolve` on Windows
-      // uppercases the drive letter and collapses trailing slashes; on
-      // POSIX it makes the path absolute. Without this, Windows users
-      // silently get two session lines for the same repo.
-      const sessionKey = workDir ? resolve(workDir) : 'default';
-
-      let sessionId =
-        typeof args.session_id === 'string' && args.session_id.trim() !== ''
-          ? args.session_id.trim()
-          : args.continue === true
-            ? sessions.get(sessionKey)
-            : undefined;
-
-      // `reset_session` clears the stale mapping WITHOUT ending this turn's own
-      // resume. An explicit `session_id` is the caller's own pin and always
-      // wins: it is (re)recorded so the NEXT `continue: true` resumes it
-      // instead of the stale one. Without a pin, the stale mapping is dropped
-      // AND this turn does not resume it — "forget that line, start fresh".
-      // This is the escape hatch the old code lacked (its `drop()` had no
-      // caller, so a stale id could only be cleared by editing sessions.json).
-      if (args.reset_session === true) {
-        const pinned =
-          typeof args.session_id === 'string' && args.session_id.trim() !== ''
-            ? args.session_id.trim()
-            : undefined;
-        sessions.drop(sessionKey);
-        if (pinned) sessions.set(sessionKey, pinned);
-        else if (args.continue === true) sessionId = undefined;
-      }
-      // Computed AFTER the reset, so `continued` describes the session this
-      // turn actually replayed (not the one that was just discarded).
-      const continued = sessionId !== undefined;
-
-      stats.ask.calls += 1;
-      if (!(await ensureDaemon(exec?.signal))) {
-        stats.ask.err += 1;
-        stats.ask.msTotal += Date.now() - t0;
-        // Cancel-during-startup is not a daemon outage; say which it was.
-        return empty(
-          exec?.signal?.aborted
-            ? '已取消：调用方在等待 AtomCode daemon 就绪期间中止了本次调用'
-            : `AtomCode daemon 不可用（http://127.0.0.1:${port}：${describeDaemonDown(stats.daemonDownReason)}${autoStart ? '，自动拉起也失败' : ''}）`,
-        );
-      }
-      const timeoutMs =
-        Number.isFinite(args.timeout_secs) && args.timeout_secs > 0
-          ? // Clamped to the declared host timeout rather than trusted: the
-            // description used to promise "上限也是 1800" while the code passed
-            // any magnitude through, so an inflated value did not fail safe —
-            // it failed as a host-side cancel with no timeout to show for it.
-            Math.min(HOST_TOOL_TIMEOUT_SECS, Math.floor(args.timeout_secs)) * 1000
-          : HOST_TOOL_TIMEOUT_MS;
-      // Same contract as the config field above, and the SAME resolver the review
-      // path uses: an explicit 0 is "no fuse", not a missing value. See
-      // resolveMaxRounds — the two tools used to disagree about that word.
-      const maxRounds = resolveMaxRounds(args.max_rounds, askMaxRounds);
-      // Live progress for the panel's 5s poll — the whole point being that an
-      // ask turn runs for minutes and used to be a black box for every one of
-      // them. `startedAt` is taken BEFORE the request goes out rather than on
-      // the first event, so a turn that spends 40s before its first token still
-      // shows an honest age instead of appearing to start late.
-      const live: LiveTurn = {
-        startedAt: Date.now(),
-        workingDir: workDir || null,
-        provider: askProvider || 'default',
-        rounds: 0,
-        completed: 0,
-        chars: 0,
-        sessionId: '',
-        lastTool: '',
-        tokens: 0,
-      };
-      beginInFlight(stats, live);
-      let result: Awaited<ReturnType<typeof askChat>>;
-      try {
-        result = await askChat({
-          message: String(args.message || ''),
-          port,
-          approvalMode,
-          timeoutMs,
-          // Forwarded unconditionally, 0 included: dropping it here would be the
-          // same "0 is not honoured" bug one layer down.
-          maxRounds,
-          ...(sessionId ? { sessionId } : {}),
-          ...(askProvider ? { provider: askProvider } : {}),
-          ...(workDir ? { workingDir: workDir } : {}),
-          ...(exec?.signal ? { signal: exec.signal } : {}),
-          onProgress: (progress) => Object.assign(live, progress),
-        });
-      } finally {
-        // Retire THIS turn and hand the slot to whatever is still running —
-        // see `endInFlight`. Neither ordering of two overlapping asks may leave
-        // the panel claiming nothing is in flight while a turn executes; the
-        // row describes the newest turn that is still alive.
-        endInFlight(stats, live);
-      }
-      stats.ask.msTotal += Date.now() - t0;
-      if (result.ok) {
-        stats.ask.ok += 1;
-        if (Number.isFinite(result.tokens)) stats.ask.tokens += result.tokens;
-      } else {
-        stats.ask.err += 1;
-      }
-      // Accumulate protocol drift for the panel, on EVERY turn rather than only
-      // successful ones: drift is a fact about the wire, not a property of the
-      // reply, and a failed turn that still named an unknown type is exactly the
-      // evidence a later diagnosis needs. Union, never replace — see the bag.
-      for (const unknownType of result.unknownTypes) {
-        if (!stats.protocolUnknownTypes.includes(unknownType)) stats.protocolUnknownTypes.push(unknownType);
-      }
-      if (result.ok && result.sessionId) sessions.set(sessionKey, result.sessionId);
-      // Truncation is MARKED, never silent: a silently clipped reply reads
-      // to the model like a complete answer, which is how a half-copied report
-      // becomes a confidently wrong summary. Budget and marker both come from
-      // the shared pair (OUTPUT_CAP / capProse) so this path and the review path
-      // cannot drift into two conventions.
-      const capped = capProse(result.reply, OUTPUT_CAP, {
-        remedy: 'ask AtomCode to write the full text to a file and read that instead',
-      });
-      const reply = capped.text;
-      const truncated = capped.cut;
-      // A turn that RESUMED a stored side conversation and then failed has one
-      // thing to say that no daemon error will: the stored id may be the problem.
-      // `sessions.set()` only records SUCCESSFUL turns, so a dead id is never
-      // overwritten — every later `continue: true` replays it and fails again,
-      // forever. The escape hatch exists (`reset_session`), but nothing told the
-      // caller it was the move, so the failure reads as transient and gets
-      // retried into the same dead id.
-      //
-      // Deliberately NOT auto-dropping the key: a resumed turn can also fail for
-      // reasons that leave the session perfectly alive (our own timeout, a
-      // network blip, the round fuse), and dropping it would silently end a
-      // conversation the user wanted continued. Name the recovery instead —
-      // that is the caller's decision to make, with the evidence in hand.
-      const resumeHint =
-        '本次接续的是本工作目录记录的侧边会话；若该会话已失效（daemon 重启或空闲退出后常见），' +
-        '可用 reset_session=true 清掉它再开一条新线';
-      const reportedError =
-        !result.ok && continued
-          ? result.error
-            ? `${result.error}（${resumeHint}）`
-            : resumeHint
-          : result.error;
-      return {
-        ok: result.ok,
-        reply,
-        session_id: result.sessionId,
-        continued,
-        truncated,
-        tokens: result.tokens,
-        tool_calls: result.toolCalls,
-        round_count: result.roundCount ?? 0,
-        tools: result.tools,
-        tools_truncated: result.toolsTruncated === true,
-        stop_reason: result.stopReason,
-        working_dir: workDir || null,
-        provider: result.provider,
-        providerReported: result.providerReported,
-        protocol_unknown_types: result.unknownTypes,
-        // The daemon's own counts, passed through untouched so the render can
-        // compare them against ours. Null means it did not report them — the
-        // comparison is then impossible rather than favourable.
-        daemon_tool_calls: result.daemonToolCalls,
-        daemon_rounds: result.daemonRounds,
-        error: reportedError,
-      };
-    },
+    // The tool call is a one-line alias for the shared runner; the
+    // `/atomcode-review` command calls the SAME body, so a model call and a
+    // human command cannot disagree about which directory runs unattended.
+    execute: (args: any, exec: any) => runAsk(args, exec, { config, runtime }),
   });
 
   return disposeAsk;
 }
 
+
 /**
- * `atomcode_review` — one-shot code review through the CLI subcommand.
+ * The review brief `composeReviewMessage` fills in unless the caller supplies
+ * their own task — which is itself decided by the plugin config
+ * `review_brief_mode` (closed set `REVIEW_BRIEF_MODES`, see `config.ts`).
  *
- * Same reason as mountAskTool() for building the description here: the note
- * about which provider will be used has to sit next to the `register()` that
- * ships it, so the two cannot describe different ladders.
+ * It lives HERE rather than in `command.ts` because the two entry points must
+ * ask for the same thing: `/atomcode-review` with no arguments and
+ * `atomcode_review` with no arguments are the same request, and a second copy
+ * of this paragraph would drift from the first the moment either is tuned.
+ */
+const DEFAULT_REVIEW_TASK =
+  '评审当前工作区里未提交的改动（git 未提交改动；没有未提交改动时看最近一次提交）。' +
+  '自己运行 git 命令确认范围，必要时读相关文件理解上下文，然后给出评审结论：' +
+  '哪些地方有问题、为什么、怎么改。只报你确实看见的问题，不要猜。';
+
+/**
+ * Turn a review request into the message one daemon turn sends.
  *
- * @returns {() => void} the tool’s disposer.
+ * Ordering is the whole point: the SELECTOR (base / staged / pr / diff_text)
+ * goes first because it is what makes the turn about a specific change, and the
+ * task text is appended as the instruction about HOW to review it. The old CLI
+ * path passed `--base` / `--staged` / `--pr` as process flags; there is no flag
+ * channel through the daemon, so the selector is spelled out in the prompt and
+ * the agent is told to run the git command itself.
+ *
+ * The TASK part obeys `mode` (`review_brief_mode`):
+ * - `always` — the default task is sent on every call, and a non-empty task is
+ *   appended after it (「另外：…」).
+ * - `when-empty` (shipped default) — the default task is sent only when the
+ *   task is empty; a non-empty task goes through verbatim, without it.
+ * - `never` — the default task is never sent; a non-empty task goes through
+ *   verbatim, and an empty task yields `''` when NO selector was given, which
+ *   the caller refuses (a review with no target fails fast, visibly).
+ */
+export function composeReviewMessage(
+  args: {
+    task?: unknown;
+    base?: unknown;
+    staged?: unknown;
+    pr?: unknown;
+    diffText?: unknown;
+  },
+  mode: ReviewBriefMode = 'when-empty',
+): string {
+  const parts: string[] = [];
+  const pr = Number(args.pr);
+  const base = typeof args.base === 'string' ? args.base.trim() : '';
+  const diffText = typeof args.diffText === 'string' ? args.diffText.trim() : '';
+  if (Number.isInteger(pr) && pr > 0) {
+    parts.push(`评审 GitHub PR #${pr}：用 \`gh pr diff ${pr}\` 取 diff 后再看。`);
+  } else if (diffText !== '') {
+    parts.push('评审下面这段 diff：', '```diff', diffText, '```');
+  } else if (base !== '') {
+    parts.push(`评审 \`${base}...HEAD\` 的改动：先运行 \`git diff ${base}...HEAD\` 取到 diff。`);
+  } else if (args.staged === true) {
+    parts.push('评审已暂存的改动：先运行 `git diff --staged` 取到 diff。');
+  }
+  const task = typeof args.task === 'string' ? args.task.trim() : '';
+  if (mode === 'always') {
+    parts.push(task === '' ? DEFAULT_REVIEW_TASK : `${DEFAULT_REVIEW_TASK}\n\n另外：${task}`);
+  } else if (mode === 'never') {
+    if (task !== '') parts.push(task);
+  } else {
+    parts.push(task === '' ? DEFAULT_REVIEW_TASK : task);
+  }
+  return parts.join('\n');
+}
+
+/**
+ * The `task` parameter's description, per brief mode. A MOUNT-TIME FACT, not a
+ * prediction: the description is registered once, and the mount-time
+ * `review_brief_mode` value is exactly the one the next call honours (a patch
+ * edit takes effect on the reload that re-mounts, which also re-registers).
+ */
+function taskDesc(mode: 'always' | 'when-empty' | 'never'): string {
+  // The brief mode is resolved at execution time (panel pick > patch field), so
+  // the description describes the LADDER, not a specific value. The mount-time
+  // `mode` is still named so the model knows the current default, but the text
+  // says "当前" to signal it can change without a re-registration.
+  const ladder =
+    'brief 注入模式优先级：面板选择 > 插件配置（当前挂载时生效值：' + mode + '）。';
+  if (mode === 'always') {
+    return `可选：评审的附加要求。${ladder}当前模式（始终注入）下，不给则评未提交改动；给了也是附加在内置简报之上。面板切到 when-empty 或 never 后行为随之变化。`;
+  }
+  if (mode === 'never') {
+    return `可选：评审指令。${ladder}当前模式（不注入）下，此参数原样作为评审目标；不给它也不给任何选择器（base/staged/pr/diff_text）会被拒绝。面板切到 when-empty 或 always 后留空即自动补简报。`;
+  }
+  return `可选：评审指令。${ladder}当前模式（仅留空时注入）下，给了就以你的指令为准，内置简报不再拼接；不给则评未提交改动。面板切到 always 后简报永远附加。`;
+}
+
+/**
+ * `atomcode_review` — a code review through the daemon, the same channel as
+ * `atomcode_ask`.
+ *
+ * WHY NOT THE CLI. This tool used to spawn `atomcodex review`, which returns a
+ * structured `findings[]` document — a genuinely nicer shape. But that channel
+ * demanded a direct-provider endpoint (`config.toml` `[providers.<name>]`, in
+ * practice a local sidecar on 8899), so the tool went dark whenever the sidecar
+ * was down while `atomcode_ask` kept working, and it meant two provider
+ * NAMESPACES with two different sets of legal names for one plugin. The user's
+ * call: one channel. AtomCode is a full agent that can run `git diff` itself,
+ * so the review is now a prompt plus a normal turn.
+ *
+ * WHAT IS LOST, said out loud: `findings[]`. There is no way to ask the daemon
+ * for structured output (`/chat` accepts no `response_format`; the binary has
+ * none of `response_format`/`json_schema`/`structured_output`/`json_object`/
+ * `output_schema`), so the report is prose. That is why the output fields are
+ * `report` + turn metadata rather than a findings array — an always-empty
+ * `findings` field would be worse than no field at all.
  */
 export function mountReviewTool({
   tools,
   config,
   runtime,
-  log,
 }: {
   tools: any;
   config: HostConfig;
   runtime: Runtime;
-  log: (message: any) => void;
 }) {
-  const {
-    binary,
-    reviewDefaultProvider,
-    reviewWorkingDir,
-    reviewNoWeb,
-    reviewMaxRounds,
-    reviewMaxDurationSecs,
-  } = config;
-  const {
-    stats,
-    resolveProvider,
-    reviewProvision,
-  } = runtime;
+  const { defaultProvider } = config;
+  const { stats } = runtime;
 
-  // ── atomcode_review：one-shot 代码评审（CLI 子命令） ─────────────────────
-  // Dynamically build the description: if the local config has no direct
-  // [providers.<name>] entry with base_url that the review CLI can resolve,
-  // prefix with a status warning.
-  const reviewBaseDesc =
-    '让本机 AtomCode（官方二进制）对一次代码变更做 one-shot 代码评审：默认评未提交改动；也可给 base 分支 / GitHub PR / diff 文本 / 自定义任务。' +
-    '有界的一次性 agent 运行（轮数 + 墙钟双保险丝，默认关 web 搜索），完成时 report 里是 CLI 的 --json 原始文本（findings JSON，可能夹带日志行），需自己读出结论并转达用户。' +
-    '通路定位：这是"经标准 OpenAI 兼容端点的有界一次性评审"——CLI 不做 AtomCode 专有签名，' +
-    'AtomGit 原生网关对推理端点验签，CLI 够不着；若本机没有可用的标准直连条目（含本地 sidecar），' +
-    'Atom 原生登录用户的评审改走 atomcode_ask 的原生 code_review（签名 daemon 通路、滚动窗口额度）。' +
-    '注意 working_dir 缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 插件配置 review_working_dir；都没有则直接拒绝（绝不回落宿主进程 cwd）——评某个仓库请显式传 working_dir。' +
+  // The provider ladder is now the ASK ladder — one namespace, one set of legal
+  // names (daemon model profiles). 红线 8 had two; the CLI branch is gone, so
+  // `review_default_provider` and the `[providers.<name>]` namespace no longer
+  // describe anything this tool does.
+  const providerNote =
+    'provider 参数收的是 AtomCode 模型档位名（daemon GET /models 的 provider 字段，如 "AtomGit-glm5.3-flash"），' +
+    '不是裸模型 id。优先级：本参数 > 详情页面板上选的档位 > 插件配置 default_provider' +
+    (defaultProvider ? `（当前 default_provider="${defaultProvider}"）` : '（当前未配 default_provider）') +
+    ' > AtomCode 自己的默认档位。与 atomcode_ask 完全同一条通道、同一套档位。';
+
+  const reviewDesc =
+    '让本机 AtomCode 对一次代码变更做代码评审，走 daemon（与 atomcode_ask 同一条通道，不需要本地代理/直连 provider）。' +
+    '默认评未提交改动；也可给 base 分支 / GitHub PR / diff 文本 / 自定义任务。' +
+    'AtomCode 用完整工具循环自己跑 git diff、读相关文件，然后给出一段**文字评审报告**（哪些地方有问题、为什么、怎么改）。' +
+    '注意：报告是文字，没有结构化的 findings 数组——daemon 不接受 response_format，拿不到 schema 约束的 JSON。要逐条可机读的结论，请让它把结论写成文件再读。' +
+    '何时用它而不是 atomcode_ask：用户已经指明评哪一块（一次未提交改动、两分支差异、某个 PR），且只需要结论、不想为此烧掉本会话上下文时。' +
+    '两者边界是"读得多与读得少"：本工具盯你指定的 diff；不确定问题在哪、需要顺着调用链追下去时用 atomcode_ask。' +
+    'working_dir 缺省优先级：调用参数 > 宿主会话 cwd > 插件配置 working_dir；都没有则直接拒绝（绝不回落宿主进程 cwd）——评某个仓库请显式传 working_dir。' +
+    providerNote +
     '可能数分钟。';
-  const reviewUsableProviders = reviewProvision.providers || [];
-  // Four different things can be named here and the model must not confuse them:
-  // the per-call `provider` argument, the pick the panel wrote to provider.json,
-  // the plugin's `review_default_provider`, and the `default_provider` key INSIDE
-  // ~/.atomcode/config.toml (which the CLI consults itself). Spell each one out.
-  //
-  // Phrased as an ORDER with the refusal made CONDITIONAL, not as a claim about
-  // the outcome. A tool description is registered ONCE at mount, while the panel
-  // pick is read PER CALL — so any unconditional sentence ("留空即点名它" / "留空会
-  // 被要求点名") is a coin flip on being false by the next turn. The first version
-  // of this note stated both outcomes at once and an external review caught it;
-  // the second version would have gone stale the moment someone touched the
-  // dropdown. This form stays true in every state.
-  const reviewProviderNote =
-    reviewUsableProviders.length === 0
-      ? ''
-      : `（本机可用的直连 provider：${reviewUsableProviders.join(' / ')}；` +
-        'provider 留空时按顺序取：详情页面板选的条目 → 插件配置 review_default_provider' +
-        `（当前${reviewDefaultProvider ? `="${reviewDefaultProvider}"` : '未配'}）` +
-        ' → config.toml 的 default_provider → 唯一的可用直连条目自动顶上；' +
-        '只有前面几档都没配上、而本机又存在多个可用直连条目时才会要求你点名，不会替你猜计费通道）';
-  const reviewDesc = reviewProvision.available
-    ? reviewBaseDesc + reviewProviderNote
-    : `注意：本机 AtomCode 配置下 review CLI 不可用（${reviewProvision.reason}），只能走 daemon 侧的 atomcode_ask 做侧边咨询或让 AtomCode 评审。` +
-      reviewBaseDesc;
 
   const disposeReview = tools.register({
     name: 'atomcode_review',
-    // timeoutMs: the review CLI has its own max_duration fuse; the shared
-    // constant is the same 30min the host sees for ask, so one number governs
-    // both registrations and the clamps derived from it.
     timeoutMs: HOST_TOOL_TIMEOUT_MS,
     description: reviewDesc,
     parameters: {
       type: 'object',
       properties: {
-        working_dir: { type: 'string', description: '仓库根目录（--repo）。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 插件配置 review_working_dir；都没有则报错（绝不回落宿主进程 cwd）而不是悄悄评错仓库' },
-        task: { type: 'string', description: '可选：自定义任务文本，替代 diff 评审（问题/目标代码/上下文都写进来）' },
+        working_dir: { type: 'string', description: '仓库根目录。缺省优先级：调用参数 > 宿主会话 cwd > 面板选择 > 插件配置 working_dir；都没有则报错（绝不回落宿主进程 cwd）而不是悄悄评错仓库' },
+        task: {
+          type: 'string',
+          description: taskDesc(
+            config.reviewBriefMode === 'never' ? 'never' : config.reviewBriefMode === 'always' ? 'always' : 'when-empty',
+          ),
+        },
         base: { type: 'string', description: '可选：base git ref，评审 <base>...HEAD；缺省评未提交改动' },
         staged: { type: 'boolean', description: '可选：只评已暂存改动（git diff --staged）' },
-        pr: { type: 'number', description: '可选：GitHub PR 号（需本机 gh CLI）' },
-        diff_text: { type: 'string', description: '可选：原始 diff 文本（写临时文件走 --diff-file；适合非 git 场景/CI 产物）' },
-        provider: { type: 'string', description: '可选：点名 AtomCode provider，原样透传给 review CLI 的 --provider。名字以 ~/.atomcode/config.toml 的 [providers.<name>] 条目为准（这条路径不看 daemon /models，也不是裸模型 id——别传 "glm5.3-flash"）；要换该 provider 用的模型，改它条目里的 model。留空时按顺序取：面板上选的条目 → 插件配置 review_default_provider → config.toml 的 default_provider → 自动选择（见工具描述）' },
-        max_rounds: { type: 'number', description: '可选：评审 agent 轮数熔断（默认取插件配置，通常 ' + reviewMaxRounds + '；上限 1000，超过按 1000 计。传 0 关掉轮数熔断，交回 CLI 自己治理——与 atomcode_ask 的 max_rounds: 0 同义；墙钟熔断 max_duration_secs 仍然生效）' },
-        max_duration_secs: { type: 'number', description: '可选：墙钟保险丝秒数（默认取插件配置，通常 900）。上限 1740s，超过按 1740s 计——进程级兜底取 maxDuration+60s，再大就越过宿主 30min 工具超时，保险丝会失效而不是变长' },
-        enable_web: { type: 'boolean', description: '可选：允许评审用 web_search（默认 false，适配受限网络）' },
+        pr: { type: 'number', description: '可选：GitHub PR 号（AtomCode 侧需能跑 gh CLI）' },
+        diff_text: { type: 'string', description: '可选：原始 diff 文本（适合非 git 场景/CI 产物）。给了它就只评这段文本' },
+        provider: { type: 'string', description: '可选：点名 AtomCode 模型档位（daemon GET /models 的 provider 字段，如 "AtomGit-glm5.3-flash"；不是裸模型 id）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
+        max_rounds: { type: 'number', description: '可选：工具调用次数熔断（默认取插件配置，当前 ' + config.reviewMaxRounds + '；上限 1000。传 0 关掉本端熔断，交回 daemon 自己治理）' },
+        timeout_secs: { type: 'number', description: '可选：整回合超时秒数（默认取插件配置，当前 ' + config.reviewMaxDurationSecs + '；上限 1800，超过按 1800 计）' },
+        reasoning_effort: { type: 'string', description: '可选：本回合的推理力度（per-turn override，不改 daemon 持久值）。支持的档位取决于当前模型（见 GET /models 的 effort_levels），常见值 "low"/"medium"/"high"/"xhigh"。留空 = 用 daemon 当前的持久值（或模型默认）' },
       },
       required: [],
     },
@@ -756,269 +891,171 @@ export function mountReviewTool({
         type: 'object',
         properties: {
           ok: { type: 'boolean' },
-          report: { type: 'string', description: 'CLI --json 的原始 stdout（可能夹带日志行）。findings 是它的结构化读数；两者同在，原始文本不因解析成功而被丢掉' },
-          truncated: { type: 'boolean', description: 'report 超过上限被截断（findings 原文不完整，必要时改用 task 缩小范围）' },
-          findings_parsed: {
-            type: 'boolean',
-            description:
-              'report 是否被解析成了结构化 findings。false = 没能解析（原始文本仍在 report 里，需自己读结论），' +
-              '此时 findings_count=0 表示"没有解析出结论"，**不是"没有问题"**',
+          report: { type: 'string', description: 'AtomCode 的评审报告正文（自由文本）。没有结构化的 findings 数组——daemon 不接受 response_format' },
+          truncated: { type: 'boolean', description: 'report 超过上限被截断（截断处有标记；必要时让它把完整报告写到文件里再读）' },
+          tokens: { type: 'number', description: '本回合消耗的 token 数' },
+          usage: {
+            type: 'object',
+            description: '本回合的用量读数。只有 daemon 报了的字段才有值，没报的为 null——「它说 0」和「它没说」不是同一件事',
+            properties: {
+              tokens: { type: 'number' },
+              tool_calls: { type: 'number' },
+              rounds: { type: 'number' },
+            },
+            required: ['tokens', 'tool_calls', 'rounds'],
+            additionalProperties: false,
           },
-          findings_count: { type: 'number', description: '文档里的 finding 条数（findings 数组被截断时它仍是真实总数）' },
-          findings: {
+          rounds: { type: 'number', description: 'agent 轮数（tool_start 事件数，≥ 真实轮数：同一轮并行发起的调用各计一次）' },
+          tools: {
             type: 'array',
-            description:
-              `结构化 findings，最多 ${FINDINGS_CAP} 条（真实总数见 findings_count）。` +
-              'severity/file/line 为 null = 该条目没带这个字段（未知），不是"无"；转达时不要把它写成"无严重程度"',
+            description: `本回合 AtomCode 用过的工具，最多 ${TOOLS_CAP} 条（真实总数见 usage.tool_calls）。success 为 null = 并行批次内无法归因，成败未知（不是失败）`,
             items: {
               type: 'object',
               properties: {
-                severity: { type: ['string', 'null'] },
-                file: { type: ['string', 'null'] },
-                line: { type: ['string', 'null'] },
-                message: { type: 'string' },
+                name: { type: 'string' },
+                success: {
+                  type: ['boolean', 'null'],
+                  description: '该次工具调用是否成功；null = 并行批次内结果无法归因，成败未知（不是失败）',
+                },
               },
-              required: ['severity', 'file', 'line', 'message'],
+              required: ['name', 'success'],
               additionalProperties: false,
             },
           },
+          tools_truncated: { type: 'boolean', description: 'tools 数组被截断（真实总数见 usage.tool_calls）' },
+          working_dir: { type: ['string', 'null'], description: '本次评审实际在哪个目录跑的。null = 没指定（不应出现：那种情况本工具直接拒绝）' },
+          provider: { type: 'string', description: '本回合实际用的模型档位（daemon 报的实测值，或回显的请求值）' },
+          stop_reason: { type: 'string' },
+          elapsed_ms: {
+            type: 'number',
+            description: '本次评审回合的墙钟毫秒数（复用 atomcode_ask 的同一把尺）。模型据此判断"评得太久要不要换范围"；与 ask 同源，失败/拒绝回合同样计时',
+          },
           error: { type: 'string' },
-          exit_code: { type: 'number', description: '进程退出码；-1 = 未能启动，或被信号终止（超时/取消）。两种含义共用 -1（被信号杀时真实 code 为 null），具体原因看 error' },
-          duration_ms: { type: 'number' },
         },
-        required: ['ok', 'report', 'truncated', 'findings_parsed', 'findings_count', 'findings', 'error', 'exit_code', 'duration_ms'],
+        required: ['ok', 'report', 'truncated', 'tokens', 'usage', 'rounds', 'tools', 'tools_truncated', 'working_dir', 'provider', 'stop_reason', 'elapsed_ms', 'error'],
         additionalProperties: false,
       }),
       render(_args: any, value: any) {
         const lines = [];
         if (value.ok) {
-          // The digest leads the raw document. Both are printed: the digest is
-          // the reliable reading (one line per finding, nothing to grep), and the
-          // raw text stays because a finding can carry fields the digest does not
-          // normalize. Handing back ONLY the raw --json is what let a missed
-          // finding pass as "the review was complete".
-          const findings = Array.isArray(value.findings) ? value.findings : [];
-          lines.push(
-            `AtomCode 评审完成（${Math.round(value.duration_ms / 1000)}s${
-              value.findings_parsed ? `，${value.findings_count} 条 findings` : '，findings 未能解析'
-            }）:`,
-          );
-          if (value.findings_parsed && findings.length > 0) {
-            for (const finding of findings) {
-              const where = [finding.file, finding.line].filter((part) => part !== null && part !== '').join(':');
-              lines.push(
-                `- ${finding.severity ? `[${finding.severity}] ` : ''}${where ? `${where} — ` : ''}${finding.message}`,
-              );
-            }
-            if (findings.length < value.findings_count) {
-              lines.push(`[注意：只列出了前 ${findings.length} 条，共 ${value.findings_count} 条——完整清单见下面的 report 原文]`);
-            }
-          } else if (value.findings_parsed) {
-            lines.push('（findings 文档里没有条目）');
-          } else {
-            // The one sentence that keeps "not parsed" from reading as "clean".
+          const rounds = value.rounds > 0 ? `，${value.rounds} 轮` : '';
+          lines.push(`AtomCode 评审完成（${value.tokens} tokens${rounds}）:`, '', value.report || '(空报告)', '');
+          if (value.truncated) {
+            lines.push('[注意：report 已截断，让它把完整报告写到文件里再读]', '');
+          }
+          const unattributed = Array.isArray(value.tools)
+            ? value.tools.filter((t: any) => t && t.success === null).length
+            : 0;
+          if (unattributed > 0) {
             lines.push(
-              '[注意：--json 原文没能解析成 findings 文档，下面的 report 是原始文本，需自己从中读结论——' +
-                'findings_count=0 是"没解析出"，不等于"没有问题"]',
+              `[注意：tools 里有 ${unattributed} 条 success=null——daemon 并行发起的工具调用结果不带归属标识，` +
+                '本端无法判定成败（未知，不是失败），不要据此重做]',
+              '',
             );
           }
-          // The report is the SECOND copy of the same review — the digest above
-          // already lists every finding — and it used to be printed at its own
-          // full cap on top of the digest, so ONE return could carry about twice
-          // the intended budget. The budget is per RETURN now: the raw document
-          // gets whatever the digest left, with a floor it can never drop below.
-          //
-          // Both copies stay (a finding can carry fields the digest does not
-          // normalize, so dropping the raw would lose information silently) —
-          // what changed is that the cost of keeping both is now paid out of one
-          // budget instead of being charged twice.
-          const digestChars = lines.join('\n').length;
-          const rawBudget = Math.max(REVIEW_REPORT_FLOOR, OUTPUT_CAP - digestChars);
-          // Same marker shape as the ask path, remedy included: the only thing
-          // that should differ between the two truncations is the advice, not the
-          // sentence that announces the loss.
-          const raw = capProse(value.report || '(空 findings)', rawBudget, {
-            remedy: 're-run with a task that writes the full report to a file, or read the digest above',
-          });
-          lines.push('--- report 原文 ---', raw.text);
-          // Two INDEPENDENT cuts can shorten this document, and a reader who is
-          // told only one of them will size what they got wrongly:
-          //   - `value.truncated` — the FIELD was cut before this render ran, so
-          //     content was already gone when the budget below was computed.
-          //   - `raw.cut` — the combined budget then cut it again, because the
-          //     digest spent part of the return's allowance.
-          // Reported in one note with both reasons rather than two notes that
-          // each read as THE reason.
-          const shortfalls = [];
-          if (value.truncated) shortfalls.push('findings 原文早已被字段上限截断，末尾不完整');
-          if (raw.cut) {
-            shortfalls.push(
-              `report 原文又按本回合预算收到 ${rawBudget} 字（上面的 findings 清单已占用 ${digestChars} 字）`,
-            );
+          if (value.tools_truncated) {
+            lines.push(`[注意：tools 只回了前 ${TOOLS_CAP} 条，本回合工具调用不止这些（见 usage.tool_calls）]`, '');
           }
-          if (shortfalls.length) {
-            // What to DO about it lives in the inline marker above, so this note
-            // only has to explain WHY: two independent cuts, named separately.
-            lines.push(`[注意：${shortfalls.join('；')}]`);
+          const meta = [];
+          meta.push(`tokens=${value.tokens}`);
+          meta.push(`tool_calls=${value.usage && typeof value.usage.tool_calls === 'number' ? value.usage.tool_calls : 0}`);
+          if (value.rounds > 0) meta.push(`rounds=${value.rounds}`);
+          if (value.stop_reason) meta.push(`stop_reason=${value.stop_reason}`);
+          meta.push(`working_dir=${value.working_dir === null || value.working_dir === undefined ? '未指定' : value.working_dir}`);
+          meta.push(`provider=${value.provider}`);
+          if (typeof value.elapsed_ms === 'number') {
+            meta.push(`elapsed_ms=${value.elapsed_ms}`);
           }
+          lines.push(`[${meta.join(' ')}]`);
         } else {
           lines.push(`AtomCode 评审失败: ${value.error}`);
-          if (value.report) lines.push('--- 部分输出 ---', value.report.slice(0, 5000));
         }
         return [{ type: 'text', text: lines.join('\n') }];
       },
     },
     async execute(args: any, exec: any) {
-      // Accounting opens ONCE, here, and every refusal below exits through
-      // `refuse()`.
-      //
-      // The four refusals used to repeat `calls += 1; err += 1;` by hand and
-      // each one returned `duration_ms: 0` — so `msTotal` only ever counted the
-      // calls that got as far as spawning a process, while `calls` counted all
-      // of them. The panel's average duration was therefore low by construction
-      // (a fast refusal added a denominator and no numerator), and a fifth
-      // refusal added later would have inherited the same hole from whichever
-      // copy someone read first. One exit cannot forget a line its siblings
-      // remember — the same reason `mountRoutes()` returns one disposer for two
-      // routes (src/host/routes.ts) and `readQuota` names its cause from one
-      // function. The reported `duration_ms` is the real elapsed time now; `0`
-      // was never a measurement, just an uninitialised field that looked like
-      // one.
       const t0 = Date.now();
-      const refuse = (error: string) => {
-        stats.review.calls += 1;
-        stats.review.err += 1;
-        stats.review.msTotal += Date.now() - t0;
+      // Payload only — the accounting happens ONCE below, after runAsk returns.
+      // (An earlier draft incremented here too, which double-counted every
+      // failed review in the panel readout.)
+      const failed = (error: string) => {
         return {
           ok: false,
           report: '',
           truncated: false,
-          // "no digest" — never "zero findings": a refused run must not look
-          // like a review that found nothing wrong.
-          findings_parsed: false,
-          findings_count: 0,
-          findings: [],
+          tokens: 0,
+          usage: { tokens: 0, tool_calls: 0, rounds: 0 },
+          rounds: 0,
+          tools: [],
+          tools_truncated: false,
+          working_dir: null,
+          provider: 'default',
+          stop_reason: '',
+          // Measured on the review's OWN t0 (execute entry), so a refused/failed
+          // review reports how long the whole call spent — the same clock the
+          // success return below uses, and the same reason ask's `empty()` does it.
+          elapsed_ms: Date.now() - t0,
+          // "no report" — never "reviewed and found nothing".
           error,
-          exit_code: -1,
-          duration_ms: Date.now() - t0,
         };
       };
-      // Repo requirement FIRST: a missing repository is the caller's own
-      // mistake, and reporting it beats both reviewing the wrong tree and
-      // burying it under a config diagnostic. The host process cwd is an
-      // implementation detail of how DSH was launched, never the user's repo.
-      // Same ladder as ask, different tail: explicit arg > host session cwd
-      // (ready-to-use hook) > plugin config `review_working_dir` > REFUSE.
-      // The host process cwd stays excluded (红线 8); the session cwd is the
-      // repo the user has open, so auto-filling it is never a blind guess.
-      const workDir =
-        typeof args.working_dir === 'string' && args.working_dir.trim() !== ''
-          ? args.working_dir
-          : hostSessionCwd(exec) ?? reviewWorkingDir;
-      if (!workDir) {
-        return refuse(
-          'atomcode_review needs a repository: pass working_dir (<repo root>), or set the plugin config ' +
-            '`review_working_dir`. Falling back to the host process cwd would review the ' +
-            'wrong tree (or nothing) while reporting success.',
+      // ONE runner behind both this tool and `/atomcode-review`. The repo
+      // ladder, the 红线 8 refusal, the provider ladder, the fuses and the
+      // stats accounting are `runAsk`'s; a second copy here would drift the
+      // first time any of them changes.
+      const message = composeReviewMessage(args, runtime.resolveBriefMode().mode as import('./config.ts').ReviewBriefMode);
+      if (message === '') {
+        // Only reachable in `never` mode with no task and no selector: a
+        // review with no target would ask AtomCode to guess, so refuse it
+        // here, before any turn is spent.
+        return failed(
+          'review_brief_mode 为「不注入」（never）且未给任何评审目标：请传 task（或 base/staged/pr/diff_text），' +
+            '或在 patch 里把 review_brief_mode 改回 when-empty',
         );
       }
-      // The mount-time probe is only a hint in the DESCRIPTION; the truth is
-      // re-read here, so a config.toml edit after mount is honoured. It is
-      // stronger than a description warning: the call is refused before it
-      // spawns a process that would fail with a diagnostic aimed at a human.
-      const currentProvision = checkReviewProvision();
-      if (!currentProvision.available) {
-        return refuse(
-          `atomcode_review is unavailable on this host: ${currentProvision.reason} ` +
-            'Use atomcode_ask instead (the daemon carries the AtomGit gateway signing). ' +
-            'If this looks wrong, fix ~/.atomcode/config.toml and retry — this check re-reads it on every call.',
-        );
-      }
-      // Which direct provider will this run use? The CLI's own default is
-      // default_provider, which on an AtomGit login host has no base_url ("missing
-      // base URL") even when a usable direct entry exists — selection makes that
-      // an explicit, single-candidate auto-pick (or a named refusal when several
-      // candidates exist, never a guess about which channel to bill).
-      // Same ladder as ask, different namespace: argument > panel pick >
-      // review_default_provider > the CLI's own auto-selection (红线 8).
-      const selection = selectReviewProvider(resolveProvider('review', args.provider).name);
-      if (selection.error) {
-        return refuse(`atomcode_review: ${selection.error}`);
-      }
-      if (selection.auto) {
-        log(`review provider auto-selected: ${selection.provider} — ${selection.reason}`);
-      }
-      // A loopback base_url means a local sidecar process (e.g. the
-      // atomcode-open-api proxy) is a live dependency: probe it BEFORE spawning
-      // so a dead proxy yields this named diagnostic instead of the CLI's opaque
-      // "review did not complete (initial pass: Cancelled)". Remote base_urls are
-      // deliberately not probed — this host's egress is proxy-gated, and a probe
-      // false-negative would refuse a call the CLI could have completed.
-      if (selection.baseUrl && isLoopbackBaseUrl(selection.baseUrl)) {
-        const probe = await probeLocalEndpoint(selection.baseUrl);
-        if (!probe.alive) {
-          return refuse(
-            `atomcode_review: local provider endpoint ${selection.baseUrl} (provider "${selection.provider}") ` +
-              `is not responding (${probe.detail}; tried ${probe.tried.join(', ') || 'no URL'}). ` +
-              `${PROVIDER_FIX} ` +
-              'Daemon-side atomcode_ask is unaffected (it does not go through this endpoint).',
-          );
-        }
-      }
-      // The SAME resolver as the ask path (`resolveMaxRounds`), so one parameter
-      // name means one thing across both tools: an explicit 0 reaches
-      // buildReviewArgs, which is where it becomes the CLI's own UNLIMITED (the
-      // flag is omitted). The wall-clock fuse below keeps its own `> 0` rule —
-      // "no round cap" is not "no limit", and that knob was never part of the
-      // ambiguity.
-      const maxRounds = resolveMaxRounds(args.max_rounds, reviewMaxRounds);
-      // The same clamp rule as timeout_secs, one resolver over: a wall-clock
-      // fuse above `MAX_REVIEW_DURATION_SECS` does not fail safe, it fails
-      // invisible — the process backstop (max+60s) would outlive the host's
-      // own guard, so the host kills the call and the caller sees a cancel
-      // where the description promised the CLI's fuse.
-      const maxDurationSecs = resolveDurationSecs(args.max_duration_secs, reviewMaxDurationSecs, MAX_REVIEW_DURATION_SECS);
+      const outcome = await runAsk(
+        {
+          message,
+          ...(typeof args.working_dir === 'string' ? { working_dir: args.working_dir } : {}),
+          ...(typeof args.provider === 'string' ? { provider: args.provider } : {}),
+          ...(Number.isFinite(args.max_rounds) ? { max_rounds: args.max_rounds } : { max_rounds: config.reviewMaxRounds }),
+          ...(Number.isFinite(args.timeout_secs) ? { timeout_secs: args.timeout_secs } : { timeout_secs: config.reviewMaxDurationSecs }),
+          ...(args.reasoning_effort ? { reasoning_effort: args.reasoning_effort } : {}),
+        },
+        exec,
+        { config, runtime },
+      );
       stats.review.calls += 1;
-      const result = await runReview({
-        workingDir: workDir,
-        ...(typeof args.task === 'string' && args.task.trim() !== '' ? { task: args.task } : {}),
-        ...(typeof args.base === 'string' && args.base.trim() !== '' ? { base: args.base } : {}),
-        ...(args.staged === true ? { staged: true } : {}),
-        ...(Number.isFinite(args.pr) && args.pr > 0 ? { pr: args.pr } : {}),
-        ...(typeof args.diff_text === 'string' && args.diff_text.trim() !== '' ? { diffText: args.diff_text } : {}),
-        ...(selection.provider ? { provider: selection.provider } : {}),
-        maxRounds,
-        maxDurationSecs,
-        // Independent process-level backstop: fires only if the CLI overruns its
-        // own --max-duration (the CLI stops itself and reports findings, which is
-        // the graceful path). Without this the bridge would wait forever.
-        timeoutMs: (maxDurationSecs + 60) * 1000,
-        noWeb: args.enable_web === true ? false : reviewNoWeb,
-        ...(binary ? { binary } : {}),
-        ...(exec?.signal ? { signal: exec.signal } : {}),
-        log,
-      });
-      // Measured from the top of execute(), so the whole call is counted —
-      // repo/config/selection/probe included — which is the same span the
-      // refusals above book through `refuse()`. Both halves of the average must
-      // cover one span, or the "average duration" is an average of nothing.
       stats.review.msTotal += Date.now() - t0;
-      if (result.ok) stats.review.ok += 1;
+      if (outcome.ok) stats.review.ok += 1;
       else stats.review.err += 1;
-      const capped = capProse(result.report, OUTPUT_CAP, {
-        remedy: 're-run with a task that writes the full report to a file, or read the digest above',
+      if (!outcome.ok) {
+        return failed(outcome.error);
+      }
+      const capped = capProse(outcome.reply, OUTPUT_CAP, {
+        remedy: 'ask AtomCode to write the full report to a file and read that instead',
       });
-      const parsed = result.findings || { parsed: false, count: 0, findings: [] };
       return {
-        ok: result.ok,
+        ok: true,
         report: capped.text,
         truncated: capped.cut,
-        findings_parsed: parsed.parsed === true,
-        findings_count: typeof parsed.count === 'number' ? parsed.count : 0,
-        findings: Array.isArray(parsed.findings) ? parsed.findings : [],
-        error: result.error,
-        exit_code: result.exitCode ?? -1,
-        duration_ms: result.durationMs,
+        tokens: outcome.tokens,
+        usage: {
+          tokens: outcome.tokens,
+          tool_calls: outcome.tool_calls,
+          rounds: outcome.round_count,
+        },
+        rounds: outcome.round_count,
+        tools: outcome.tools,
+        tools_truncated: outcome.tools_truncated === true,
+        working_dir: outcome.working_dir,
+        provider: outcome.provider,
+        stop_reason: outcome.stop_reason,
+        // The whole-call wall time (execute entry → here, incl. runAsk, the stats
+        // bookkeeping and the outer capProse). The model reads this via render
+        // below, not the raw field — see the ask render note.
+        elapsed_ms: Date.now() - t0,
+        error: outcome.error,
       };
     },
   });

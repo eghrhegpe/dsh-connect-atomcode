@@ -1,9 +1,8 @@
 /**
  * protocol.test.mjs — the drift pins (v0.4).
  *
- * The bridge rides three PRIVATE, unversioned AtomCode surfaces: the /chat SSE
- * vocabulary, the `status` command's localized text, and the review CLI's
- * provider resolution. Every one of them can change under us with a binary
+ * The bridge rides two PRIVATE, unversioned AtomCode surfaces: the /chat SSE
+ * vocabulary and the `status` command's localized text. Every one of them can change under us with a binary
  * upgrade and no error. v0.4's answer is not a protocol handshake (none is
  * offered) but **observable degradation**: a silent failure mode becomes either
  * a named diagnostic or a panel signal.
@@ -21,7 +20,6 @@ import { describe, it, before, after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { askChat, healthInfo } from '../lib/daemon.js';
 import { parseStatusQuota } from '../lib/quota.js';
-import { parseDefaultProvider, parseTomlProviders } from '../lib/review.js';
 import { requireDeadPort, sentinelPort } from './dead-port.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -42,7 +40,51 @@ async function startFakeDaemon(handler) {
 describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => {
   /** @type {Array<import('node:http').Server>} */
   const open = [];
-  after(() => { for (const { server } of open) server.close(); });
+  // CLOSE FULLY, not just stop accepting. A bare `server.close()` is async: it
+  // halts accept but keeps the handle alive until lingering connections drain,
+  // so it leaves the server mid-`UV_HANDLE_CLOSING` when the test ends. The
+  // runner mounts every suite with `--test-force-exit` (see
+  // scripts/test.mjs — it kills the event loop right after the last assertion),
+  // and force-exit landing on a closing libuv async handle trips
+  // `src\win\async.c:94` on Windows: an abort that reports as a FILE-level test
+  // failure with all 16 `it()`s green. Measured 4 reds / 6 runs before this.
+  // `closeAllConnections()` drops the keep-alive sockets, and awaiting `close()`
+  // means the handle is actually destroyed before the suite returns, so there is
+  // nothing closing left for the forced exit to race. `engines` (node
+  // ^22.19.0 || >=24.0.0, package.json) pins a version where
+  // `closeAllConnections` always exists — a 2026-10 review worried a bare
+  // `await close()` could hang forever if it did not, but no supported runtime
+  // lacks it (the method landed in Node 18.2). The `typeof` guard below is
+  // therefore NOT a back-compat hedge for old Node; it only stops this teardown
+  // itself from throwing if a FUTURE node moves the symbol, and a bare
+  // `server.close()` still drains the listening handle in that case (so the
+  // race is softened, not re-opened). A timeout race was rejected on purpose:
+  // timing out mid-close leaves the handle CLOSING, which is the exact state
+  // `--test-force-exit` trips on — it would trade a hang for the abort this
+  // fix exists to remove.
+  after(async () => {
+    await Promise.all(
+      open.map(async ({ server }) => {
+        if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      }),
+    );
+    // Second source of the same abort, on the CLIENT side of these turns. Every
+    // `askChat`/`healthInfo` here goes through native `fetch` (undici), whose
+    // global dispatcher keeps a pool of keep-alive sockets that outlive the last
+    // assertion — closing a server only drains the LISTENING handle, not the
+    // client pool. A pooled socket mid-`uv_close` is another `UV_HANDLE_CLOSING`
+    // async handle for `--test-force-exit` to trip on (same `src\win\async.c:94`
+    // abort as above). The dispatcher is created lazily on first fetch, so by
+    // now it exists; `close()` returns a promise that resolves once the pool is
+    // drained, and is best-effort: a future Node that moves the symbol must not
+    // turn the guard itself into a failure (the server close above is the load-
+    // bearing part; this is the remainder).
+    const dispatcher = globalThis[Symbol.for('undici.globalDispatcher.1')];
+    if (dispatcher && typeof dispatcher.close === 'function') {
+      await dispatcher.close().catch(() => {});
+    }
+  });
 
   it('names the observed types instead of "ended before done"', async () => {
     // A post-upgrade daemon that renamed every event. The v0.3 behaviour was
@@ -336,181 +378,5 @@ describe('quota text drift', () => {
     assert.equal(parseStatusQuota('CodingPlan：X\n用量：当前窗口约 40% · 重置于 10:00（5m 后）').usagePercent, 40);
     assert.equal(parseStatusQuota('CodingPlan: X\nUsage: window 40%  ·  resets 10:00 (5m)').usagePercent, 40);
     assert.equal(parseStatusQuota('CodingPlan: X\nQuota 40% · resets 10:00 (5m)').usagePercent, 40);
-  });
-});
-
-describe('TOML provider parsing — quoted names must not become false negatives', () => {
-  it('parses a bare provider name', () => {
-    const ps = parseTomlProviders(['[providers.direct]', 'base_url = "https://x.test/v1"', 'api_key = "sk-1"'].join('\n'));
-    assert.equal(ps.length, 1);
-    assert.equal(ps[0].name, 'direct');
-    assert.equal(ps[0].base_url, 'https://x.test/v1');
-  });
-
-  it('parses a QUOTED provider name (the v0.3 false-negative case)', () => {
-    // v0.3 stripped only the `providers.` prefix, leaving the quotes in the
-    // name; worse, the name then mismatched `--provider <name>` exactly as
-    // written in config.toml, so a WORKING provider was reported unavailable.
-    const ps = parseTomlProviders(['[providers."my provider"]', 'base_url = "https://x.test/v1"', 'api_key = "sk-1"'].join('\n'));
-    assert.equal(ps.length, 1);
-    assert.equal(ps[0].name, 'my provider', 'quotes must be stripped from the name');
-    assert.equal(ps[0].api_key, 'sk-1');
-  });
-
-  it('accepts quoted KEYS too', () => {
-    const ps = parseTomlProviders(['[providers.p]', '"base_url" = "https://x.test/v1"', '"api_key" = "sk-1"'].join('\n'));
-    assert.equal(ps[0].base_url, 'https://x.test/v1');
-    assert.equal(ps[0].api_key, 'sk-1');
-  });
-
-  it('ignores a fully-quoted section, which is a literal key, not a table', () => {
-    // ["providers.x"] is a single quoted KEY named "providers.x" — a table
-    // named `providers` with key `x`, not a provider entry.
-    assert.deepEqual(parseTomlProviders(['["providers.x"]', 'base_url = "https://x.test/v1"'].join('\n')), []);
-  });
-
-  it('ignores comments and blank lines, and never throws on junk', () => {
-    assert.deepEqual(parseTomlProviders(''), []);
-    assert.deepEqual(parseTomlProviders('# only a comment\n\n   \n'), []);
-    assert.doesNotThrow(() => parseTomlProviders('[[[broken\nproviders\n= = =\n'));
-  });
-
-  it('reads default_provider in either quoting style, root table only', () => {
-    // The two callers (provision probe + execute-time selection) each carried
-    // this same regex, and it was wrong in two measurable ways in two places:
-    // double quotes ONLY, and no section scoping.
-    assert.equal(parseDefaultProvider('default_provider = "atomcode-local"'), 'atomcode-local');
-    assert.equal(parseDefaultProvider("default_provider = 'atomcode-local'"), 'atomcode-local');
-    assert.equal(parseDefaultProvider('default_provider = atomcode-local'), 'atomcode-local');
-    assert.equal(parseDefaultProvider('default_provider = "x"  # 本地代理'), 'x');
-    assert.equal(
-      parseDefaultProvider(['[ui]', 'default_provider = "ui-model"'].join('\n')),
-      '',
-      'a section-scoped key is a DIFFERENT key with the same spelling',
-    );
-    assert.equal(
-      parseDefaultProvider(['default_provider = "root-model"', '', '[ui]', 'default_provider = "ui-model"'].join('\n')),
-      'root-model',
-      'the first root-table hit wins (TOML forbids duplicate keys)',
-    );
-    assert.equal(parseDefaultProvider(''), '');
-    assert.equal(parseDefaultProvider(null), '');
-    assert.equal(parseDefaultProvider(42), '');
-  });
-
-  it('strips INLINE comments and trailing whitespace from values', () => {
-    // The kv regex grabs everything to end-of-line, so a real-world line like
-    // `base_url = "http://127.0.0.1:8899/v1"  # 本地代理` used to parse as
-    // `http://127.0.0.1:8899/v1"  # 本地代理` — quote and comment included.
-    // The corrupted value feeds this plugin's own loopback/gateway decisions
-    // while the review CLI parses config.toml correctly itself: two parsers,
-    // one silently wrong.
-    const ps = parseTomlProviders([
-      '# leading comment',
-      '[providers.atomcode-local]',
-      'provider = "openai"',
-      'base_url = "http://127.0.0.1:8899/v1"  # 本地代理',
-      'api_key = "local-proxy-any-string"',
-      'model = "deepseek-ai/DeepSeek-V4-Flash" #no-space-comment',
-      '',
-      '[providers.ollama]',
-      "base_url = 'http://127.0.0.1:11434/v1'  ",
-      'model = "qwen3"',
-    ].join('\n'));
-    assert.equal(ps.length, 2);
-    const [first, second] = ps;
-    assert.equal(first.name, 'atomcode-local');
-    assert.equal(first.base_url, 'http://127.0.0.1:8899/v1', 'inline comment must not corrupt the value');
-    assert.equal(first.api_key, 'local-proxy-any-string');
-    assert.equal(first.model, 'deepseek-ai/DeepSeek-V4-Flash', '# without a space is still a comment');
-    assert.equal(second.name, 'ollama');
-    assert.equal(second.base_url, 'http://127.0.0.1:11434/v1', 'trailing whitespace must go');
-    assert.equal(second.model, 'qwen3');
-  });
-
-  it('accepts dashed KEYS (legal TOML bare keys)', () => {
-    // TOML bare keys may contain dashes; the old regex only allowed [a-zA-Z0-9_].
-    const ps = parseTomlProviders(['[providers.dash]', 'api-key = "sk-1"', 'base_url = "https://x.test/v1"'].join('\n'));
-    assert.equal(ps.length, 1);
-    assert.equal(ps[0].name, 'dash');
-    assert.equal(ps[0]['api-key'], 'sk-1');
-    assert.equal(ps[0].base_url, 'https://x.test/v1');
-  });
-
-  it('collects several providers, including one without base_url', () => {
-    const ps = parseTomlProviders([
-      '[providers.a]',
-      'base_url = "https://a.test/v1"',
-      'api_key = "sk-a"',
-      '',
-      '[providers.b]',
-      'account = "AtomGit"',
-    ].join('\n'));
-    assert.deepEqual(ps.map((p) => p.name), ['a', 'b']);
-    assert.equal(ps[1].base_url, undefined);
-  });
-});
-
-describe('review provision is re-read per call, not frozen at mount', () => {
-  it('a provider added after mount is honoured (and the description follows)', async () => {
-    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-drift-home-'));
-    const cfgDir = join(fakeHome, '.atomcode');
-    const tools = [];
-    const ctx = {
-      get: (name) => (name === 'tools' ? { register: (d) => { tools.push(d); return () => {}; } } : undefined),
-      logger: { warn() {}, error() {}, info() {} },
-      fiber: { entry: { options: { id: 'dsh-connect-atomcode' } } },
-      inject() {},
-      effect() {},
-      on() {},
-    };
-    try {
-      // Before: no direct provider at all -> the description warns.
-      const savedHome = process.env.HOME;
-      const savedUserProfile = process.env.USERPROFILE;
-      process.env.HOME = fakeHome;
-      process.env.USERPROFILE = fakeHome;
-      // Sentinel 5: inert (see the render-mount note in this file).
-      mod.apply(ctx, {
-        auto_start: false,
-        port: sentinelPort(5),
-        state_path: join(fakeHome, 'sessions.json'),
-      });
-      const review = tools.find((t) => t.name === 'atomcode_review');
-      assert.match(review.description, /review CLI 不可用/, 'precondition: unavailable at mount');
-
-      // The user then adds a direct provider and calls the tool. v0.3 would
-      // have spawned a process and surfaced a CLI diagnostic; v0.4 re-reads the
-      // config, so the call is refused for the RIGHT reason (the probe says no)
-      // — or, once the config is fixed, succeeds. Pinned as: the mount-time
-      // verdict is not what the execute path believes.
-      const { rmSync, mkdirSync } = await import('node:fs');
-      mkdirSync(cfgDir, { recursive: true });
-      writeFileSync(join(cfgDir, 'config.toml'), [
-        'default_provider = "direct"',
-        '[providers.direct]',
-        'provider = "openai"',
-        'base_url = "https://some-llm.test/v1"',
-        'api_key = "sk-test"',
-      ].join('\n'), 'utf8');
-      const { checkReviewProvision } = await import(pathToFileURL(join(ROOT, 'lib', 'review.js')).href);
-      assert.equal(checkReviewProvision(cfgDir).available, true, 'the probe now sees the new provider');
-      // The description string in the still-mounted tool object is intentionally
-      // stale (descriptions are registered once); the EXECUTE path is what the
-      // fix guarantees. Assert that execute no longer short-circuits with the
-      // mount-time reason.
-      const r = await review.execute({ working_dir: fakeHome, task: 'x' }, {});
-      assert.notEqual(
-        /unavailable on this host/.test(r.error),
-        true,
-        'execute must not refuse with the mount-time verdict after the config was fixed',
-      );
-      rmSync(fakeHome, { recursive: true, force: true });
-      if (savedHome !== undefined) process.env.HOME = savedHome;
-      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
-    } catch (error) {
-      rmSync(fakeHome, { recursive: true, force: true });
-      throw error;
-    }
   });
 });

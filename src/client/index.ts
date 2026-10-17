@@ -15,10 +15,7 @@
  * @module dsh-connect-atomcode/client
  */
 import type { ReactElement } from 'react';
-import type {
-  ProviderBranch,
-  ProviderSlotName,
-} from './types.ts';
+import type { ProviderBranch } from './types.ts';
 import { S } from './styles.ts';
 import {
   barWidth,
@@ -39,9 +36,12 @@ import {
   isLoopbackEndpoint,
   daemonStatusLine,
   protocolDriftNotice,
+  messageTextOf,
 } from './rows.ts';
 import { createStatusSection } from './status-section.ts';
 import { createQuotaChip } from './quota-chip.ts';
+import { createReviewHandoff } from './review-handoff.ts';
+import { createMessageAsk } from './message-ask.ts';
 
 // The loader hands the factory an untyped `require`; the host resolves
 // `react` from the web boot's seed table.
@@ -120,7 +120,7 @@ const REGISTRATION = {
      * narrower. The timestamp is what tells "this answer predates the click"
      * from "this answer already includes it".
      */
-    let adoptedProvider: { slots: Record<string, unknown>; at: number } | null = null;
+    let adoptedProvider: { branch: Record<string, unknown>; at: number } | null = null;
 
     const TESTABLE = {
       fmtDuration,
@@ -139,8 +139,18 @@ const REGISTRATION = {
       isLoopbackEndpoint,
       daemonStatusLine,
       protocolDriftNotice,
-      providerSlotsOf,
-      snapshotWithSlots,
+      providerBranchOf,
+      snapshotWithBranch,
+      // The message's text, pulled from the chat projection by messageId —
+      // pure, so the 锐评 button's whole read path is testable without React.
+      messageTextOf,
+      // The hand-off factory, so a test can drive `requestReview`'s prefill
+      // contract (and each of its three named failures) with no component tree.
+      createReviewHandoff,
+      // The surviving half of the old popover: a button that reads the rendered
+      // reply and calls `requestReview`. Exposed for the same reason — its whole
+      // contract is testable without a React tree.
+      createMessageAsk,
     };
 
     /**
@@ -167,25 +177,35 @@ const REGISTRATION = {
      * @returns {boolean} whether the snapshot actually changed.
      */
     /**
-     * The two provider branches a write's response carries, or null when it
-     * carries none.
+     * The provider branch a write's response carries, or null when it carries
+     * none.
      *
-     * Both are taken, not just the one that was written: the server recomputes
-     * `effective`/`source` for the whole branch, and a pick in one namespace
-     * never changes the other — adopting both keeps the two dropdowns reading
-     * from one freshly-answered snapshot.
+     * It is taken whole rather than pieced together: the server recomputes
+     * `effective`/`source`/`catalog` for the entire ladder, so adopting its
+     * answer keeps the one dropdown reading from the snapshot the server just
+     * justified.
+     *
+     * There used to be TWO branches here (`ask` and `review`, one per provider
+     * namespace). The review namespace died with its CLI, and the host now
+     * answers with one flat branch, so this reads that branch directly — a
+     * leftover loop over slot names would have found nothing in the new shape
+     * and silently adopted no update at all.
      */
-    function providerSlotsOf(provider: any): Record<string, unknown> | null {
+    function providerBranchOf(provider: any): Record<string, unknown> | null {
       if (!provider || typeof provider !== 'object') return null;
-      const slots: Record<string, unknown> = {};
-      for (const slot of ['ask', 'review']) {
-        if (provider[slot] && typeof provider[slot] === 'object') slots[slot] = provider[slot];
-      }
-      return Object.keys(slots).length > 0 ? slots : null;
+      // The route answers `{ok, provider: {panel, effective, ...}}`; the older
+      // shape nested those under a slot name. Both end up here as "does the
+      // payload carry step fields", never as "which slot was it".
+      const branch = provider.provider && typeof provider.provider === 'object' ? provider.provider : provider;
+      const hasStep = ['panel', 'effective', 'config'].some((key) => key in branch)
+        || ('catalog' in branch)
+        || ('storePath' in branch);
+      return hasStep ? branch : null;
     }
 
     /**
-     * One snapshot plus adopted slots in, the NEXT snapshot out — a NEW object.
+     * One snapshot plus an adopted branch in, the NEXT snapshot out — a NEW
+     * object.
      *
      * "New object" is the whole point: `commit()` calls `setData(statsCache.data)`
      * and React bails out of a state update whose value is identical by
@@ -196,16 +216,16 @@ const REGISTRATION = {
      * offline: this bug lived between a network round-trip and a React commit,
      * which is exactly the seam no DOM-free suite could reach before.
      */
-    function snapshotWithSlots(current: any, slots: Record<string, unknown>): any | null {
+    function snapshotWithBranch(current: any, branch: Record<string, unknown>): any | null {
       if (!current) return null;
-      return { ...current, provider: { ...(current.provider || {}), ...slots } };
+      return { ...current, provider: { ...(current.provider || {}), ...branch } };
     }
 
     function adoptProviderSnapshot(provider: any): boolean {
-      const slots = providerSlotsOf(provider);
-      const next = slots ? snapshotWithSlots(statsCache.data, slots) : null;
-      if (!next || !slots) return false;
-      adoptedProvider = { slots, at: Date.now() };
+      const branch = providerBranchOf(provider);
+      const next = branch ? snapshotWithBranch(statsCache.data, branch) : null;
+      if (!next || !branch) return false;
+      adoptedProvider = { branch, at: Date.now() };
       statsCache.data = next;
       return true;
     }
@@ -213,16 +233,19 @@ const REGISTRATION = {
     /** Re-apply the adopted branch over an answer a pre-click poll just delivered. */
     function reapplyAdoptedProvider(startedAt: number): void {
       if (!adoptedProvider || adoptedProvider.at <= startedAt) return;
-      const next = snapshotWithSlots(statsCache.data, adoptedProvider.slots);
+      const next = snapshotWithBranch(statsCache.data, adoptedProvider.branch);
       if (next) statsCache.data = next;
     }
 
-    async function postProvider(slotName: ProviderSlotName, value: string) {
+    async function postProvider(value: string) {
       try {
         const response = await fetch(PROVIDER_PATH, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ slot: slotName, provider: value === '' ? null : value }),
+          // The slot field is still sent: the route rejects anything but
+          // `ask` by name rather than guessing, and a wire field that has
+          // always been there is not worth silently dropping.
+          body: JSON.stringify({ slot: 'ask', provider: value === '' ? null : value }),
         });
         let parsed: any = null;
         try {
@@ -237,13 +260,36 @@ const REGISTRATION = {
       }
     }
 
+    const PANEL_SETTINGS_PATH = '/api/atomcode-bridge/panel-settings';
+    /** Write the panel's briefMode / workingDir override. One field at a time. */
+    async function postPanelSettings(fields: { briefMode?: string | null; workingDir?: string | null; approvalMode?: string | null; askMaxRounds?: number | null }) {
+      try {
+        const response = await fetch(PANEL_SETTINGS_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(fields),
+        });
+        let parsed: any = null;
+        try {
+          parsed = await response.json();
+        } catch {
+          parsed = null;
+        }
+        if (parsed && parsed.ok === true) return { ok: true as const };
+        return { ok: false as const, error: (parsed && parsed.error) || 'HTTP ' + response.status };
+      } catch (reason: any) {
+        return { ok: false as const, error: reason && reason.message ? reason.message : String(reason) };
+      }
+    }
+
+
     /**
-     * One interactive provider control: a dropdown scoped to ONE namespace.
+     * The interactive provider control: a dropdown over the ONE model ladder.
      *
-     * Two per snapshot, never merged: ask lists daemon model profiles, review lists
-     * config.toml direct entries (红线 8). Laid out as one line with two cells —
-     * the label sits above its dropdown, and the provenance that used to sit in
-     * the card body now lives in the `title` (see providerRows()).
+     * There used to be two of these — ask listed daemon model profiles, review
+     * listed config.toml direct entries, and 红线 8 existed to keep them from
+     * being read as one knob. The review namespace died with its CLI, so the
+     * panel shows one control for the one ladder both entry points climb.
      *
      * Pending/error state is local, and the control is never swapped back to static
      * text — a failed write must stay visible with its reason, or the user cannot
@@ -251,27 +297,25 @@ const REGISTRATION = {
      */
     function ProviderSelectRow({
       label,
-      slotName,
       provider,
       fallbackLabel,
       title,
       reload,
     }: {
       label: string;
-      slotName: ProviderSlotName;
       provider: ProviderBranch | undefined;
       fallbackLabel: string;
       title?: string;
       reload?: () => void;
     }) {
-      const model = providerSelectModel(provider, slotName, fallbackLabel);
+      const model = providerSelectModel(provider, fallbackLabel);
       const [note, setNote] = useState('');
       const [pending, setPending] = useState(false);
       const onChange = async (event: any) => {
         const value = event && event.target ? event.target.value : '';
         setPending(true);
         setNote('');
-        const result = await postProvider(slotName, value);
+        const result = await postProvider(value);
         setPending(false);
         if (!result.ok) {
           setNote('保存失败：' + result.error);
@@ -321,12 +365,218 @@ const REGISTRATION = {
             'aria-label': label,
           },
           model.options.map((option, index) =>
-            h('option', { key: slotName + '-' + index, value: option.value }, option.label)
+            h('option', { key: 'prov-' + index, value: option.value }, option.label)
           )
         ),
         trouble ? h('span', { style: S.valWarn, title: trouble }, trouble) : null,
         advisory ? h('span', { style: S.valWarn, title: advisory }, advisory) : null,
-        note ? h('span', { style: S.valIdle }, note) : null
+        note ? h('span', { style: S.valIdle }, note) : null,
+        // Show the effort levels for the selected model, if any. This is the
+        // only place the user learns which reasoning-effort values are legal
+        // before firing a turn — the daemon's /models is the source of truth.
+        model.effortLevels && model.effortLevels.length > 0
+          ? h(
+              'span',
+              {
+                style: S.valIdle,
+                title: '本模型支持的推理力度（per-turn 传参 reasoning_effort 取这些值；留空 = 用当前持久值）',
+              },
+              '力度: ' +
+                model.effortLevels.join(' / ') +
+                (model.currentEffort ? '（当前 ' + model.currentEffort + '）' : ''),
+            )
+          : null
+      );
+    }
+
+    /**
+     * The panel-settings controls: a brief-mode dropdown and a working-dir input.
+     *
+     * These override the patch fields at execution time (panel-settings.json),
+     * so a click takes effect on the very next turn — no reload needed. The
+     * current values come from the stats snapshot (`config.panelBriefMode`,
+     * `config.panelWorkingDir`); `null` means "no override, patch value applies".
+     *
+     * P1 fix: the working-dir input is LOCAL-STATE driven (seeded from the
+     * server value when it changes), so focus+blur without typing does NOT
+     * POST null. A save only fires when the value differs from the current
+     * server value. An explicit clear (empty string + save button click) is
+     * the only way to remove the override.
+     */
+    function PanelSettingsControls({
+      cfg,
+      reload,
+    }: {
+      cfg: any;
+      reload?: () => void;
+    }) {
+      const [briefPending, setBriefPending] = useState(false);
+      const [briefError, setBriefError] = useState('');
+      const [dirPending, setDirPending] = useState(false);
+      const [dirError, setDirError] = useState('');
+
+      const briefModes = ['always', 'when-empty', 'never'];
+      const currentBrief = cfg && typeof cfg.panelBriefMode === 'string' ? cfg.panelBriefMode : '';
+      const currentDir = cfg && typeof cfg.panelWorkingDir === 'string' ? cfg.panelWorkingDir : '';
+
+      // Local editing state for the working-dir input, seeded from the server
+      // value. Syncs when the server value changes (a poll or a successful
+      // write from elsewhere), so the input always reflects the latest state.
+      const [dirValue, setDirValue] = useState(currentDir);
+      const lastServerDir = useRef(currentDir);
+      if (currentDir !== lastServerDir.current) {
+        lastServerDir.current = currentDir;
+        setDirValue(currentDir);
+      }
+
+      const onBriefChange = async (event: any) => {
+        const value = event && event.target ? event.target.value : '';
+        if (value === currentBrief) return; // no-op: already the server value
+        setBriefPending(true);
+        setBriefError('');
+        const result = await postPanelSettings({ briefMode: value === '' ? null : value });
+        setBriefPending(false);
+        if (!result.ok) {
+          setBriefError('保存失败：' + result.error);
+          return;
+        }
+        if (typeof reload === 'function') void reload();
+      };
+
+      /** Only saves when the value differs from the current server state. */
+      const saveDir = async () => {
+        const trimmed = dirValue.trim();
+        if (trimmed === currentDir) return; // no change: do NOT post (prevents focus+blur clear)
+        setDirPending(true);
+        setDirError('');
+        const result = await postPanelSettings({ workingDir: trimmed === '' ? null : trimmed });
+        setDirPending(false);
+        if (!result.ok) {
+          setDirError('保存失败：' + result.error);
+          return;
+        }
+        if (typeof reload === 'function') void reload();
+      };
+
+      return h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        // Brief mode — inline editable row, replaces the old read-only row
+        h(
+          'div',
+          { style: S.provCell },
+          h('span', { style: S.provLabel, title: '面板选择优先于插件配置（cordis.patch.yml）的 review_brief_mode；选「不覆盖」则回到配置值' }, 'brief 注入'),
+          h(
+            'select',
+            {
+              style: briefPending ? { ...S.select, ...S.selectOff } : S.select,
+              value: currentBrief,
+              disabled: briefPending,
+              onChange: onBriefChange,
+              'aria-label': 'brief 注入模式',
+            },
+            h('option', { value: '' }, '不覆盖（用配置 ' + (cfg && typeof cfg.reviewBriefMode === 'string' ? cfg.reviewBriefMode : '默认') + '）'),
+            briefModes.map((m) => h('option', { key: m, value: m }, m))
+          )
+        ),
+        briefError ? h('span', { style: S.valWarn }, briefError) : null,
+        // Working directory — inline editable row, replaces the old read-only row
+        h(
+          'div',
+          { style: S.provCell },
+          h('span', { style: S.provLabel, title: '面板选择优先于插件配置（cordis.patch.yml）的 working_dir；清空并保存 = 不覆盖，用配置值或会话目录' }, '工作目录'),
+          h(
+            'div',
+            { style: { display: 'flex', gap: 4, flex: 1, minWidth: 0 } },
+            h('input', {
+              style: { ...S.select, flex: 1, minWidth: 0, padding: '2px 6px', fontSize: 12 },
+              value: dirValue,
+              placeholder: currentDir || '不覆盖（用配置/会话目录）',
+              disabled: dirPending,
+              onChange: (e: any) => setDirValue(e.target ? e.target.value : ''),
+              onKeyDown: (e: any) => { if (e.key === 'Enter') saveDir(); },
+              'aria-label': '工作目录（面板覆盖）',
+            }),
+            h('button', {
+              style: { ...S.select, fontSize: 11, cursor: dirPending ? 'wait' : 'pointer', whiteSpace: 'nowrap' },
+              disabled: dirPending || dirValue.trim() === currentDir,
+              onClick: saveDir,
+            }, dirPending ? '…' : '保存')
+          )
+        ),
+        dirError ? h('span', { style: S.valWarn }, dirError) : null,
+        // Approval mode — inline editable row
+        (() => {
+          const approvalModes = ['build', 'accept_edits', 'bypass', 'plan'];
+          const currentApproval = cfg && typeof cfg.panelApprovalMode === 'string' ? cfg.panelApprovalMode : '';
+          const onApprovalChange = async (event: any) => {
+            const value = event && event.target ? event.target.value : '';
+            if (value === currentApproval) return;
+            setBriefPending(true);
+            const result = await postPanelSettings({ approvalMode: value === '' ? null : value });
+            setBriefPending(false);
+            if (!result.ok) { setBriefError('保存失败：' + result.error); return; }
+            if (typeof reload === 'function') void reload();
+          };
+          return h(
+            'div',
+            { style: S.provCell },
+            h('span', { style: S.provLabel, title: '面板选择优先于插件配置（cordis.patch.yml）的 approval_mode；选「不覆盖」则回到配置值。注意：当前 daemon 对 headless 模式自动放行所有工具，切换模式实际不改变行为' }, '审批模式'),
+            h(
+              'select',
+              {
+                style: S.select,
+                value: currentApproval,
+                disabled: briefPending,
+                onChange: onApprovalChange,
+                'aria-label': '审批模式',
+              },
+              h('option', { value: '' }, '不覆盖（用配置 ' + (cfg && typeof cfg.approvalMode === 'string' ? cfg.approvalMode : 'bypass') + '）'),
+              approvalModes.map((m) => h('option', { key: m, value: m }, m))
+            )
+          );
+        })(),
+        // Ask max rounds — inline editable row
+        (() => {
+          const currentRounds = cfg && typeof cfg.panelAskMaxRounds === 'number' ? cfg.panelAskMaxRounds : '';
+          const [roundsValue, setRoundsValue] = useState(currentRounds === '' ? '' : String(currentRounds));
+          const saveRounds = async () => {
+            const num = roundsValue === '' ? null : parseInt(roundsValue, 10);
+            if (num === currentRounds) return;
+            setBriefPending(true);
+            setBriefError('');
+            const result = await postPanelSettings({ askMaxRounds: num === null || Number.isNaN(num) ? null : num });
+            setBriefPending(false);
+            if (!result.ok) { setBriefError('保存失败：' + result.error); return; }
+            if (typeof reload === 'function') void reload();
+          };
+          return h(
+            'div',
+            { style: S.provCell },
+            h('span', { style: S.provLabel, title: '面板选择优先于插件配置（cordis.patch.yml）的 ask_max_rounds；0 = 不设熔断（交回 daemon 治理）；留空 = 不覆盖' }, 'ask 轮数上限'),
+            h(
+              'div',
+              { style: { display: 'flex', gap: 4, maxWidth: 120 } },
+              h('input', {
+                style: { ...S.select, flex: 1, minWidth: 0, padding: '2px 6px', fontSize: 12, width: 60 },
+                value: roundsValue,
+                placeholder: '不覆盖（' + (cfg && typeof cfg.askMaxRounds === 'number' ? cfg.askMaxRounds : '25') + '）',
+                disabled: briefPending,
+                type: 'number',
+                min: 0,
+                max: 1000,
+                onChange: (e: any) => setRoundsValue(e.target ? e.target.value : ''),
+                onKeyDown: (e: any) => { if (e.key === 'Enter') saveRounds(); },
+                'aria-label': 'ask 轮数上限',
+              }),
+              h('button', {
+                style: { ...S.select, fontSize: 11, cursor: briefPending ? 'wait' : 'pointer' },
+                disabled: briefPending || roundsValue === (currentRounds === '' ? '' : String(currentRounds)),
+                onClick: saveRounds,
+              }, '保存')
+            )
+          );
+        })(),
       );
     }
 
@@ -552,10 +802,30 @@ const REGISTRATION = {
     const StatusSection = createStatusSection({
       h,
       useStats,
+      // The sections collapse and expand on their own — that state lives here.
+      useState,
       StatusPill,
       Row,
       CallStat,
       ProviderSelectRow,
+      PanelSettingsControls,
+    });
+
+    // The composer's insertion rail, and the 锐评 hand-off that needs it. The
+    // rail renders NOTHING — see ./review-handoff.ts for why a visible seat is
+    // spent on a null component: the transcript's 锐评 row sits in a seat whose
+    // props carry no `inputActions`, so only a component inside the composer can
+    // pre-fill the official `/atomcode-review` command for it.
+    const { ReviewRail, requestReview } = createReviewHandoff();
+
+    // The 锐评 entry beside each assistant message (`conversation.chat.assistant-
+    // actions`). It does not open anything: it pre-fills the official slash
+    // command with that message quoted, and the HOST runs the review. Why the
+    // text is readable at all, and why this is not the rejected P2 injection, is
+    // written out in ./message-ask.ts's header.
+    const MessageAsk = createMessageAsk({
+      h,
+      requestReview,
     });
 
     function apply(ctx: any) {
@@ -638,6 +908,66 @@ const REGISTRATION = {
         });
       } catch (e) {
         /* the shell without a composer dock simply has no such seat */
+      }
+
+      // The composer's insertion rail, on the seat whose props carry it. Read the
+      // seat's contract summary before trusting the name (红线 7):
+      // `conversation.input.left` is "Compact controls at the left of the composer
+      // tool row" — a CONTROL row, so a control could live here. This one does
+      // not: `ReviewRail` renders null and only takes the rail (see
+      // ./review-handoff.ts). The seat is still the RIGHT one, because it is
+      // `scope: session` and the host renders it only with a mounted composer —
+      // exactly when there IS a draft to pre-fill.
+      //
+      // `order: 100` puts it after whatever the host ever adds to the left row.
+      // The id is fresh, so nothing shipped is replaced (`replaceRisk`: none).
+      try {
+        ctx.slots.inject('conversation.input.left', function () {
+          try {
+            return ctx.slots.register(
+              {
+                name: 'conversation.input.left',
+                id: 'atomcode-bridge-rail',
+                order: 100,
+              },
+              ReviewRail
+            );
+          } catch (e) {
+            return function () {};
+          }
+        });
+      } catch (e) {
+        /* the shell without a composer tool row simply has no such seat */
+      }
+
+      // The 锐评 entry in an assistant message's own action row. Its contract
+      // summary is "Ordered actions for one finalized assistant message" and its
+      // owner props are `{ messageId }` — that messageId is the whole reason
+      // this seat and not another: it lets the button read THAT reply's text out
+      // of the chat projection the owner already hands us (`useChat`), which is
+      // the same source the shipped 复制 button reads. No fetching, no scraping.
+      //
+      // A fresh id beside the shipped `feedback` (order 10) rather than a
+      // replacement: reusing an id REPLACES that entry, and nothing here has any
+      // business removing the feedback control. `order: 10` puts 锐评 right after
+      // it, before the usage/时间 cell the host appends.
+      try {
+        ctx.slots.inject('conversation.chat.assistant-actions', function () {
+          try {
+            return ctx.slots.register(
+              {
+                name: 'conversation.chat.assistant-actions',
+                id: 'atomcode-bridge-review',
+                order: 10,
+              },
+              MessageAsk
+            );
+          } catch (e) {
+            return function () {};
+          }
+        });
+      } catch (e) {
+        /* a shell whose chat nodes do not expose the action row */
       }
     }
 

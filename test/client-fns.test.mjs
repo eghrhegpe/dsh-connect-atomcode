@@ -71,7 +71,9 @@ async function loadClient(fakeRequire) {
 }
 
 const mod = await loadClient();
-const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint, daemonStatusLine, protocolDriftNotice, inFlightText } = mod.__test;
+const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint, daemonStatusLine, protocolDriftNotice, inFlightText, createReviewHandoff, createMessageAsk,
+  messageTextOf,
+} = mod.__test;
 
 describe('client __test — the formatters are exposed', () => {
   it('exports every pure helper the panel renders through', () => {
@@ -90,12 +92,219 @@ describe('client __test — the formatters are exposed', () => {
       daemonStatusLine,
       protocolDriftNotice,
       inFlightText,
+      messageTextOf,
+      // The 锐评 hand-off: the rail that captures the composer, and the prefill
+      // that is the ONLY thing the plugin still does from a transcript row.
+      createReviewHandoff,
+      createMessageAsk,
     })) {
       assert.equal(typeof fn, 'function', `${name} must be callable from tests`);
     }
   });
+
+  it('does NOT export the deleted popover surface', () => {
+    // 方针 A removed the plugin's own channel. These names must stay gone: a
+    // re-export would mean the popover or the /ask client path came back.
+    for (const gone of ['createAskChip', 'readSessionCwd', 'turnSummaryText', 'reviewPrompt', 'atomReviewPrompt', 'atomReviewPromptWithReply']) {
+      assert.equal(mod.__test[gone], undefined, `${gone} belonged to the deleted popover and must not return`);
+    }
+  });
 });
 
+describe('messageTextOf — the 锐评 button reads the reply the host already rendered', () => {
+  // Snapshot shape copied from what the host builds. The id the owner hands us
+  // lives on the TURN-TAIL node's `data.closing` (that is the node the action
+  // row belongs to), while the assistant-step node carries `finalNode` under its
+  // own `data`. The first version of `messageTextOf` only knew the second shape
+  // and therefore never matched anything in a real browser — the popover said
+  // 「没取到这条回复的正文」 on every click.
+  const snapshotOf = (nodes) => ({ nodes: { values: () => nodes } });
+  const step = (messageId, blocks) => ({ kind: 'assistant-step', data: { blocks, finalNode: { messageId, blocks } } });
+  const tail = (messageId, blocks) => ({ kind: 'turn-tail', data: { closing: { finalNode: { messageId }, blocks } } });
+
+  it('reads the closing message of a turn-tail node — the shape the host really publishes', () => {
+    const snapshot = snapshotOf([
+      step('m-other', [{ kind: 'text', text: '别拿错' }]),
+      tail('m1', [
+        { kind: 'reasoning', text: '思考过程不该进引用' },
+        { kind: 'text', text: '改完了：' },
+        { kind: 'tool-call' },
+        { kind: 'text', text: '三个文件。' },
+      ]),
+    ]);
+    assert.equal(messageTextOf(snapshot, 'm1'), '改完了：三个文件。');
+  });
+
+  it('still reads an assistant-step node that carries the settled message itself', () => {
+    assert.equal(messageTextOf(snapshotOf([step('m1', [{ kind: 'text', text: '直接命中' }])]), 'm1'), '直接命中');
+  });
+
+  it('returns null when the message is not in the projection, "" when it has no prose', () => {
+    // The two MUST differ: "not found" is what lights the popover's named note,
+    // while an empty reply legitimately degrades to the directory-scoped review.
+    const snapshot = snapshotOf([tail('m1', [])]);
+    assert.equal(messageTextOf(snapshot, 'm-gone'), null);
+    assert.equal(messageTextOf(snapshot, 'm1'), '');
+  });
+
+  it('survives an unfinished turn (closing null), a missing snapshot and a throwing store', () => {
+    // `tailData` publishes `closing: null` for a turn with no prose reply; the
+    // owner never renders the row then, and this must not throw if it ever does.
+    assert.equal(messageTextOf(snapshotOf([{ kind: 'turn-tail', data: { closing: null } }]), 'm1'), null);
+    assert.equal(messageTextOf(snapshotOf([{ kind: 'assistant-step', data: { blocks: [{ kind: 'text', text: 'x' }] } }]), 'm1'), null);
+    assert.equal(messageTextOf(null, 'm1'), null);
+    assert.equal(messageTextOf({ nodes: {} }, 'm1'), null);
+    assert.equal(
+      messageTextOf({
+        nodes: {
+          values() {
+            throw new Error('store disposed');
+          },
+        },
+      }, 'm1'),
+      null,
+    );
+    assert.equal(messageTextOf(snapshotOf([step('m1', [{ kind: 'text', text: 'x' }])]), null), null);
+  });
+});
+
+describe('createReviewHandoff — 锐评 PREFILLS the official command, it never sends', () => {
+  // 方针 A: the plugin owns no channel. The 锐评 row hands ONE assistant reply to
+  // `/atomcode-review` by putting the text at the composer's caret; the HOST runs
+  // it, in the transcript, session-scoped. Two things make that contract real and
+  // both are pinned here: the rail is how a seat that lacks `inputActions`
+  // reaches the composer anyway, and every way the prefill can fail is NAMED on
+  // the console (红线 3) instead of swallowed.
+  //
+  // `console.warn` is swapped per case (try/finally, not beforeEach) because the
+  // suite imports only `describe, it` from node:test — the hook exports are not
+  // globals here, and a silently-unrestored console would leak into later cases.
+  function withWarnings(run) {
+    const saved = console.warn;
+    const seen = [];
+    console.warn = (...args) => {
+      seen.push(args.map(String).join(' '));
+    };
+    try {
+      return run(seen);
+    } finally {
+      console.warn = saved;
+    }
+  }
+
+  /** A composer rail that records what it was asked to insert, and answers `ok`. */
+  function recordingRail(seen, ok = true) {
+    return {
+      captureInsertion: () => 'span-1',
+      insertText(text) {
+        seen.push(text);
+        return ok;
+      },
+    };
+  }
+
+  it('renders NOTHING, and that empty render is the point', () => {
+    const { ReviewRail } = createReviewHandoff();
+    assert.equal(ReviewRail({ inputActions: recordingRail([]) }), null);
+    assert.equal(ReviewRail({}), null, 'no rail on the props is still a null render, not a throw');
+    assert.equal(ReviewRail(null), null);
+  });
+
+  it('the rail is what makes the composer reachable from the message row', () => {
+    // The row lives in `conversation.chat.assistant-actions`, which is handed
+    // `{ messageId }` and NOT `inputActions`. Without this capture the prefill
+    // could not work at all — the two seats are welded through this one line.
+    const seen = [];
+    const { ReviewRail, requestReview } = createReviewHandoff();
+    ReviewRail({ inputActions: recordingRail(seen) });
+    assert.equal(requestReview({ text: '改完了' }), true);
+    assert.deepEqual(seen, ['/atomcode-review 改完了']);
+  });
+
+  it('quotes the reply, and drops the argument entirely when there is none', () => {
+    // "quoted nothing" and "could not find it" stay different failures: an empty
+    // reply is legal and reviews the working tree, it is not an error.
+    const seen = [];
+    const { ReviewRail, requestReview } = createReviewHandoff();
+    ReviewRail({ inputActions: recordingRail(seen) });
+    withWarnings((warnings) => {
+      requestReview({ text: '我把重试改成了指数退避。' });
+      assert.equal(seen.at(-1), '/atomcode-review 我把重试改成了指数退避。');
+      for (const input of [{ text: null }, {}, { text: '' }, { text: undefined }]) {
+        requestReview(input);
+        assert.equal(seen.at(-1), '/atomcode-review', 'a missing reply degrades to a directory-scoped review');
+      }
+      assert.deepEqual(warnings, [], 'neither the quoted nor the unquoted path is a failure');
+    });
+  });
+
+  it('names the failure when no rail has rendered yet', () => {
+    withWarnings((warnings) => {
+      const { requestReview } = createReviewHandoff();
+      assert.equal(requestReview({ text: 'x' }), false);
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /输入框还没挂载/);
+      assert.match(warnings[0], /\/atomcode-review/, 'the note says what to type by hand');
+      assert.match(warnings[0], /^\[atomcode-bridge\] /, 'same diagnostic channel as the rest of the client');
+    });
+  });
+
+  it('names EACH way the composer can refuse the text', () => {
+    // Three distinct causes, three distinct sentences. Collapsing them into one
+    // "insert failed" is what 红线 3 forbids — each one tells the user a
+    // different thing about which host surface is missing.
+    withWarnings((warnings) => {
+      const { ReviewRail, requestReview } = createReviewHandoff();
+
+      ReviewRail({});
+      assert.equal(requestReview({ text: 'x' }), false);
+      assert.match(warnings.at(-1), /这个宿主没有暴露输入框操作/);
+
+      ReviewRail({
+        inputActions: {
+          captureInsertion() {
+            throw new Error('readonly');
+          },
+          insertText: () => true,
+        },
+      });
+      assert.equal(requestReview({ text: 'x' }), false);
+      assert.match(warnings.at(-1), /输入框当前不可写/);
+
+      ReviewRail({ inputActions: recordingRail([], false) });
+      assert.equal(requestReview({ text: 'x' }), false);
+      assert.match(warnings.at(-1), /输入框内容变了/);
+
+      assert.equal(warnings.length, 3, 'one line per cause, no doubles');
+      for (const w of warnings) assert.match(w, /请手动输入 \/atomcode-review/, 'every failure tells the user the way out');
+    });
+  });
+
+  it('never sends, never delivers, never touches the network', () => {
+    // The whole point of 方针 A. If a future edit reaches for `fetch`, `/ask` or
+    // `/inject` from this module, this case is the tripwire: the module has no
+    // such dependency, and the only observable is the composer text.
+    const seen = [];
+    const { ReviewRail, requestReview } = createReviewHandoff();
+    ReviewRail({ inputActions: recordingRail(seen) });
+    requestReview({ text: '改完了' });
+    assert.deepEqual(seen, ['/atomcode-review 改完了']);
+    assert.equal(requestReview.length, 1, 'requestReview takes the reply only — no sessionId, no cwd, no transport');
+  });
+
+  it('is a fresh closure per factory, so two rails cannot cross wires', () => {
+    const first = [];
+    const second = [];
+    const a = createReviewHandoff();
+    const b = createReviewHandoff();
+    a.ReviewRail({ inputActions: recordingRail(first) });
+    b.ReviewRail({ inputActions: recordingRail(second) });
+    a.requestReview({ text: 'A' });
+    b.requestReview({ text: 'B' });
+    assert.deepEqual(first, ['/atomcode-review A']);
+    assert.deepEqual(second, ['/atomcode-review B']);
+  });
+});
 describe('daemonStatusLine — the panel shows the HOST\'s cause, never its own', () => {
   it('an up daemon carries its version and no cause', () => {
     assert.equal(daemonStatusLine({ up: true }, '5.2.3'), 'daemon 运行中 5.2.3');
@@ -504,75 +713,67 @@ describe('quotaView — one snapshot in, one render model out', () => {
  * 直连条目名) start reading as one knob — and how an unpinned setting becomes
  * indistinguishable from an older host that does not report it at all.
  */
-describe('providerRows — the two provider knobs, never merged, never dropped', () => {
-  it('emits two rows with distinct ask / review labels on a bare config', () => {
+describe('providerRows — ONE provider knob, because there is one ladder', () => {
+  // The card used to show TWO rows for two namespaces: `default_provider` for
+  // ask (a daemon profile name) and `review_default_provider` for the CLI (a
+  // `[providers.<name>]` direct entry). The CLI is gone, `atomcode_review` is an
+  // ask turn, and both routes resolve through the same ladder — so a second row
+  // would be the panel advertising a knob that no longer controls anything.
+  it('emits exactly one row on a bare config', () => {
     const rows = providerRows({});
-    assert.equal(rows.length, 2, 'both knobs must always render');
-    // The LABEL is short (the long-winded form moved into `title`), so identity is
-    // read from slotName — which is also the wire value the route takes.
-    assert.deepEqual(rows.map((r) => r.slotName), ['ask', 'review']);
-    assert.notEqual(rows[0].label, rows[1].label, 'two knobs may not share one label');
-    assert.ok(rows[0].title.includes('atomcode_ask') && rows[1].title.includes('atomcode_review'), 'each title names its own tool');
-    // The LABEL names the route, because the two namespaces are the single most
-    // confusing thing on this card: the user read `atomcode-local` (a config.toml
-    // direct-entry NAME) as "a config file", since nothing on screen said which route
-    // it belonged to. Pinning the route in the label is the fix that does not depend
-    // on the reader hovering.
-    assert.match(rows[0].label, /ask/, 'the ask label names its route');
-    assert.match(rows[1].label, /review/, 'the review label names its route');
-    assert.match(rows[1].title, /不是文件路径/, 'and the review title kills the "config file" reading');
+    assert.equal(rows.length, 1, 'one ladder, one row');
+    assert.equal(rows[0].label, '默认档位');
+    assert.ok(rows[0].title.includes('atomcode_ask'), 'the title names the shared tool');
+    assert.ok(rows[0].title.includes('atomcode_review'), 'and the second entry point that shares it');
+    assert.ok(rows[0].title.includes('/atomcode-review'), 'and the command form');
     assert.equal(rows[0].pinned, false);
-    assert.equal(rows[1].pinned, false);
   });
 
   it('says 未插手 in words instead of leaving a hole when nothing is pinned', () => {
-    for (const cfg of [{}, null, undefined, { defaultProvider: null, reviewDefaultProvider: null }]) {
+    for (const cfg of [{}, null, undefined, { defaultProvider: null }]) {
       const rows = providerRows(cfg);
-      assert.equal(rows.length, 2, `a missing config branch must not drop rows (${JSON.stringify(cfg)})`);
-      for (const r of rows) {
-        assert.match(r.value, /未插手/, r.value);
-        assert.ok(!/null|undefined/.test(r.value), `never render the raw absence: ${r.value}`);
-      }
+      assert.equal(rows.length, 1, `a missing config branch must not drop the row (${JSON.stringify(cfg)})`);
+      assert.match(rows[0].value, /未插手/, rows[0].value);
+      assert.ok(!/null|undefined/.test(rows[0].value), `never render the raw absence: ${rows[0].value}`);
     }
   });
 
   it('renders a pinned name verbatim (no decoration) and marks it pinned', () => {
-    const rows = providerRows({
-      defaultProvider: 'AtomGit-glm5.3-flash',
-      reviewDefaultProvider: 'atomcode-local',
-    });
-    assert.deepEqual(rows.map((r) => r.value), ['AtomGit-glm5.3-flash', 'atomcode-local']);
-    assert.deepEqual(rows.map((r) => r.pinned), [true, true]);
-  });
-
-  it('pins ONE knob without implying anything about the other', () => {
-    const rows = providerRows({ defaultProvider: 'AtomGit-qwen3.8-27b' });
+    const rows = providerRows({ defaultProvider: 'AtomGit-glm5.3-flash' });
+    assert.equal(rows[0].value, 'AtomGit-glm5.3-flash');
     assert.equal(rows[0].pinned, true);
-    assert.match(rows[0].value, /qwen/);
-    assert.equal(rows[1].pinned, false, 'the review knob must not inherit the ask value');
-    assert.match(rows[1].value, /未插手/);
   });
 
   it('trims a real name but treats whitespace as unset', () => {
     assert.equal(providerRows({ defaultProvider: ' AtomGit-glm5.3-flash ' })[0].value, 'AtomGit-glm5.3-flash');
-    const blank = providerRows({ defaultProvider: '   ', reviewDefaultProvider: '\t' });
-    assert.deepEqual(blank.map((r) => r.pinned), [false, false], 'a blank name must not render as a provider');
+    assert.equal(providerRows({ defaultProvider: '   ' })[0].pinned, false, 'a blank name must not render as a provider');
   });
 
   it('drops non-string junk instead of coercing it into a name', () => {
     // The snapshot is host-supplied; a number reaching the screen would read as
     // a legitimate profile the user could then never find in /models.
     for (const bad of [42, true, {}, [], () => 'AtomGit-glm5.3-flash']) {
-      const rows = providerRows({ defaultProvider: bad, reviewDefaultProvider: bad });
-      assert.deepEqual(rows.map((r) => r.pinned), [false, false], `must reject ${typeof bad}`);
+      const rows = providerRows({ defaultProvider: bad });
+      assert.equal(rows[0].pinned, false, `must reject ${typeof bad}`);
     }
   });
 
   it('tolerates a config branch of the wrong type', () => {
     for (const weird of ['string', 7, [], () => {}]) {
       const rows = providerRows(weird);
-      assert.equal(rows.length, 2, 'a malformed branch still renders both rows');
-      assert.deepEqual(rows.map((r) => r.pinned), [false, false]);
+      assert.equal(rows.length, 1, 'a malformed branch still renders the row');
+      assert.equal(rows[0].pinned, false);
+    }
+  });
+
+  it('keeps the long provenance OUT of the value, for the hover title', () => {
+    // The card body must stay short; the explanation of what the ladder is
+    // belongs in `title`. This pins that the short form is what renders.
+    for (const cfg of [{}, { defaultProvider: 'P' }]) {
+      const row = providerRows(cfg)[0];
+      assert.ok(!/config\.toml|\/models/.test(row.value), `value must not carry provenance: ${row.value}`);
+      assert.ok(row.title.length > 20, 'and the provenance must exist somewhere (title)');
+      assert.ok(!/[（(]/.test(row.value), `value must not carry a parenthetical: ${row.value}`);
     }
   });
 });
@@ -586,14 +787,13 @@ describe('providerRows — the two provider knobs, never merged, never dropped',
  * still produce a usable CONTROL or a stated REASON — an empty dropdown with no
  * explanation is the silent failure this repo forbids.
  */
-describe('providerSelectModel — one slot, one dropdown, one namespace', () => {
-  const ASK_FALLBACK = '未插手（AtomCode 自己的默认）';
-  const REVIEW_FALLBACK = '未插手（按 config.toml 自动选择）';
+describe('providerSelectModel — one branch, one dropdown, one namespace', () => {
+  const FALLBACK = '未插手（AtomCode 自己的默认）';
 
   it('leads with the "no pick" option and then the catalogue', () => {
-    const m = providerSelectModel({ ask: { panel: null, catalog: ['A', 'B'] } }, 'ask', ASK_FALLBACK);
+    const m = providerSelectModel({ panel: null, catalog: ['A', 'B'] }, FALLBACK);
     assert.deepEqual(m.options.map((o) => o.value), ['', 'A', 'B']);
-    assert.equal(m.options[0].label, ASK_FALLBACK, 'clearing must be reachable and named');
+    assert.equal(m.options[0].label, FALLBACK, 'clearing must be reachable and named');
     assert.equal(m.value, '', 'nothing pinned selects the empty option');
     assert.equal(m.disabled, false);
   });
@@ -601,24 +801,23 @@ describe('providerSelectModel — one slot, one dropdown, one namespace', () => 
   it('shows the PINNED value even when the catalogue no longer offers it', () => {
     // A daemon that restarted with a different config would otherwise render a real
     // setting as "nothing chosen" — a lie by omission about what the bridge sends.
-    const m = providerSelectModel({ ask: { panel: 'Gone-Profile', catalog: ['A'] } }, 'ask', ASK_FALLBACK);
+    const m = providerSelectModel({ panel: 'Gone-Profile', catalog: ['A'] }, FALLBACK);
     assert.deepEqual(m.options.map((o) => o.value), ['', 'Gone-Profile', 'A']);
     assert.equal(m.value, 'Gone-Profile');
   });
 
   it('states WHY it is unusable instead of rendering an empty dropdown', () => {
-    const down = providerSelectModel({ ask: { panel: null, catalog: null, catalogError: 'fetch failed' } }, 'ask', ASK_FALLBACK);
+    const down = providerSelectModel({ panel: null, catalog: null, catalogError: 'fetch failed' }, FALLBACK);
     assert.equal(down.disabled, true);
     assert.match(down.reason, /fetch failed/);
 
-    const none = providerSelectModel({ review: { panel: null, catalog: [] } }, 'review', REVIEW_FALLBACK);
+    const none = providerSelectModel({ panel: null, catalog: [] }, FALLBACK);
     assert.equal(none.disabled, true);
-    assert.match(none.reason, /没有直连条目/, 'an empty catalogue explains itself');
+    assert.equal(none.reason, 'daemon 未列出档位', 'an empty catalogue explains itself, and names the daemon');
 
     const foreign = providerSelectModel(
-      { foreignVersion: true, storeError: 'written by a newer build', ask: { panel: 'X', catalog: ['X'] } },
-      'ask',
-      ASK_FALLBACK
+      { foreignVersion: true, storeError: 'written by a newer build', panel: 'X', catalog: ['X'] },
+      FALLBACK
     );
     assert.equal(foreign.disabled, true, 'a state file from a newer build must not be silently overwritten by a click');
     assert.match(foreign.reason, /newer build/);
@@ -628,43 +827,34 @@ describe('providerSelectModel — one slot, one dropdown, one namespace', () => 
   it('keeps a panel pick VISIBLE when the catalogue is unfetchable', () => {
     // A disabled select whose value has no matching <option> renders as
     // "nothing selected" — the pick on disk must stay visible (红线 3).
-    const m = providerSelectModel(
-      { ask: { panel: 'atomcode-local', catalog: null, catalogError: 'daemon 未在线' } },
-      'ask',
-      ASK_FALLBACK
-    );
+    const m = providerSelectModel({ panel: 'AtomGit-glm5.3-flash', catalog: null, catalogError: 'daemon 未在线' }, FALLBACK);
     assert.equal(m.disabled, true);
-    assert.equal(m.value, 'atomcode-local');
+    assert.equal(m.value, 'AtomGit-glm5.3-flash');
     assert.ok(
-      m.options.some((o) => o.value === 'atomcode-local'),
+      m.options.some((o) => o.value === 'AtomGit-glm5.3-flash'),
       'the stored pick must be among the options even when the catalogue is null',
     );
   });
 
   it('reports an old host without the provider branch', () => {
-    for (const missing of [undefined, null, {}, 'nope']) {
-      const m = providerSelectModel(missing, 'ask', ASK_FALLBACK);
+    // `{}` is NOT in this list any more: the branch is FLAT now (panel / config /
+    // effect live on the object itself), so `{}` is a well-formed branch that
+    // simply carries nothing — it reads as "no catalogue" and says so, rather
+    // than claiming the host has no provider route at all. Only a genuinely
+    // absent or non-object branch is "the host is too old".
+    for (const missing of [undefined, null, 'nope', 42]) {
+      const m = providerSelectModel(missing, FALLBACK);
       assert.equal(m.disabled, true, `must disable for ${JSON.stringify(missing)}`);
       assert.match(m.reason, /宿主没有提供档位接口/);
       assert.deepEqual(m.options.map((o) => o.value), ['']);
     }
-  });
-
-  it('never lets one slot read the other slot or another namespace', () => {
-    const provider = {
-      ask: { panel: 'AtomGit-glm5.3-flash', catalog: ['AtomGit-glm5.3-flash', 'AtomGit-qwen3.8-27b'] },
-      review: { panel: 'atomcode-local', catalog: ['atomcode-local'] },
-    };
-    const ask = providerSelectModel(provider, 'ask', ASK_FALLBACK);
-    const review = providerSelectModel(provider, 'review', REVIEW_FALLBACK);
-    assert.equal(ask.value, 'AtomGit-glm5.3-flash');
-    assert.equal(review.value, 'atomcode-local');
-    assert.ok(!ask.options.some((o) => o.value === 'atomcode-local'), 'a direct entry is not a model profile');
-    assert.ok(!review.options.some((o) => o.value.startsWith('AtomGit-')), 'and a profile is not a direct entry');
+    const flatEmpty = providerSelectModel({}, FALLBACK);
+    assert.equal(flatEmpty.disabled, true);
+    assert.match(flatEmpty.reason, /暂不可用/, 'an empty flat branch is "no catalogue", not "no route"');
   });
 
   it('carries the effective value and its source through, and notes ONLY a mismatch', () => {
-    const m = providerSelectModel({ ask: { panel: 'A', catalog: ['A'], effective: 'A', source: 'panel' } }, 'ask', ASK_FALLBACK);
+    const m = providerSelectModel({ panel: 'A', catalog: ['A'], effective: 'A', source: 'panel' }, FALLBACK);
     assert.equal(m.effective, 'A');
     assert.equal(m.source, 'panel');
     // effective === panel is the ordinary case (the click took). Saying so would be
@@ -672,183 +862,101 @@ describe('providerSelectModel — one slot, one dropdown, one namespace', () => 
     assert.equal(m.note, '', 'agreement is silent');
 
     // A pick that LOST to another layer is the only case worth a sentence.
-    // note is now a full sentence worded by source, not a bare value.
-    const lost = providerSelectModel(
-      { ask: { panel: '', catalog: ['A'], effective: 'A', source: 'config' } },
-      'ask',
-      ASK_FALLBACK
-    );
+    // note is a full sentence worded by source, not a bare value.
+    const lost = providerSelectModel({ panel: '', catalog: ['A'], effective: 'A', source: 'config' }, FALLBACK);
     assert.equal(lost.note, '当前生效 A（来自配置）', 'config-source note is worded by source');
 
     // A panel pick that lost to a per-call argument says "不是这里选的".
-    const panelLost = providerSelectModel(
-      { ask: { panel: 'B', catalog: ['A'], effective: 'A', source: 'argument' } },
-      'ask',
-      ASK_FALLBACK
-    );
+    const panelLost = providerSelectModel({ panel: 'B', catalog: ['A'], effective: 'A', source: 'argument' }, FALLBACK);
     assert.equal(panelLost.note, '本次调用指定 A', 'argument-source note names the override');
 
     // A panel pick that lost to config says "不是这里选的".
-    const configOverride = providerSelectModel(
-      { ask: { panel: 'B', catalog: ['A'], effective: 'A', source: 'config' } },
-      'ask',
-      ASK_FALLBACK
-    );
+    const configOverride = providerSelectModel({ panel: 'B', catalog: ['A'], effective: 'A', source: 'config' }, FALLBACK);
     assert.equal(configOverride.note, '当前生效 A（来自配置）', 'config-source note is worded by source');
 
+    // Nothing pinned and AtomCode decided: that IS news, because the user is
+    // looking at an empty control and wondering what actually ran.
+    const own = providerSelectModel({ panel: '', catalog: ['A'], effective: 'A', source: 'atomcode' }, FALLBACK);
+    assert.equal(own.note, '当前生效 A（AtomCode 默认）', 'the third source has its own wording');
+
     // Junk in those display fields must not throw or leak "undefined" text.
-    const junk = providerSelectModel({ ask: { panel: null, catalog: [], effective: 42, source: [] } }, 'ask', ASK_FALLBACK);
+    const junk = providerSelectModel({ panel: null, catalog: [], effective: 42, source: [] }, FALLBACK);
     assert.equal(junk.effective, '');
     assert.equal(junk.source, '');
     assert.equal(junk.note, '');
   });
 
-  it('words each empty state for its OWN endpoint, never the other slot\'s', () => {
-    // These two shared one sentence, and that sentence named BOTH sources — so the
-    // ask slot told the user about config.toml direct entries when what was actually
-    // missing was daemon /models. Each reason may mention only its own source.
-    const ask = providerSelectModel({ ask: { panel: null, catalog: [] } }, 'ask', ASK_FALLBACK);
-    const review = providerSelectModel({ review: { panel: null, catalog: [] } }, 'review', REVIEW_FALLBACK);
-    assert.equal(ask.reason, 'daemon 未列出档位');
-    assert.equal(review.reason, 'config.toml 里没有直连条目');
-    assert.ok(!/config\.toml/.test(ask.reason), 'the ask slot must not explain itself via the review source');
-    assert.ok(!/models/.test(review.reason), 'nor the other way round');
-    // A disabled control reports its reason, never a stale mismatch note.
-    assert.equal(ask.note, '');
-    assert.equal(review.note, '');
-  });
-
-  it('flattens BOTH catalogue shapes — objects (ask) and strings (review)', () => {
-    // Measured against a real daemon (atomcode 5.2.3) and a real config.toml: the two
-    // endpoints answer in DIFFERENT shapes for the same field, and both flow through
-    // this one function.
-    //   GET /models        -> [{provider:"AtomGit-glm5.3-flash", model:"glm5.3-flash", isDefault:false, effortLevels:[...]}, ...]
-    //   review direct entries -> ["atomcode-local"]
-    // Mapping both with a "must be a string" helper silently dropped every ask option
-    // (an object is not a string), so the ask dropdown rendered EMPTY while review
-    // worked — and the shared empty-state sentence made it look like a wording bug.
-    const realAsk = [
+  it('flattens the /models shape — objects with a provider field, never the bare model id', () => {
+    // Measured against a real daemon (atomcode 5.2.3):
+    //   GET /models -> [{provider:"AtomGit-glm5.3-flash", model:"glm5.3-flash", isDefault:false, effortLevels:[...]}, ...]
+    // Mapping with a "must be a string" helper silently dropped every option
+    // (an object is not a string), so the dropdown rendered EMPTY while the
+    // catalogue was fine — a shape bug that looked like a wording bug.
+    const realCatalog = [
       { provider: 'AtomGit-glm5.3-flash', model: 'glm5.3-flash', isDefault: false, effortLevels: ['low', 'high'] },
       { provider: 'AtomGit-qwen3.8-27b', model: 'qwen3.8-27b', isDefault: true, effortLevels: ['low', 'medium', 'xhigh'] },
     ];
-    const ask = providerSelectModel({ ask: { panel: null, catalog: realAsk } }, 'ask', ASK_FALLBACK);
+    const m = providerSelectModel({ panel: null, catalog: realCatalog }, FALLBACK);
     assert.deepEqual(
-      ask.options.map((o) => o.value),
+      m.options.map((o) => o.value),
       ['', 'AtomGit-glm5.3-flash', 'AtomGit-qwen3.8-27b'],
-      'the ask dropdown must list the model PROFILES, not nothing'
+      'the dropdown must list the model PROFILES, not nothing'
     );
-    assert.equal(ask.disabled, false, 'and it must be usable, not disabled');
-    // The bare model id is NOT a valid provider on either path (红线 8): using it
-    // would look right in the dropdown and fail at the daemon.
-    assert.ok(!ask.options.some((o) => o.value === 'glm5.3-flash'), 'never offer the bare model id');
-
-    const review = providerSelectModel({ review: { panel: null, catalog: ['atomcode-local'] } }, 'review', REVIEW_FALLBACK);
-    assert.deepEqual(review.options.map((o) => o.value), ['', 'atomcode-local']);
-    assert.equal(review.disabled, false);
+    assert.equal(m.disabled, false, 'and it must be usable, not disabled');
+    // The bare model id is NOT a valid provider (红线 8): using it would look
+    // right in the dropdown and fail at the daemon.
+    assert.ok(!m.options.some((o) => o.value === 'glm5.3-flash'), 'never offer the bare model id');
   });
 
   it('treats a catalogue of unusable elements as EMPTY, and a missing one as unavailable', () => {
     // Junk elements must not become blank options, and must not fabricate a list.
-    const junk = providerSelectModel({ ask: { panel: null, catalog: [null, 42, {}, { provider: '' }, '  '] } }, 'ask', ASK_FALLBACK);
+    const junk = providerSelectModel({ panel: null, catalog: [null, 42, {}, { provider: '' }, '  '] }, FALLBACK);
     assert.equal(junk.disabled, true, 'nothing usable in the catalogue means nothing to pick');
     assert.match(junk.reason, /daemon 未列出档位/);
     assert.deepEqual(junk.options.map((o) => o.value), [''], 'and no blank option may appear');
     // A non-array is "the host could not tell us", NOT "there are none" — different
     // reason, different sentence.
-    const missing = providerSelectModel({ ask: { panel: null, catalog: 'nope' } }, 'ask', ASK_FALLBACK);
+    const missing = providerSelectModel({ panel: null, catalog: 'nope' }, FALLBACK);
     assert.match(missing.reason, /暂不可用/, missing.reason);
-  });
-
-  it('keeps the long provenance OUT of the value, for the hover title', () => {
-    // The card body must stay short; the explanation of what the two namespaces are
-    // belongs in `title`. This pins that the short form is what renders as the value.
-    for (const cfg of [{}, { defaultProvider: 'P', reviewDefaultProvider: 'R' }]) {
-      for (const row of providerRows(cfg)) {
-        assert.ok(!/config\.toml|GET \/models|\/models/.test(row.value), `value must not carry provenance: ${row.value}`);
-        assert.ok(row.title.length > 20, 'and the provenance must exist somewhere (title)');
-        assert.ok(!/[（(]/.test(row.value), `value must not carry a parenthetical: ${row.value}`);
-      }
-    }
   });
 
   it('marks the profile AtomCode would pick by itself, as a LABEL only', () => {
     // `isDefault` used to be mapped into the snapshot and read by NOTHING — a
     // field shipped on every 30s poll to be dropped at the renderer. Now it is
-    // the only reason the ask catalogue is not a bare name list: it tells the
-    // user whether pinning changes anything at all.
-    const realAsk = [
+    // the only reason the catalogue is not a bare name list: it tells the user
+    // whether pinning changes anything at all.
+    const realCatalog = [
       { provider: 'AtomGit-glm5.3-flash', isDefault: false },
       { provider: 'AtomGit-qwen3.8-27b', isDefault: true },
     ];
-    const m = providerSelectModel({ ask: { panel: null, catalog: realAsk } }, 'ask', ASK_FALLBACK);
-    assert.deepEqual(
-      m.options.map((o) => o.label),
-      [ASK_FALLBACK, 'AtomGit-glm5.3-flash', 'AtomGit-qwen3.8-27b（默认）'],
-    );
+    const m = providerSelectModel({ panel: null, catalog: realCatalog }, FALLBACK);
+    assert.deepEqual(m.options.map((o) => o.label), [FALLBACK, 'AtomGit-glm5.3-flash', 'AtomGit-qwen3.8-27b（默认）']);
     // The LABEL never becomes the value: "（默认）" is not a provider name, and
     // sending it would be a profile the daemon has never heard of (红线 8).
     assert.deepEqual(m.options.map((o) => o.value), ['', 'AtomGit-glm5.3-flash', 'AtomGit-qwen3.8-27b']);
     // A pinned default keeps its plain value even when the label carries the tag.
-    const pinned = providerSelectModel(
-      { ask: { panel: 'AtomGit-qwen3.8-27b', catalog: realAsk } },
-      'ask',
-      ASK_FALLBACK,
-    );
+    const pinned = providerSelectModel({ panel: 'AtomGit-qwen3.8-27b', catalog: realCatalog }, FALLBACK);
     assert.equal(pinned.value, 'AtomGit-qwen3.8-27b');
     assert.equal(pinned.disabled, false);
   });
 
-  it('warns when the picked review entry points at a LOCAL endpoint', () => {
-    // Picking a loopback direct provider makes a process on this machine a live
-    // dependency (and, in the only measured working setup, routes billing
-    // through a gateway that does not check signatures). README's risk table
-    // said that; the control now says it at the moment of the click.
-    // The endpoint map sits ON THE REVIEW SLOT, matching where the host writes
-    // it (`buildStatsBody` → provider.review.endpoints). It used to be handed
-    // here on the branch ROOT, which no host build ever writes — so this test
-    // passed against a shape production never produced. The cross-half contract
-    // test (test/snapshot-contract.test.mjs) is what joins the two halves now.
-    const local = providerSelectModel(
+  it('never warns about a local sidecar, because there is no sidecar any more', () => {
+    // A loopback endpoint used to make a process on this machine a live
+    // dependency of the review CLI, and the control said so at the click. The
+    // CLI is gone; /models returns profile names, not endpoints, so the host no
+    // longer has a name→base_url map to send. A warning left behind here would
+    // be the panel describing a risk that no longer exists — and a stale
+    // endpoint map arriving from an older host must be ignored, not rendered.
+    const stale = providerSelectModel(
       {
-        review: {
-          panel: 'atomcode-local',
-          catalog: ['atomcode-local', 'remote'],
-          endpoints: { 'atomcode-local': 'http://127.0.0.1:8899/v1', remote: 'https://openrouter.example/v1' },
-        },
+        panel: 'atomcode-local',
+        catalog: [{ provider: 'atomcode-local' }],
+        endpoints: { 'atomcode-local': 'http://127.0.0.1:8899/v1' },
       },
-      'review',
-      REVIEW_FALLBACK,
+      FALLBACK
     );
-    assert.match(local.warning, /本地端点 http:\/\/127\.0\.0\.1:8899\/v1/);
-    assert.match(local.warning, /一停 review 立刻断/);
-    assert.equal(local.disabled, false, 'the control still works — the warning is about the dependency');
-    // A remote entry gets NO warning: a blanket warning is how a real one gets
-    // trained-out.
-    const remote = providerSelectModel(
-      {
-        review: {
-          panel: 'remote',
-          catalog: ['atomcode-local', 'remote'],
-          endpoints: { 'atomcode-local': 'http://127.0.0.1:8899/v1', remote: 'https://openrouter.example/v1' },
-        },
-      },
-      'review',
-      REVIEW_FALLBACK,
-    );
-    assert.equal(remote.warning, '');
-    // The ask slot never warns: its catalogue is daemon profiles, not endpoints
-    // — and an endpoint map smuggled onto the ask slot must still be ignored.
-    const ask = providerSelectModel(
-      { ask: { panel: 'x', catalog: ['x'], endpoints: { x: 'http://127.0.0.1:9/v1' } } },
-      'ask',
-      ASK_FALLBACK,
-    );
-    assert.equal(ask.warning, '');
-  });
-
-  it('has no loopback warning when the host sends no endpoint map', () => {
-    const m = providerSelectModel({ review: { panel: 'atomcode-local', catalog: ['atomcode-local'] } }, 'review', REVIEW_FALLBACK);
-    assert.equal(m.warning, '', 'an older host without endpoints must render as if there were nothing to say');
+    assert.equal(stale.warning, '');
+    assert.equal(stale.disabled, false, 'it is still a selectable profile');
   });
 });
 
@@ -957,17 +1065,20 @@ describe('turnBoundaryRows — patch-only knobs must not masquerade as live sett
   });
 
   it('degrades on a host that reports no authored/defaults branch at all', () => {
-    // An older host (or the desktop install copy) must still render three rows with
+    // An older host (or the desktop install copy) must still render four rows with
     // real values — and must make NO authorship claim, rather than inventing one.
     // This is the case the LIVE host was actually in: it served `approvalMode:
     // "bypass"` and `askMaxRounds: 25` with no `authored`/`defaults` keys at all.
+    // The brief row shows a bare dash there: no mode value, no tag.
     for (const cfg of [undefined, null, {}, { approvalMode: 'bypass', askMaxRounds: 25 }]) {
       const rows = turnBoundaryRows(cfg);
-      assert.equal(rows.length, 3, `three rows for ${JSON.stringify(cfg)}`);
+      assert.equal(rows.length, 4, `four rows for ${JSON.stringify(cfg)}`);
       for (const row of rows) {
         assert.ok(row.label && row.title, 'every row keeps its label and its hover explanation');
         assert.ok(!/已改|插件默认/.test(row.text), `no authorship claim without host evidence: ${row.text}`);
       }
+      assert.equal(rows[3].label, 'brief 注入');
+      assert.equal(rows[3].text, '—', 'no mode evidence on an old host: a dash, not a guess');
     }
   });
 
@@ -1068,5 +1179,143 @@ describe('inFlightText — what the panel says while a turn is running', () => {
 
   it('is exported to the offline suite like every other renderer helper', () => {
     assert.equal(typeof inFlightText, 'function');
+  });
+});
+describe('createMessageAsk — the 锐评 row hands its OWN reply to the command', () => {
+  // The surviving half of the old popover, and the whole of it is now: read the
+  // reply the host already rendered, hand it to `requestReview`, stop. These
+  // cases pin the read path (messageTextOf over the chat projection), the
+  // null-vs-empty distinction that decides whether the command gets an argument,
+  // and the hook-before-guard ordering that would otherwise be a conditional hook.
+  //
+  // `h` is the three-line element builder the component is written against —
+  // nothing here needs React, because the button is a single element.
+  const h = (type, props, ...children) => ({
+    type,
+    props: Object.assign({}, props, { children: children.length <= 1 ? children[0] : children }),
+  });
+
+  const snapshotOf = (nodes) => ({ nodes: { values: () => nodes } });
+  const tail = (messageId, blocks) => ({ kind: 'turn-tail', data: { closing: { finalNode: { messageId }, blocks } } });
+
+  /** Capture console.warn for one case (only `describe, it` are imported). */
+  function withWarnings(run) {
+    const saved = console.warn;
+    const seen = [];
+    console.warn = (...args) => {
+      seen.push(args.map(String).join(' '));
+    };
+    try {
+      return run(seen);
+    } finally {
+      console.warn = saved;
+    }
+  }
+
+  it('renders ONE 锐评 button and sends the rendered reply, not the message id', () => {
+    const seen = [];
+    const MessageAsk = createMessageAsk({ h, requestReview: (r) => seen.push(r) || true });
+    const button = MessageAsk({
+      messageId: 'm1',
+      useChat: (select) => select(snapshotOf([tail('m1', [{ kind: 'text', text: '改完了：三个文件。' }])])),
+    });
+    assert.equal(button.type, 'button');
+    assert.equal(button.props.children, '锐评');
+    assert.match(button.props.title, /\/atomcode-review/, 'the title says where the text is going');
+    button.props.onClick();
+    assert.deepEqual(seen, [{ text: '改完了：三个文件。' }], 'the reply is quoted; the id stays local');
+  });
+
+  it('passes "" through without a warning — a tool-only step has no prose but IS found', () => {
+    withWarnings((warnings) => {
+      const seen = [];
+      const MessageAsk = createMessageAsk({ h, requestReview: (r) => seen.push(r) || true });
+      const button = MessageAsk({
+        messageId: 'm1',
+        useChat: (select) => select(snapshotOf([tail('m1', [{ kind: 'tool-call' }])])),
+      });
+      button.props.onClick();
+      assert.deepEqual(seen, [{ text: '' }]);
+      assert.deepEqual(warnings, [], 'found-but-empty is not the same failure as not-found');
+    });
+  });
+
+  it('names WHY a reply could not be read, then still prefills the command', () => {
+    // The two causes look identical from the composer, so the console line is the
+    // only place they differ — and it must not turn into a refusal: the click
+    // still inserts `/atomcode-review` and reviews the working tree.
+    withWarnings((warnings) => {
+      const seen = [];
+      const MessageAsk = createMessageAsk({ h, requestReview: (r) => seen.push(r) || true });
+      const button = MessageAsk({
+        messageId: 'm-gone',
+        useChat: (select) => select(snapshotOf([tail('m1', [{ kind: 'text', text: '别的消息' }])])),
+      });
+      button.props.onClick();
+      assert.deepEqual(seen, [{ text: null }], 'the click still hands over a null reply');
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /^\[atomcode-bridge\] /);
+      assert.match(warnings[0], /m-gone/, 'the id is named, or the line is unactionable');
+      assert.match(warnings[0], /nodes=1 kinds=turn-tail/, 'the projection is reported, which is what diagnoses a shape change');
+    });
+  });
+
+  it('survives a throwing store and a missing hook, and still prefills', () => {
+    withWarnings((warnings) => {
+      const seen = [];
+      const MessageAsk = createMessageAsk({ h, requestReview: (r) => seen.push(r) || true });
+
+      const throwing = MessageAsk({
+        messageId: 'm1',
+        useChat: () => {
+          throw new Error('store disposed');
+        },
+      });
+      throwing.props.onClick();
+      assert.deepEqual(seen, [{ text: null }]);
+      // A store that threw is swallowed into "no snapshot", so the report reads
+      // nodes=0 kinds=none — the SAME line an absent hook produces. That is
+      // deliberate: the click's outcome is identical either way, and the console
+      // never claims to know more than it observed.
+      assert.match(warnings.at(-1), /nodes=0 kinds=none/);
+
+      // No `useChat` on the props at all: same named outcome, no crash.
+      const noHook = MessageAsk({ messageId: 'm1' });
+      noHook.props.onClick();
+      assert.deepEqual(seen.at(-1), { text: null });
+      assert.equal(warnings.length, 2, 'one line per click that could not read a reply');
+      assert.equal(warnings[0], warnings[1], 'a thrown store and an absent hook are indistinguishable here, on purpose');
+    });
+  });
+
+  it('renders NOTHING without a messageId — and the hook still ran first', () => {
+    // The hook sits ABOVE the guard on purpose: a hook called after an early
+    // return is a conditional hook, and if `messageId` ever arrived late React
+    // would throw on the changed hook count. This case fails loudly if a future
+    // edit "tidies" the guard up above the hook.
+    let hookCalls = 0;
+    const MessageAsk = createMessageAsk({ h, requestReview: () => true });
+    const rendered = MessageAsk({
+      messageId: '',
+      useChat: (select) => {
+        hookCalls += 1;
+        return select(snapshotOf([]));
+      },
+    });
+    assert.equal(rendered, null);
+    assert.equal(hookCalls, 1, 'the subscription must happen before the guard');
+
+    assert.equal(MessageAsk({ messageId: 42, useChat: (select) => select(snapshotOf([])) }), null);
+    assert.equal(MessageAsk({ useChat: (select) => select(snapshotOf([])) }), null);
+    assert.equal(MessageAsk(null), null, 'a null props bag is a null render, not a TypeError');
+  });
+
+  it('builds the button once per factory, with the tool title the user reads', () => {
+    const MessageAsk = createMessageAsk({ h, requestReview: () => true });
+    const button = MessageAsk({ messageId: 'm1', useChat: (select) => select(snapshotOf([])) });
+    assert.equal(button.props.type, 'button');
+    assert.equal(typeof button.props.style, 'object', 'the row styles it like the host action row');
+    assert.match(button.props.title, /按回车/, 'the title tells the human the click is only half the step');
+    assert.doesNotMatch(button.props.title, /送到会话|弹窗/, 'no popover vocabulary survives');
   });
 });

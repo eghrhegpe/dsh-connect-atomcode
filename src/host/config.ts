@@ -68,6 +68,29 @@ export const APPROVAL_MODES = ['build', 'accept_edits', 'bypass', 'plan'] as con
 export const APPROVAL_MODES_TEXT = APPROVAL_MODES.join(' / ');
 
 /**
+ * The closed set the review brief injection accepts — a plugin-side enum, not a
+ * daemon one, so no upstream 422 gate: it picks which prompt `runReviewCommand`
+ * and `atomcode_review` send when the user text is empty.
+ *
+ * `always`     — the brief is sent on every review; non-empty user text is
+ *                appended after it (the pre-v1 behaviour, kept for scope-fanatics).
+ * `when-empty` — the brief is sent only when the user text is empty; non-empty
+ *                text goes through verbatim, without the brief (the shipped
+ *                default, 2026-10-18 — the user-facing ask: "打招呼" should not
+ *                trigger a six-round review).
+ * `never`      — the brief is never sent; the user text goes through verbatim,
+ *                and an empty text is refused by the caller (a review with no
+ *                target is a wasted turn, so it fails fast and visibly).
+ *
+ * A spelling outside the set is refused and the field falls back to the
+ * default; the raw spelling rides on `reviewBriefModeRejected`, mirroring
+ * `approvalModeRejected` — report what was actually refused, don't guess.
+ */
+export const REVIEW_BRIEF_MODES = ['always', 'when-empty', 'never'] as const;
+export type ReviewBriefMode = (typeof REVIEW_BRIEF_MODES)[number];
+export const DEFAULT_REVIEW_BRIEF_MODE: ReviewBriefMode = 'when-empty';
+
+/**
  * The tool timeout both `register()` calls declare to the DSH host, and the
  * ceiling every wall-clock knob in this plugin answers to.
  *
@@ -90,14 +113,15 @@ export const HOST_TOOL_TIMEOUT_SECS = HOST_TOOL_TIMEOUT_MS / 1000;
  * character count is the one number that can be checked without one. It is a
  * budget for what the MODEL reads (`render`), not for the wire.
  *
- * ONE constant for both tools, deliberately. There used to be two literals —
- * `REPLY_CAP` in the ask path and `REPORT_CAP` in the review path, both
- * `200_000` — plus `TOOLS_CAP` and `FINDINGS_CAP` for the two array limits: four
- * numbers, no shared notion of "this turn's budget". And the review pair was
- * applied PER FIELD while the render prints the findings digest AND the raw
- * document, so a single return could carry roughly twice the intended budget. A
- * budget only some of the copies obey is not a budget — which is why the review
- * render now spends this constant across the whole return instead of per field.
+ * ONE constant for both tools, deliberately.
+ *
+ * It used to be two literals — `REPLY_CAP` in the ask path and `REPORT_CAP` in
+ * the review path, both `200_000` — plus `TOOLS_CAP` and `FINDINGS_CAP` for the
+ * two array limits: four numbers, no shared notion of "this turn's budget". The
+ * two review constants went away with the CLI path: `FINDINGS_CAP` bounded the
+ * `findings[]` document the review CLI returned (there is no such document any
+ * more — the daemon answers in prose), and the per-field split it was paired
+ * with is likewise gone, so this budget is spent once, across the whole return.
  *
  * The markers that announce a cut are one helper too (`capProse` in tools.ts):
  * two truncations following two conventions is how a reader learns to trust one
@@ -106,21 +130,8 @@ export const HOST_TOOL_TIMEOUT_SECS = HOST_TOOL_TIMEOUT_MS / 1000;
 export const OUTPUT_CAP = 200_000;
 
 /**
- * The floor the review's raw document keeps even after the findings digest has
- * eaten into `OUTPUT_CAP`.
- *
- * Not zero: the digest normalizes severity/file/line/message, so a finding may
- * carry fields it drops, and a render that said "…the full text is below" while
- * printing none of it would be the silent amputation this budget exists to
- * prevent. The floor is also what makes the worst case a number someone can
- * hold — `OUTPUT_CAP + REVIEW_REPORT_FLOOR` — instead of a rule with an
- * exception nobody can size.
- */
-export const REVIEW_REPORT_FLOOR = 20_000;
-
-/**
- * Ceiling for every round-count knob (`max_rounds` on both tools, and the
- * `ask_max_rounds` / `review_max_rounds` config fields behind them).
+ * Ceiling for the two round-count knobs (`ask_max_rounds` and
+ * `review_max_rounds`), which every entry point reads through one clamp.
  *
  * A round budget is a FUSE, and a fuse you can switch off by inflating the
  * number is not a fuse: `max_rounds: 1e9` used to pass every gate untouched,
@@ -181,14 +192,19 @@ export function resolveMaxRounds(raw: unknown, fallback: number): number {
 }
 
 /**
- * Ceiling for `atomcode_review`'s wall-clock fuse (`max_duration_secs`).
+ * Ceiling for `timeout_secs` — the wall-clock fuse both tools and both config
+ * knobs resolve through `resolveDurationSecs`.
  *
- * The process-level backstop waits `maxDuration + 60s`, so a duration above
- * `HOST_TOOL_TIMEOUT_SECS - 60` pushes the backstop past the host's own 30min
- * guard — the value then does not fail safe, it fails INVISIBLE: the host kills
- * the call and the caller sees a cancel where the description promised the
- * CLI's own fuse. Clamped so the fuse this plugin actually owns stays the
- * binding one.
+ * The numbers come from the HOST's own guard, not from anything AtomCode-side:
+ * this plugin declares `HOST_TOOL_TIMEOUT_MS` (30min) to the tool registry, so a
+ * budget above that is not honoured — the host kills the call and the caller sees
+ * a CANCEL where the parameter description promised a timeout, which is the
+ * "silent failure wearing another shape" this repo refuses to ship. `(- 60s)`
+ * keeps ours the binding fuse with room to report rather than race the host's.
+ *
+ * The prose used to name `atomcode_review`'s process-level backstop here; that
+ * backstop went away with the CLI. Both entry points now spend one budget
+ * against one daemon turn, so this ceiling is a property of the channel.
  */
 export const MAX_REVIEW_DURATION_SECS = HOST_TOOL_TIMEOUT_SECS - 60;
 
@@ -289,6 +305,22 @@ export function readConfig(rawConfig: Record<string, any>) {
   const approvalMode = approvalModeRejected === null && requestedApprovalMode !== ''
     ? requestedApprovalMode
     : DEFAULT_APPROVAL_MODE;
+  // `review_brief_mode` is a CLOSED plugin-side enum (REVIEW_BRIEF_MODES): a
+  // misspelling falls back to the shipped default HERE and the raw spelling rides
+  // up on `reviewBriefModeRejected`, the same fail-visible shape as approval_mode.
+  // This value decides which prompt `/atomcode-review` and `atomcode_review`
+  // send when the user text is empty (always / when-empty / never — see the
+  // enum's block comment for the semantics).
+  const requestedBriefMode =
+    typeof config.review_brief_mode === 'string' ? config.review_brief_mode.trim() : '';
+  const reviewBriefModeRejected =
+    requestedBriefMode !== '' && !(REVIEW_BRIEF_MODES as readonly string[]).includes(requestedBriefMode)
+      ? requestedBriefMode
+      : null;
+  const reviewBriefMode = (reviewBriefModeRejected === null && requestedBriefMode !== ''
+    ? requestedBriefMode
+    : DEFAULT_REVIEW_BRIEF_MODE) as ReviewBriefMode;
+  const authoredReviewBriefMode = reviewBriefMode !== DEFAULT_REVIEW_BRIEF_MODE;
   const defaultWorkingDir =
     typeof config.working_dir === 'string' && config.working_dir !== '' ? config.working_dir : undefined;
   // Whether each knob DEPARTS FROM the value this plugin ships in its own
@@ -303,18 +335,21 @@ export function readConfig(rawConfig: Record<string, any>) {
   // The ask-rounds knob is resolved below, so its flag is computed after it.
   const authoredApprovalMode = approvalMode !== DEFAULT_APPROVAL_MODE;
   const authoredWorkingDir = defaultWorkingDir !== undefined;
-  // Two model knobs because there are two namespaces (红线 8): ask takes a daemon
-  // model PROFILE, review takes a direct `[providers.<name>]` entry. What each
-  // accepts — and what empty does — is documented in `cordis.patch.yml`.
+  // One model knob now, because there is ONE namespace (was 红线 8's two): the
+  // `[providers.<name>]` CLI namespace died with the CLI path, so every entry
+  // point — both tools and `/atomcode-review` — asks for a daemon model PROFILE
+  // and reads this one field.
   const defaultProvider =
     typeof config.default_provider === 'string' && config.default_provider.trim() !== ''
       ? config.default_provider.trim()
       : undefined;
-  // Fills `selectReviewProvider()`'s explicit-request slot, so it outranks that
-  // function's own auto-selection.
-  const reviewDefaultProvider =
-    typeof config.review_default_provider === 'string' && config.review_default_provider.trim() !== ''
-      ? config.review_default_provider.trim()
+  // Persistent reasoning-effort default sent with every /chat turn. Empty = the
+  // daemon's own default (model-dependent, see GET /models `reasoning_effort`).
+  // The value is passed through as-is: validation happens on the daemon side
+  // (an unsupported level for the active model → `{"ok":false,"error":...}`).
+  const defaultReasoningEffort =
+    typeof config.default_reasoning_effort === 'string' && config.default_reasoning_effort.trim() !== ''
+      ? config.default_reasoning_effort.trim()
       : undefined;
   // `0` is a DELIBERATE value someone wrote down, not a missing one: patch.yml,
   // the README and `daemon.ts` all read it as "no fuse". A `> 0` gate here used to
@@ -339,19 +374,11 @@ export function readConfig(rawConfig: Record<string, any>) {
   const sessionKeyPrefixSource = configuredPrefix !== '' ? 'config' : sessionKeyPrefix !== '' ? 'profile' : 'none';
   const statePath =
     typeof config.state_path === 'string' && config.state_path !== '' ? config.state_path : defaultStatePath();
-  // Separate from `working_dir` on purpose: that one is the ask turn's cwd, while
-  // an empty review root REFUSES rather than falling back to the host process cwd
-  // (see `cordis.patch.yml`).
-  const reviewWorkingDir =
-    typeof config.review_working_dir === 'string' && config.review_working_dir !== ''
-      ? config.review_working_dir
-      : undefined;
-  const reviewNoWeb = config.review_no_web !== false;
-  // `0` means the same thing it does for `ask_max_rounds`: no round fuse. The CLI
-  // is not told — the bridge omits `--max-rounds`, which the CLI documents as
-  // UNLIMITED (see `buildReviewArgs`). Reading 0 as "use 35" made the two
-  // same-named knobs mean opposite things. `review_max_duration_secs` is a
-  // separate fuse, unaffected by this.
+  // The review entry point's two fuses. Both follow the ask policy exactly:
+  // `0` is a deliberate "no fuse" for rounds (reading it as "use the default"
+  // once made the two same-named knobs mean opposite things), while `0` on the
+  // wall clock is not a word at all — it falls back. Now that a review IS an ask
+  // turn, these bound that turn instead of a spawned CLI process.
   const reviewMaxRounds = clampMaxRounds(
     Number.isInteger(config.review_max_rounds) && config.review_max_rounds >= 0
       ? config.review_max_rounds
@@ -394,18 +421,19 @@ export function readConfig(rawConfig: Record<string, any>) {
     binary,
     approvalMode,
     approvalModeRejected,
+    reviewBriefMode,
+    reviewBriefModeRejected,
     defaultWorkingDir,
     defaultProvider,
-    reviewDefaultProvider,
+    defaultReasoningEffort,
     askMaxRounds,
     authoredApprovalMode,
     authoredWorkingDir,
     authoredAskMaxRounds,
+    authoredReviewBriefMode,
     sessionKeyPrefix,
     sessionKeyPrefixSource,
     statePath,
-    reviewWorkingDir,
-    reviewNoWeb,
     reviewMaxRounds,
     reviewMaxDurationSecs,
     quotaRefreshSecs,

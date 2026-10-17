@@ -118,7 +118,6 @@ describe('one budget constant, shared by both tools', () => {
   it('is exported once and is a sane character count', () => {
     assert.equal(typeof OUTPUT_CAP, 'number');
     assert.ok(OUTPUT_CAP >= 10_000, 'a budget too small to hold a report is not a budget');
-    assert.ok(REVIEW_REPORT_FLOOR > 0 && REVIEW_REPORT_FLOOR < OUTPUT_CAP);
   });
 
   it('a reply at exactly the budget is printed whole, with no notice', () => {
@@ -147,93 +146,89 @@ describe('one budget constant, shared by both tools', () => {
     assert.match(text, /truncated by dsh-connect-atomcode: 500 more characters; /);
     assert.match(text, /reply 已截断/, 'and the flag must still produce its own warning');
   });
+});
 
-  it('both tools use the SAME marker wording', () => {
-    // Two conventions is how a reader learns to trust one and miss the other.
-    // The ask half comes from `capProse` in `execute` (asserted with an exact
-    // count through a real turn in ask-glue.test.mjs); this pins the review half
-    // to the identical sentence shape — including the `; remedy` tail, so
-    // "something was lost" and "here is what to do" always travel together.
-    //
-    // The COUNT here is not 10: the digest has already spent part of the shared
-    // budget, which is the whole point of this file. Exactness is asserted where
-    // the budget is uncontended (ask), and the shared arithmetic where it is not
-    // (the review cases below).
+describe('the review return spends the SAME budget, because it IS an ask turn', () => {
+  // This suite used to police the CLI shape too — a digest of structured
+  // `findings[]` sharing one budget with a raw document, a floor so the raw half
+  // could not be starved, and a note that named BOTH cuts. All of that was
+  // deleted with the review CLI: an ask turn has no digest to share with, and
+  // the cap is applied in `execute` by the SAME `capProse` call ask uses (see
+  // the marker case above). What remains worth pinning is that the review
+  // render adds no second convention of its own.
+
+  it('adds no marker of its own — the report is printed as the ask render would print it', () => {
+    // The marker is written by `capProse` in `execute`, not by `render`; the
+    // render's only job on a cut field is the one note below. Passing an
+    // oversized report straight to `render` therefore prints it whole — which is
+    // exactly the property worth pinning: render does not silently re-cut, and
+    // does not invent a second marker.
     const { review } = mount();
     const text = textOf(review, reviewValue({ report: 'b'.repeat(OUTPUT_CAP + 10) }));
-    assert.match(text, /\[truncated by dsh-connect-atomcode: \d+ more characters; re-run with a task/);
+    assert.ok(text.includes('b'.repeat(OUTPUT_CAP + 10)), 'render must not re-cut the field');
+    assert.doesNotMatch(text, /truncated by dsh-connect-atomcode/, 'and must not invent a marker either');
+    assert.doesNotMatch(text, /本回合预算/, 'there is no digest to spend budget against any more');
+    assert.doesNotMatch(text, /findings 清单已占用/, 'nor a findings list');
+    assert.doesNotMatch(text, /--- report 原文 ---/, 'and no second copy of the report');
+  });
+
+  it('says one thing about an upstream cut, in the review\'s own words', () => {
+    const { review } = mount();
+    const text = textOf(review, reviewValue({ report: 'c', truncated: true }));
+    assert.match(text, /\[注意：report 已截断，让它把完整报告写到文件里再读\]/);
+    assert.equal((text.match(/\[注意：/g) || []).length, 1, 'one note, not two competing ones');
+  });
+
+  it('prints a small report whole, with no notice at all', () => {
+    const { review } = mount();
+    const text = textOf(review, reviewValue({ report: 'a short review of the diff' }));
+    assert.match(text, /a short review of the diff/);
+    assert.doesNotMatch(text, /truncated by dsh-connect-atomcode/);
+    assert.doesNotMatch(text, /\[注意：/);
+  });
+
+  it('never mentions findings, exit_code or duration — the CLI is gone', () => {
+    const { review } = mount();
+    const text = textOf(review, reviewValue({ report: 'x' }));
+    assert.doesNotMatch(text, /findings/i);
+    assert.doesNotMatch(text, /exit_code|exit code/i);
+    assert.doesNotMatch(text, /duration_ms/);
   });
 });
 
-describe('the review return spends ONE budget across digest + raw', () => {
-  it('a small review is left completely alone', () => {
-    const { review } = mount();
-    const text = textOf(
-      review,
-      reviewValue({ findings: digestFindings(2), findings_count: 2 }),
-    );
-    assert.match(text, /--- report 原文 ---/);
-    assert.doesNotMatch(text, /truncated by dsh-connect-atomcode/);
-    assert.doesNotMatch(text, /本回合预算/);
+describe('elapsed_ms reaches the model on BOTH tools (the wall-time contract)', () => {
+  // The model reads `render`, not the raw JSON object, so a field that lives only
+  // in the return value is invisible to it — this is the whole point of pinning
+  // the meta line, not just the field. Both guards are `typeof … === 'number'`:
+  // a value present prints it, a value absent must NOT print `undefined`.
+  it('ask: prints elapsed_ms when present, omits it cleanly when absent', () => {
+    const { ask } = mount();
+    const shown = textOf(ask, askValue({ elapsed_ms: 4200 }));
+    assert.match(shown, /elapsed_ms=4200/, 'the wall time must reach the model');
+    const absent = textOf(ask, askValue());
+    assert.doesNotMatch(absent, /elapsed_ms=/, 'an omitted elapsed_ms must not print undefined');
   });
 
-  it('digest + raw together stay inside the budget when the raw is large', () => {
-    // The case that used to cost twice: 200 findings printed as a digest AND a
-    // raw document at its own full cap.
+  it('review: prints elapsed_ms when present, omits it cleanly when absent', () => {
     const { review } = mount();
-    const findings = digestFindings(200);
-    const value = reviewValue({
-      findings,
-      findings_count: 200,
-      report: 'z'.repeat(OUTPUT_CAP),
-    });
-    const text = textOf(review, value);
-    const rawSection = text.split('--- report 原文 ---')[1] || '';
-    assert.ok(
-      rawSection.length <= OUTPUT_CAP - text.split('--- report 原文 ---')[0].length + REVIEW_REPORT_FLOOR + 400,
-      `digest + raw must share one budget; got ${text.length} chars`,
-    );
-    assert.ok(text.length <= OUTPUT_CAP + REVIEW_REPORT_FLOOR + 400, `worst case is bounded, got ${text.length}`);
-    assert.match(text, /本回合预算/, 'the second cut must say it is the BUDGET that did it');
-    assert.match(text, /findings 清单已占用 \d+ 字/, 'and how much of the budget the digest took');
+    const shown = textOf(review, reviewValue({ elapsed_ms: 9800 }));
+    assert.match(shown, /elapsed_ms=9800/, 'the same line on the review tool');
+    const absent = textOf(review, reviewValue());
+    assert.doesNotMatch(absent, /elapsed_ms=/, 'and the same omission rule');
   });
 
-  it('the raw document never shrinks below the floor, however big the digest', () => {
-    // The floor exists so a complete digest cannot starve the raw document to
-    // nothing: the digest normalizes fields a finding may carry.
-    const { review } = mount();
-    const huge = digestFindings(200).map((f) => ({ ...f, message: 'm'.repeat(900) }));
-    const text = textOf(
-      review,
-      reviewValue({ findings: huge, findings_count: huge.length, report: 'q'.repeat(OUTPUT_CAP) }),
-    );
-    const rawSection = (text.split('--- report 原文 ---')[1] || '').split('[注意：')[0];
-    assert.ok(
-      rawSection.length >= REVIEW_REPORT_FLOOR,
-      `the raw document must keep its floor; got ${rawSection.length}`,
-    );
-  });
-
-  it('names BOTH cuts when the field was already truncated upstream', () => {
-    // `truncated: true` means the field itself was cut before this render ran, so
-    // content was already missing when the budget was computed. A reader told
-    // only "the budget cut it" would size what they got wrongly.
-    const { review } = mount();
-    const text = textOf(
-      review,
-      reviewValue({
-        findings: digestFindings(200),
-        findings_count: 200,
-        report: 'w'.repeat(OUTPUT_CAP),
-        truncated: true,
-      }),
-    );
-    assert.match(text, /字段上限截断/, 'the upstream cut');
-    assert.match(text, /又按本回合预算/, 'and the render-level cut');
-    assert.equal(
-      (text.match(/\[注意：/g) || []).length >= 1,
-      true,
-      'the two reasons belong in one note, not two competing ones',
-    );
+  it('both schemas carry elapsed_ms as a required single-type number', () => {
+    // required, or the host's call-time validation would let a missing field
+    // through and the model would silently lose it on some paths; single-type
+    // (no `type` array) because it is never null — a turn that failed still
+    // spent time, so `empty()` reports a number too (红线 9: an array-type union
+    // reaching `tools.register` rejects the WHOLE plugin, not just this field).
+    const { ask, review } = mount();
+    for (const tool of [ask, review]) {
+      const node = tool.output.schema.properties.elapsed_ms;
+      assert.ok(node, `${tool.name} schema must carry elapsed_ms`);
+      assert.equal(node.type, 'number', 'a plain number, not a type union');
+      assert.ok(tool.output.schema.required.includes('elapsed_ms'), `${tool.name}: elapsed_ms is required`);
+    }
   });
 });

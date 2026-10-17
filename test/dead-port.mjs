@@ -2,9 +2,9 @@
  * dead-port.mjs — one "nothing is listening here" SENTINEL port, per use site.
  *
  * Why this file exists. Suites each used to hardcode their own sentinel, and two
- * of them (`protocol` and `review`) picked THE SAME NUMBER independently; the
- * runner then serialized every suite to dodge that collision — a fixture defect
- * disciplined into policy. Worse, all those sentinels sat in the 459xx band,
+ * of them picked THE SAME NUMBER independently; the runner then serialized every
+ * suite to dodge that collision — a fixture defect disciplined into policy.
+ * Worse, all those sentinels sat in the 459xx band,
  * which is INSIDE the OS dynamic port range (Linux assigns 32768–60999 to
  * `listen(0)`; Windows 49152–65535). Under any parallelism a concurrent
  * binder's ephemeral port could BE the sentinel another suite believes is dead:
@@ -20,14 +20,15 @@
  *      0  test/dead-port.test.mjs's own probe
  *      1  stats-route   2  env-hermetic    3  snapshot-contract
  *      4  protocol render mount            5  protocol provision mount
- *      6  protocol refusal case           7  review mount
+ *      6  protocol refusal case
  *      8  wiring defaults mount           9  wiring cancel mount (needs REFUSAL
  *         fast-fail, so the suite verifies via requireDeadPort)
  *     10  output-budget mount
- *    11  wiring review-default probe, FIRST direct entry
- *    12  wiring review-default probe, SECOND direct entry — both REFUSAL-critical:
- *         the probe's diagnostic NAMES the port, so the suite verifies via
- *         requireDeadPort instead of assuming.
+ *    (7, 11 and 12 were the review CLI's mounts and probes. They went with the
+ *    CLI: `atomcode_review` is an ask turn now, so those suites install no
+ *    fake daemon at their own sentinel any more. The numbers are NOT reused —
+ *    a future site takes the next free one, so `git log` on a suite still
+ *    explains the port it names.)
  *    uniqueness and "no reintroduced literal" are pinned by
  *    test/dead-port.test.mjs, not by this comment;
  *  - base + every offset stays BELOW 32768 (`DYNAMIC_BAND_FLOOR`), so no

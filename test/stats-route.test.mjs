@@ -11,6 +11,7 @@
  */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -34,6 +35,10 @@ const CLOSED_PORT = await requireDeadPort(sentinelPort(1));
 const STATS_PATH = '/api/atomcode-bridge/stats';
 
 const PROVIDER_PATH = '/api/atomcode-bridge/provider';
+const INJECT_PATH = '/api/atomcode-bridge/inject';
+const REASONING_EFFORT_PATH = '/api/atomcode-bridge/reasoning-effort';
+const SESSIONS_PATH = '/api/atomcode-bridge/sessions';
+const PANEL_SETTINGS_PATH = '/api/atomcode-bridge/panel-settings';
 
 /**
  * Mount the plugin and capture EVERY route it registers.
@@ -44,7 +49,7 @@ const PROVIDER_PATH = '/api/atomcode-bridge/provider';
  * tool object — reading them only through the route would make every such test
  * silently self-consistent.
  */
-function captureRoutes({ statePath, port = CLOSED_PORT, extra = {}, toolSink }) {
+function captureRoutes({ statePath, port = CLOSED_PORT, extra = {}, toolSink, agents }) {
   const routes = [];
   const ctx = {
     get: (name) => {
@@ -57,6 +62,9 @@ function captureRoutes({ statePath, port = CLOSED_PORT, extra = {}, toolSink }) 
         };
       }
       if (name === 'webServer') return { register: (route) => { routes.push(route); return () => {}; } };
+      // Only `/inject` asks for this one; every other case leaves it undefined,
+      // which is also the real state of a Host that does not expose the service.
+      if (name === 'agents') return agents;
       return undefined;
     },
     logger: { warn() {}, error() {}, info() {} },
@@ -68,8 +76,8 @@ function captureRoutes({ statePath, port = CLOSED_PORT, extra = {}, toolSink }) 
   mod.apply(ctx, { auto_start: false, port, state_path: statePath, ...extra });
   assert.deepEqual(
     routes.map((r) => r.path).sort(),
-    [PROVIDER_PATH, STATS_PATH].sort(),
-    'both the stats route and the provider write route must be registered',
+    [INJECT_PATH, PANEL_SETTINGS_PATH, PROVIDER_PATH, REASONING_EFFORT_PATH, SESSIONS_PATH, STATS_PATH].sort(),
+    'all six routes must be registered: the stats read, the provider write, the answer delivery, the reasoning-effort write, the sessions read, and the panel-settings write',
   );
   return routes;
 }
@@ -77,14 +85,17 @@ function captureRoutes({ statePath, port = CLOSED_PORT, extra = {}, toolSink }) 
 /**
  * Mount the plugin and return ONE captured route.
  *
- * Two routes are registered now — the read-only snapshot and the panel's own
- * provider write — so the harness selects by path instead of assuming there is
- * only one. Asserting the exact set stays here on purpose: a route silently
- * dropped by a mount change is otherwise invisible until a user clicks a button
- * that does nothing.
+ * Five routes are registered now — the read-only snapshot, the panel's own
+ * provider write, the answer delivery, the reasoning-effort write, and the
+ * sessions read — so the harness
+ * selects by path instead of assuming there is only one. Asserting the exact set
+ * stays here on purpose: a route silently dropped by a mount change is otherwise
+ * invisible until a user clicks a button that does nothing. (The ask POST was the
+ * sixth until 方针 A removed the plugin's own channel; the review path is the
+ * `/atomcode-review` command and the `atomcode_ask` / `atomcode_review` tools.)
  */
-function mountRoute({ statePath, port = CLOSED_PORT, extra = {}, path = STATS_PATH }) {
-  const found = captureRoutes({ statePath, port, extra }).find((r) => r.path === path);
+function mountRoute({ statePath, port = CLOSED_PORT, extra = {}, path = STATS_PATH, agents }) {
+  const found = captureRoutes({ statePath, port, extra, agents }).find((r) => r.path === path);
   assert.ok(found, `route ${path} must be registered`);
   return found;
 }
@@ -116,6 +127,10 @@ async function callRoute(route, { method = 'GET', headers = {}, body } = {}) {
     },
   };
   const request = { method, headers };
+  // `method: null` is how a test asks for "the field is absent": a default
+  // parameter cannot express absence, and `undefined` in the destructure would
+  // just re-trigger the default.
+  if (method === null) delete request.method;
   if (body !== undefined) {
     const payload = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body), 'utf8');
     request[Symbol.asyncIterator] = async function* () {
@@ -219,6 +234,38 @@ describe('stats route — registration and gates', () => {
     assert.equal(r.raw, undefined, 'HEAD must end the response with no payload');
   });
 
+  it('HEAD has NO side effects — it must not start the daemon or run status', async () => {
+    // The bug this pins: the handler used to run the whole GET path (health,
+    // `void ensureDaemonStarted()`, `await readQuota()` → a real
+    // `POST /command {"command":"status"}`) and only THEN return headers. So one
+    // HEAD from any uptime probe started the daemon and spent a status round
+    // trip — a request that asked for nothing acting on the user's machine.
+    //
+    // Counting the calls needs a seam the route does not expose, so this pins
+    // the OBSERVABLE shape instead: the same HEAD must answer with the same
+    // headers whether or not the full read path could possibly have run. The
+    // suite's daemon is a dead port (no daemon to start, no status to answer),
+    // so a handler that still ran `ensureDaemonStarted()` + `readQuota()` would
+    // have to await a connection attempt against CLOSED_PORT before ending the
+    // response — and it would drag its own multi-second start poll along.
+    const started = Date.now();
+    const r = await callRoute(route, { method: 'HEAD', headers: { host: '127.0.0.1:3080' } });
+    const elapsed = Date.now() - started;
+    assert.equal(r.status, 200);
+    assert.equal(r.raw, undefined, 'no body on HEAD');
+    // The GET path against a dead port takes far longer than this; a short
+    // circuit is what "no side effects" looks like from outside.
+    assert.ok(elapsed < 1000, `HEAD must answer without running the read path (took ${elapsed}ms)`);
+    assert.equal(r.headers['cache-control'], 'no-store');
+  });
+
+  it('a request with NO method is malformed and refused, on both read routes', async () => {
+    // /stats answered 405 while /provider defaulted a missing method to GET —
+    // same malformed request, two answers. Neither may guess.
+    const r = await callRoute(route, { method: null, headers: { host: '127.0.0.1:3080' } });
+    assert.equal(r.status, 405, 'a missing method must not be read as GET');
+  });
+
   it('a write method is rejected with 405 and an Allow header', async () => {
     for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
       const r = await callRoute(route, { method, headers: { host: '127.0.0.1:3080' } });
@@ -319,6 +366,8 @@ describe('stats route — snapshot shape the panel depends on', () => {
       'binary.source',
       'config.approvalMode',
       'config.approvalModeRejected',
+      'config.reviewBriefMode',
+      'config.reviewBriefModeRejected',
       'config.defaultWorkingDir',
       // Both provider knobs. `providerRows()` in the card dereferences them, and
       // an UNSET knob must arrive as an explicit null — a missing key would make
@@ -326,31 +375,18 @@ describe('stats route — snapshot shape the panel depends on', () => {
       // report the field at all", which is exactly the ambiguity the rows exist to
       // remove from the screen.
       'config.defaultProvider',
-      'config.reviewDefaultProvider',
-      'config.reviewAvailable',
-      'config.reviewReason',
       'sessions.tracked',
-      // The provider dropdowns dereference every one of these. They are listed per
-      // slot on purpose: a snapshot that grew the branch for `ask` but not `review`
-      // would render one live control and one that silently never works.
+      // The provider dropdown dereferences every one of these. The branch is flat
+      // (one ladder for ask and review): a nested per-slot shape died with the CLI.
       'provider.storePath',
       'provider.storeError',
       'provider.foreignVersion',
-      'provider.ask.panel',
-      'provider.ask.config',
-      'provider.ask.effective',
-      'provider.ask.source',
-      'provider.ask.catalog',
-      'provider.ask.catalogError',
-      'provider.review.panel',
-      'provider.review.config',
-      'provider.review.effective',
-      'provider.review.source',
-      'provider.review.catalog',
-      // name -> base_url per usable review entry: the panel's loopback warning
-      // reads it, and a snapshot without it shows a local proxy as if it were
-      // any other provider.
-      'provider.review.endpoints',
+      'provider.panel',
+      'provider.config',
+      'provider.effective',
+      'provider.source',
+      'provider.catalog',
+      'provider.catalogError',
       'uptimeMs',
       'ask.calls',
       'ask.ok',
@@ -382,13 +418,14 @@ describe('stats route — snapshot shape the panel depends on', () => {
     );
   });
 
-  it('reports the review capability honestly as typed booleans/strings', () => {
-    assert.equal(typeof body.config.reviewAvailable, 'boolean');
-    assert.equal(typeof body.config.reviewReason, 'string');
-    // The mount-time probe ran against the gateway-only config pinned in
-    // `before()`, so the panel must be able to say why.
-    assert.equal(body.config.reviewAvailable, false);
-    assert.match(body.config.reviewReason, /providers/);
+  it('no longer reports a review CLI, because there is no review CLI', () => {
+    // `reviewAvailable` / `reviewReason` / `reviewDefaultProvider` / `reviewWorkingDir`
+    // all died with the CLI namespace. The snapshot must not carry them — asserting
+    // their absence is the guard against a half-deleted field silently reappearing.
+    assert.equal('reviewAvailable' in body.config, false, 'reviewAvailable must be gone from config');
+    assert.equal('reviewReason' in body.config, false, 'reviewReason must be gone from config');
+    assert.equal('reviewDefaultProvider' in body.config, false, 'reviewDefaultProvider must be gone');
+    assert.equal('reviewWorkingDir' in body.config, false, 'reviewWorkingDir must be gone');
   });
 
   it('reflects daemon health for the configured (closed) port', () => {
@@ -415,89 +452,7 @@ describe('stats route — snapshot shape the panel depends on', () => {
   });
 });
 
-describe('stats route — review endpoints (what the pick DEPENDS on)', () => {
-  // Hermetic by construction: the probe reads ~/.atomcode/config.toml, so the
-  // config is pinned in a temp HOME. A loopback direct provider is the shape
-  // the panel must be able to NAME — picking it silently would hide that the
-  // review now depends on a local process (红线 3: a dependency must be stated,
-  // not discovered when it dies).
-  const savedHome = process.env.HOME;
-  const savedUserProfile = process.env.USERPROFILE;
-  const dirs = [];
 
-  after(() => {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = savedUserProfile;
-    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
-  });
-
-  function mountWithConfig(lines) {
-    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-endpoints-home-'));
-    dirs.push(fakeHome);
-    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
-    writeFileSync(join(fakeHome, '.atomcode', 'config.toml'), lines.join('\n'), 'utf8');
-    process.env.HOME = fakeHome;
-    process.env.USERPROFILE = fakeHome;
-    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-endpoints-')), 'sessions.json');
-    const route = mountRoute({ statePath });
-    return callRoute(route, { headers: { host: '127.0.0.1:3080' } });
-  }
-
-  it('maps every usable review entry to its base_url', async () => {
-    const r = await mountWithConfig([
-      'default_provider = "atomcode-local"',
-      '[providers.atomcode-local]',
-      'provider = "openai"',
-      'base_url = "http://127.0.0.1:8899/v1"  # 本地代理',
-      'api_key = "local-proxy-any-string"',
-      'model = "deepseek-ai/DeepSeek-V4-Flash"',
-      '',
-      '[providers.far-away]',
-      'base_url = "https://openrouter.example/v1"',
-      'api_key = "sk-test"',
-    ]);
-    assert.equal(r.body.config.reviewAvailable, true);
-    assert.deepEqual(
-      r.body.provider.review.endpoints,
-      { 'atomcode-local': 'http://127.0.0.1:8899/v1', 'far-away': 'https://openrouter.example/v1' },
-      'the inline comment must not ride along into the endpoint the panel warns about',
-    );
-  });
-
-  it('reads a direct provider whose config line carries an inline comment', async () => {
-    // The kv regex used to swallow everything to end-of-line, so
-    // `base_url = "http://127.0.0.1:8899/v1"  # 本地代理` parsed as a URL with
-    // the quote and the comment glued on. The CLI parses config.toml correctly
-    // itself, so the two parsers would disagree — and the corrupted value is
-    // what THIS plugin's loopback detection runs on.
-    const r = await mountWithConfig([
-      'default_provider = "atomcode-local"',
-      '[providers.atomcode-local]',
-      'provider = "openai"',
-      'base_url = "http://127.0.0.1:8899/v1"  # 本地代理',
-      'api_key = "local-proxy-any-string"',
-      'model = "deepseek-ai/DeepSeek-V4-Flash"',
-    ]);
-    assert.deepEqual(r.body.provider.review.catalog, ['atomcode-local']);
-    assert.deepEqual(
-      r.body.provider.review.endpoints,
-      { 'atomcode-local': 'http://127.0.0.1:8899/v1' },
-      'the comment must not ride along into the endpoint the panel warns about',
-    );
-  });
-
-  it('lists a remote direct provider too, so the warning is not a blanket warning', async () => {
-    const r = await mountWithConfig([
-      '[providers.far-away]',
-      'base_url = "https://openrouter.example/v1"',
-      'api_key = "sk-test"',
-    ]);
-    assert.equal(r.body.config.reviewAvailable, true);
-    assert.deepEqual(r.body.provider.review.endpoints, { 'far-away': 'https://openrouter.example/v1' });
-  });
-});
 
 describe('stats route — binary source reporting', () => {
   it('reports the env source when ATOMCODE_BIN is set at mount time', async () => {
@@ -782,84 +737,7 @@ describe('stats route — protocol drift signals', () => {
   });
 });
 
-describe('stats route — a refused review is still accounted for', () => {
-  // The four review refusals used to book `calls`/`err` by hand and return
-  // `duration_ms: 0`, so `msTotal` counted only the calls that reached a spawn
-  // while `calls` counted every attempt — the panel's average duration was low
-  // by construction, and a fifth refusal added later would have inherited the
-  // hole. They now exit through one `refuse()`. This drives the one refusal
-  // path that genuinely SPENDS time (a local sidecar that accepts the connection
-  // and never answers), because that is the only shape where the assertion can
-  // tell "booked" from "left at zero". The 2s sidecar probe budget is capped to
-  // DEADLINE_CAP_MS for this case, so the booking assertion is scaled to match;
-  // the wait is paid once because the second candidate URL fails instantly.
-  let server;
-  let sidecarPort = 0;
 
-  before(async () => {
-    server = createServer((req) => {
-      // /health: accept and never answer, so the loopback probe burns its budget.
-      // Anything else (the /models fallback candidate): fail at once, so the
-      // test pays for ONE probe budget rather than two.
-      if (req.url !== '/health') req.socket.destroy();
-    });
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    sidecarPort = server.address().port;
-  });
-  after(() => {
-    server.closeAllConnections?.();
-    server.close();
-  });
-
-  it('a refusal that waited is counted in calls, err and msTotal', async () => {
-    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-acc-')), 'sessions.json');
-    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-acc-home-'));
-    const repo = mkdtempSync(join(tmpdir(), 'atomcode-acc-repo-'));
-    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
-    writeFileSync(
-      join(fakeHome, '.atomcode', 'config.toml'),
-      [
-        '[providers.hanging]',
-        `base_url = "http://127.0.0.1:${sidecarPort}/v1"`,
-        'api_key = "sk-test"',
-      ].join('\n'),
-      'utf8',
-    );
-    const savedHome = process.env.HOME;
-    const savedUserProfile = process.env.USERPROFILE;
-    process.env.HOME = fakeHome;
-    process.env.USERPROFILE = fakeHome;
-    try {
-      const tools = [];
-      const routes = captureRoutes({ statePath, toolSink: tools });
-      const statsRoute = routes.find((r) => r.path === STATS_PATH);
-      const review = tools.find((t) => t.name === 'atomcode_review');
-      assert.ok(review, 'the review tool must be registered');
-      const r = await withShortDeadlines(DEADLINE_CAP_MS, () => review.execute({ working_dir: repo }, {}));
-      assert.equal(r.ok, false);
-      assert.match(r.error, /is not responding/, 'the dead-sidecar refusal is the path under test');
-      assert.ok(
-        r.duration_ms >= 100,
-        'a refusal must report the time it really spent, not a hardcoded 0',
-      );
-      const { body } = await callRoute(statsRoute);
-      assert.equal(body.review.calls, 1);
-      assert.equal(body.review.err, 1);
-      assert.ok(
-        body.review.msTotal >= 100,
-        'a refusal that waited must not leave msTotal at 0 — the average duration would be low by construction',
-      );
-    } finally {
-      if (savedHome === undefined) delete process.env.HOME;
-      else process.env.HOME = savedHome;
-      if (savedUserProfile === undefined) delete process.env.USERPROFILE;
-      else process.env.USERPROFILE = savedUserProfile;
-      rmSync(dirname(statePath), { recursive: true, force: true });
-      rmSync(fakeHome, { recursive: true, force: true });
-      rmSync(repo, { recursive: true, force: true });
-    }
-  });
-});
 
 describe('stats route — auto-start on observation', () => {
   // A closed port + an unusable binary: the spawn is attempted (observably) and
@@ -1069,34 +947,35 @@ describe('stats route — auto-start on observation', () => {
       );
       assert.equal(typeof body.daemon.spawnAttempts, 'number');
       assert.ok(body.config.askMaxRounds > 0, 'the ask round ceiling must be visible');
-      assert.equal(typeof body.config.reviewWorkingDir, 'object', 'a missing repo dir is null, not absent');
+      // `reviewWorkingDir` no longer exists: the CLI namespace died with the review CLI.
+      assert.equal('reviewWorkingDir' in body.config, false, 'reviewWorkingDir must be absent from config');
     } finally {
       rmSync(dirname(statePath), { recursive: true, force: true });
     }
   });
 
-  it('exposes which provider each path defaults to (null = the bridge pins nothing)', async () => {
-    // `default_provider` (ask) and `review_default_provider` (review) decide which
-    // MODEL / which BILLING CHANNEL every bridged turn uses, so the route must
-    // tell the two states apart: pinning a name, and pinning nothing. A knob that
-    // silently never applied is exactly the failure this read-only route exists to
-    // make visible (红线 3). They are separate fields because the two paths do not
-    // share a provider namespace (红线 8).
+  it('exposes which provider the bridge defaults to (null = the bridge pins nothing)', async () => {
+    // `default_provider` decides which MODEL every bridged turn uses (ask and
+    // review share one ladder now), so the route must tell the two states apart:
+    // pinning a name, and pinning nothing. A knob that silently never applied is
+    // exactly the failure this read-only route exists to make visible (红线 3).
     const pinned = join(mkdtempSync(join(tmpdir(), 'atomcode-dp-stats-')), 'sessions.json');
     const unset = join(mkdtempSync(join(tmpdir(), 'atomcode-dp-stats2-')), 'sessions.json');
     try {
       const on = mountRoute({
         statePath: pinned,
         port: CLOSED_PORT,
-        extra: { default_provider: 'AtomGit-glm5.3-flash', review_default_provider: 'atomcode-local' },
+        extra: { default_provider: 'AtomGit-glm5.3-flash' },
       });
       const a = (await callRoute(on, { headers: { host: '127.0.0.1:3080' } })).body;
       assert.equal(a.config.defaultProvider, 'AtomGit-glm5.3-flash');
-      assert.equal(a.config.reviewDefaultProvider, 'atomcode-local');
+      assert.equal(a.provider.config, 'AtomGit-glm5.3-flash');
+      // A review_default_provider key in the patch is no longer read.
+      assert.equal('reviewDefaultProvider' in a.config, false, 'the old key must be absent');
       const off = mountRoute({ statePath: unset, port: CLOSED_PORT });
       const b = (await callRoute(off, { headers: { host: '127.0.0.1:3080' } })).body;
       assert.equal(b.config.defaultProvider, null, 'unset must be an explicit null, not a missing key');
-      assert.equal(b.config.reviewDefaultProvider, null, 'unset must be an explicit null, not a missing key');
+      assert.equal(b.provider.config, null);
     } finally {
       rmSync(dirname(pinned), { recursive: true, force: true });
       rmSync(dirname(unset), { recursive: true, force: true });
@@ -1120,11 +999,14 @@ describe('stats route — auto-start on observation', () => {
       const a = (await callRoute(untouched, { headers: { host: '127.0.0.1:3080' } })).body;
       assert.deepEqual(
         a.config.authored,
-        { approvalMode: false, workingDir: false, askMaxRounds: false },
+        { approvalMode: false, workingDir: false, askMaxRounds: false, reviewBriefMode: false },
         'a mount using the shipped values must report NOTHING as changed'
       );
       assert.equal(a.config.defaults.approvalMode, 'bypass');
       assert.equal(a.config.defaults.askMaxRounds, 25);
+      assert.equal(a.config.defaults.reviewBriefMode, 'when-empty');
+      assert.equal(a.config.reviewBriefMode, 'when-empty');
+      assert.equal(a.config.reviewBriefModeRejected, null);
       assert.equal(a.config.askMaxRounds, 25, 'the resolved value still reports the fallback it used');
 
       // Writing the SAME value the default has explicitly is still not a change —
@@ -1137,7 +1019,7 @@ describe('stats route — auto-start on observation', () => {
       const b = (await callRoute(same, { headers: { host: '127.0.0.1:3080' } })).body;
       assert.deepEqual(
         b.config.authored,
-        { approvalMode: false, workingDir: false, askMaxRounds: false },
+        { approvalMode: false, workingDir: false, askMaxRounds: false, reviewBriefMode: false },
         'restating the default is not departing from it'
       );
 
@@ -1153,13 +1035,34 @@ describe('stats route — auto-start on observation', () => {
           extra: { approval_mode: 'accept_edits', ask_max_rounds: 40, working_dir: 'D:\\repo' },
         });
         const c = (await callRoute(changed, { headers: { host: '127.0.0.1:3080' } })).body;
-        assert.deepEqual(c.config.authored, { approvalMode: true, workingDir: true, askMaxRounds: true });
+        assert.deepEqual(
+          c.config.authored,
+          { approvalMode: true, workingDir: true, askMaxRounds: true, reviewBriefMode: false },
+          'only the three knobs that actually moved are tagged; the untouched brief mode is not'
+        );
         assert.equal(c.config.approvalMode, 'accept_edits');
         assert.equal(c.config.approvalModeRejected, null, 'a legal value is not a rejection');
         assert.equal(c.config.askMaxRounds, 40);
         assert.equal(c.config.defaultWorkingDir, 'D:\\repo');
       } finally {
         rmSync(dir3, { recursive: true, force: true });
+      }
+
+      // The brief knob departs the same way: `never` is a LEGAL non-default
+      // value (the shipped default is when-empty), so it IS tagged.
+      const dir4 = mkdtempSync(join(tmpdir(), 'atomcode-authored4-'));
+      try {
+        const brief = mountRoute({
+          statePath: join(dir4, 'sessions.json'),
+          port: CLOSED_PORT,
+          extra: { review_brief_mode: 'never' },
+        });
+        const d = (await callRoute(brief, { headers: { host: '127.0.0.1:3080' } })).body;
+        assert.equal(d.config.reviewBriefMode, 'never');
+        assert.equal(d.config.reviewBriefModeRejected, null);
+        assert.equal(d.config.authored.reviewBriefMode, true, 'a departure from when-empty is authored');
+      } finally {
+        rmSync(dir4, { recursive: true, force: true });
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1209,6 +1112,49 @@ describe('stats route — auto-start on observation', () => {
         assert.equal(ok.config.approvalMode, 'accept_edits');
         assert.equal(ok.config.approvalModeRejected, null);
         assert.equal(ok.config.authored.approvalMode, true);
+      } finally {
+        rmSync(dir2, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an off-enum review_brief_mode at boot and names the value it refused', async () => {
+    // The brief knob has the same closed-enum story as approval_mode: a typo
+    // (`whenEmpty`, `NEVER`) must not travel to the tool descriptions and the
+    // two compose functions unobserved. The plugin refuses it at config
+    // parse time, falls back to when-empty, and reports the refused spelling —
+    // the panel's brief row then shows「已回落」instead of the fallback value
+    // wearing the user's rejected choice.
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-briefmode-'));
+    try {
+      const mounted = mountRoute({
+        statePath: join(dir, 'sessions.json'),
+        port: CLOSED_PORT,
+        extra: { review_brief_mode: 'whenEmpty' },
+      });
+      const body = (await callRoute(mounted, { headers: { host: '127.0.0.1:3080' } })).body;
+      assert.equal(body.config.reviewBriefMode, 'when-empty', 'the fallback is what the code honours');
+      assert.equal(
+        body.config.reviewBriefModeRejected,
+        'whenEmpty',
+        'the refused spelling must reach the panel instead of vanishing',
+      );
+      assert.equal(body.config.authored.reviewBriefMode, false);
+
+      // A legal value reports no rejection.
+      const dir2 = mkdtempSync(join(tmpdir(), 'atomcode-briefmode2-'));
+      try {
+        const legal = mountRoute({
+          statePath: join(dir2, 'sessions.json'),
+          port: CLOSED_PORT,
+          extra: { review_brief_mode: 'always' },
+        });
+        const ok = (await callRoute(legal, { headers: { host: '127.0.0.1:3080' } })).body;
+        assert.equal(ok.config.reviewBriefMode, 'always');
+        assert.equal(ok.config.reviewBriefModeRejected, null);
+        assert.equal(ok.config.authored.reviewBriefMode, true);
       } finally {
         rmSync(dir2, { recursive: true, force: true });
       }
@@ -1284,9 +1230,9 @@ describe('stats route — auto-start on observation', () => {
       );
       const elapsed = Date.now() - startedAt;
       assert.equal(body.daemon.up, true, 'the daemon IS up — only /models is wedged');
-      assert.equal(body.provider.ask.catalog, null, 'the catalogue is reported unavailable, not empty');
+      assert.equal(body.provider.catalog, null, 'the catalogue is reported unavailable, not empty');
       assert.ok(
-        body.provider.ask.catalogError.length > 0,
+        body.provider.catalogError.length > 0,
         'and the dropdown gets a named reason instead of a bare empty list',
       );
       assert.ok(elapsed < 2000, `the route must answer within the probe deadline, took ${elapsed}ms`);
@@ -1379,13 +1325,13 @@ describe("provider route — the panel's own model choice", () => {
     const w = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: 'AtomGit-glm5.3-flash' } });
     assert.equal(w.status, 200);
     assert.equal(w.body.ok, true);
-    assert.equal(w.body.ask.panel, 'AtomGit-glm5.3-flash');
-    assert.equal(w.body.ask.effective, 'AtomGit-glm5.3-flash');
-    assert.equal(w.body.ask.source, 'panel');
+    assert.equal(w.body.panel, 'AtomGit-glm5.3-flash');
+    assert.equal(w.body.effective, 'AtomGit-glm5.3-flash');
+    assert.equal(w.body.source, 'panel');
     // And it is on disk where the plugin reads it — next to sessions.json.
     assert.ok(existsSync(m.state), 'the plugin state file must exist after a write');
     const poll = await callRoute(m.stats, { headers: HOME_HDRS });
-    assert.equal(poll.body.provider.ask.source, 'panel', 'the next poll must agree with the write');
+    assert.equal(poll.body.provider.source, 'panel', 'the next poll must agree with the write');
   });
 
   it('GET reads the same state without writing it', async () => {
@@ -1393,9 +1339,9 @@ describe("provider route — the panel's own model choice", () => {
     const g = await callRoute(m.provider, { headers: HOME_HDRS });
     assert.equal(g.status, 200);
     assert.equal(g.body.ok, true);
-    assert.equal(g.body.ask.panel, null);
-    assert.equal(g.body.ask.effective, 'AtomGit-qwen3.8-27b');
-    assert.equal(g.body.ask.source, 'config');
+    assert.equal(g.body.panel, null);
+    assert.equal(g.body.effective, 'AtomGit-qwen3.8-27b');
+    assert.equal(g.body.source, 'config');
     assert.equal(existsSync(m.state), false, 'a read must not create the state file');
   });
 
@@ -1416,32 +1362,19 @@ describe("provider route — the panel's own model choice", () => {
     const m = mountBoth({ default_provider: 'AtomGit-qwen3.8-27b' });
     await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: 'X' } });
     const cleared = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: null } });
-    assert.equal(cleared.body.ask.panel, null);
-    assert.equal(cleared.body.ask.effective, 'AtomGit-qwen3.8-27b', 'clearing returns to the configured default');
-    assert.equal(cleared.body.ask.source, 'config');
-  });
-
-  it('the two slots stay separate namespaces on disk', async () => {
-    const m = mountBoth();
-    await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: 'AtomGit-glm5.3-flash' } });
-    const r = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'review', provider: 'atomcode-local' } });
-    assert.equal(r.body.ask.panel, 'AtomGit-glm5.3-flash', 'writing review must not clobber ask');
-    assert.equal(r.body.review.panel, 'atomcode-local');
-    // The review slot never pretends to be a model profile, and vice versa.
-    assert.equal(r.body.review.source, 'panel');
-    assert.equal(r.body.ask.source, 'panel');
+    assert.equal(cleared.body.panel, null);
+    assert.equal(cleared.body.effective, 'AtomGit-qwen3.8-27b', 'clearing returns to the configured default');
+    assert.equal(cleared.body.source, 'config');
   });
 
   it('refuses an unknown slot, a non-string name, and control characters — all 400, all unwritten', async () => {
     const m = mountBoth();
     const bad = [
       { slot: 'model', provider: 'x' },
+      { slot: 'review', provider: 'atomcode-local' },
       { slot: 'ask', provider: 42 },
       { slot: 'ask', provider: 'bad\u0000name' },
       { slot: 'ask', provider: 'x'.repeat(300) },
-      // The value is forwarded VERBATIM as one CLI argv element. A leading dash
-      // would be read by the CLI's argv parser as an OPTION, not as this
-      // option's value — refuse it HERE, while the panel can still show why.
       { slot: 'ask', provider: '--no-web' },
       { slot: 'ask', provider: '-x' },
     ];
@@ -1467,11 +1400,11 @@ describe("provider route — the panel's own model choice", () => {
     // The surviving pick is still on disk — read it back through the stats route,
     // the same way the panel would learn it.
     const poll = await callRoute(m.stats, { headers: HOME_HDRS });
-    assert.equal(poll.body.provider.ask.panel, 'AtomGit-glm5.3-flash', 'a refused write must not erase the pick');
+    assert.equal(poll.body.provider.panel, 'AtomGit-glm5.3-flash', 'a refused write must not erase the pick');
     // Clearing stays an OBSERVABLE act: field present, value null.
     const cleared = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: null } });
     assert.equal(cleared.status, 200);
-    assert.equal(cleared.body.ask.panel, null);
+    assert.equal(cleared.body.panel, null);
   });
 
   it('refuses a body that is not a JSON object', async () => {
@@ -1520,7 +1453,7 @@ describe("provider route — the panel's own model choice", () => {
     const m = mountBoth();
     writeFileSync(m.state, JSON.stringify({ version: 99, ask: 'Future-Profile', review: null }), 'utf8');
     const g = await callRoute(m.provider, { headers: HOME_HDRS });
-    assert.equal(g.body.ask.panel, null, 'a foreign version reads as no pick');
+    assert.equal(g.body.panel, null, 'a foreign version reads as no pick');
     assert.equal(g.body.foreignVersion, true);
     const w = await callRoute(m.provider, { method: 'POST', headers: HOME_HDRS, body: { slot: 'ask', provider: 'X' } });
     assert.equal(w.status, 409, 'and the write is refused, not silently accepted');
@@ -1533,7 +1466,7 @@ describe("provider route — the panel's own model choice", () => {
     writeFileSync(m.state, '{ this is not json', 'utf8');
     const r = await callRoute(m.provider, { headers: HOME_HDRS });
     assert.equal(r.status, 200, 'a broken preference must not take the panel down');
-    assert.equal(r.body.ask.panel, null);
+    assert.equal(r.body.panel, null);
     assert.ok(r.body.storeError.length > 0, 'and it must say what happened');
     const leftovers = readdirSync(m.dir).filter((n) => n.startsWith('provider.json.corrupt-'));
     assert.equal(leftovers.length, 1, 'the unreadable file is preserved aside, never erased');
@@ -1647,5 +1580,148 @@ describe('stats route — a degraded session store is named, not hidden', () => 
     store.get('C:\\repo');
     store.count();
     assert.equal(seen.length, before, 'the same failure must not be reported twice');
+  });
+});
+
+describe('inject route — an AtomCode answer reaches the session it came from', () => {
+  /** A registry holding one live agent, recording what was injected. */
+  function stubAgents(hooks = {}) {
+    const calls = [];
+    const agent = {
+      // The module picks its method from this getter: idle → steer(), anything
+      // else → inject(). Pinned `running` here so this block tests the
+      // attach-without-interrupting path; the idle wake has its own case below.
+      status: hooks.status ?? 'running',
+      inject(message) {
+        if (hooks.throwOnInject) throw new Error(hooks.throwOnInject);
+        calls.push(message);
+      },
+      // Present so the assertion can prove they are NOT used while running:
+      // steer/followup would wake or interrupt the driver mid-turn.
+      steer(message) { calls.push({ ...message, steer: true }); },
+      followup(message) { calls.push({ ...message, followup: true }); },
+    };
+    return { calls, agents: { get: (id) => (id === 'live-session' ? agent : undefined) } };
+  }
+
+  it('delivers and reports the message id', async () => {
+    const { calls, agents } = stubAgents();
+    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
+    const result = await callRoute(route, {
+      method: 'POST',
+      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
+      body: { session_id: 'live-session', text: '这段代码有问题。' },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.ok, true);
+    assert.equal(result.body.woke, false, 'a running session was not woken');
+    // snake_case on the wire, in both directions — the same rule `/ask` follows
+    // with `working_dir`. This assertion is why the outbound translation cannot
+    // silently go missing again: it used to read `message_id` off a body that
+    // only ever carried the camelCase `messageId`.
+    assert.equal(typeof result.body.message_id, 'string');
+    assert.equal(typeof calls[0].id, 'string');
+    assert.equal(result.body.message_id, calls[0].id, 'the reported id must be the id that was actually delivered');
+    assert.equal(result.body.session_id, 'live-session');
+    assert.equal(result.body.delivered, 'next-step');
+    assert.equal(result.body.messageId, undefined, 'the camelCase internal name must not leak onto the wire');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].steer, undefined);
+    assert.equal(calls[0].source.kind, 'atomcode-bridge');
+  });
+
+  // The bug this pins shipped silently: on an idle session `inject()` never
+  // wakes the driver, so the answer parked in the inbox and the click looked
+  // dead. The route must therefore steer, and say that it woke something.
+  it('wakes an idle session with steer() and reports woke: true', async () => {
+    const { calls, agents } = stubAgents({ status: 'idle' });
+    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
+    const result = await callRoute(route, {
+      method: 'POST',
+      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
+      body: { session_id: 'live-session', text: '这段回答要进对话。' },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.ok, true);
+    assert.equal(result.body.delivered, 'new-turn');
+    assert.equal(result.body.woke, true, 'the caller must be able to tell a turn was started');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].steer, true, 'an idle session needs steer(), not inject()');
+    assert.equal(result.body.message_id, calls[0].id);
+  });
+
+  it('refuses GET and HEAD without touching the agent', async () => {
+    const { calls, agents } = stubAgents();
+    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
+    for (const method of ['GET', 'HEAD']) {
+      const result = await callRoute(route, { method });
+      assert.equal(result.status, 405, `${method} must be refused`);
+      assert.equal(result.headers.allow, 'POST');
+    }
+    assert.equal(calls.length, 0);
+  });
+
+  it('refuses a cross-origin POST', async () => {
+    const { calls, agents } = stubAgents();
+    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
+    const result = await callRoute(route, {
+      method: 'POST',
+      headers: { origin: 'https://evil.invalid' },
+      body: { session_id: 'live-session', text: 'x' },
+    });
+    assert.equal(result.status, 403);
+    assert.equal(calls.length, 0);
+  });
+
+  it('names a missing text instead of delivering an empty message', async () => {
+    const { calls, agents } = stubAgents();
+    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
+    const result = await callRoute(route, {
+      method: 'POST',
+      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
+      body: { session_id: 'live-session', text: '   ' },
+    });
+    // 200 with a NAMED refusal: the request was understood. A 4xx here would make
+    // "the session is not open" and "your body is malformed" look the same.
+    assert.equal(result.status, 200);
+    assert.equal(result.body.ok, false);
+    assert.equal(result.body.code, 'text-required');
+    assert.equal(calls.length, 0);
+  });
+
+  it('reports agent-not-live for a session that is not open', async () => {
+    const { agents } = stubAgents();
+    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
+    const result = await callRoute(route, {
+      method: 'POST',
+      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
+      body: { session_id: 'some-closed-session', text: 'x' },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.ok, false);
+    assert.equal(result.body.code, 'agent-not-live');
+  });
+
+  it('reports agents-unavailable rather than 500ing when the host has no registry', async () => {
+    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH });
+    const result = await callRoute(route, {
+      method: 'POST',
+      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
+      body: { session_id: 'live-session', text: 'x' },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.ok, false);
+    assert.equal(result.body.code, 'agents-unavailable');
+  });
+
+  it('marks the response no-store: an answer is per-session, never cacheable', async () => {
+    const { agents } = stubAgents();
+    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
+    const result = await callRoute(route, {
+      method: 'POST',
+      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
+      body: { session_id: 'live-session', text: 'x' },
+    });
+    assert.equal(result.headers['cache-control'], 'no-store');
   });
 });

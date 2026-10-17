@@ -16,7 +16,6 @@ import type {
   ProviderBranch,
   ProviderRow,
   ProviderSelectModel,
-  ProviderSlotName,
 } from './types.ts';
 import { isLoopbackBaseUrl } from '../shared/loopback.ts';
 import { fmtCountdown } from './quota.ts';
@@ -148,6 +147,12 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
       : '';
   const dir = typeof src.defaultWorkingDir === 'string' ? src.defaultWorkingDir : '';
   const rounds = Number.isInteger(src.askMaxRounds) ? (src.askMaxRounds as number) : null;
+  const briefMode = typeof src.reviewBriefMode === 'string' ? src.reviewBriefMode : '';
+  const briefRejected =
+    typeof src.reviewBriefModeRejected === 'string' && src.reviewBriefModeRejected !== ''
+      ? src.reviewBriefModeRejected
+      : '';
+  const briefDefault = typeof defaults.reviewBriefMode === 'string' ? defaults.reviewBriefMode : '';
   // Verdict: 'changed' | 'default' | 'unknown'.
   //
   // 'unknown' is NOT decoration — it is the only honest answer when the host
@@ -159,7 +164,7 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
   // quota number (红线 2). So when we cannot tell, we do not tag at all.
   type Verdict = 'changed' | 'default' | 'unknown';
   const verdict = (
-    key: 'approvalMode' | 'workingDir' | 'askMaxRounds',
+    key: 'approvalMode' | 'workingDir' | 'askMaxRounds' | 'reviewBriefMode',
     value: unknown,
     fallback: unknown,
   ): Verdict => {
@@ -202,61 +207,137 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
       title:
         'patch 字段 ask_max_rounds。超出即停止等待（不是远端 kill：daemon 侧的回合可能仍在后台跑完）。',
     },
+    {
+      label: 'brief 注入',
+      text:
+        briefMode === ''
+          ? '—'
+          : briefRejected !== ''
+            ? `${briefMode}（已回落：你写的是 ${briefRejected}）`
+            : briefMode + tag(verdict('reviewBriefMode', briefMode, briefDefault)),
+      title:
+        'patch 字段 review_brief_mode：/atomcode-review 与 atomcode_review 在用户文本留空时，' +
+        '内置评审简报的注入方式。always = 简报总在（留空补简报，非空附加在后）；' +
+        'when-empty = 仅留空时补简报（非空按原样发送）；never = 从不注入（留空直接拒绝）。' +
+        (briefRejected !== ''
+          ? `你写的「${briefRejected}」不是合法取值（always / when-empty / never），已回落到 ${briefMode}。`
+          : ''),
+    },
   ];
 }
 
 // ── 运行环境（模型档位） ──────────────────────────────────────────────────
 
 /**
- * Is this base_url a loopback endpoint — i.e. a local sidecar process the
- * review then DEPENDS on?
+ * Is this base_url a loopback endpoint — i.e. a process on THIS machine?
  *
  * This IS the host's predicate (`isLoopbackBaseUrl`), imported from
- * `src/shared/loopback.ts` under the renderer's name for it. It used to be a
- * hand-written copy: the host decides whether to probe before spawning, and the
- * renderer words the warning ("this choice bills through a process on your
- * machine, and stops working the moment it exits") — two halves needing one fact
- * is exactly the case a shared module exists for.
+ * `src/shared/loopback.ts` under the renderer's name for it. It used to back
+ * the review dropdown's "this pick bills through a local sidecar" warning: the
+ * host probed that endpoint before spawning the CLI and the renderer worded the
+ * consequence, and two halves needing one fact is exactly the case a shared
+ * module exists for.
+ *
+ * That warning died with the CLI (the daemon — itself loopback-only — answers
+ * `/models` with profile NAMES, not base_urls, so there is no endpoint left to
+ * test). The predicate is kept and still exported because it is a pure,
+ * documented fact about this plugin's transport, and because deleting a shared
+ * module is a separate decision from deleting a consumer.
  */
 export { isLoopbackBaseUrl as isLoopbackEndpoint };
 
 /**
- * The model rows, derived from ONE stats snapshot.
+ * The model row, derived from ONE stats snapshot.
  *
- * Two entries, always both, never collapsed into one: they are TWO DIFFERENT
- * namespaces (ask = daemon model profile, review = CLI direct entry), and one
- * merged row would read as "same knob, two names" — the exact confusion
- * 红线 8 exists to prevent.
+ * There is exactly ONE row because there is exactly ONE ladder now
+ * (per-call `provider` > panel pick > `default_provider` > AtomCode's own
+ * default). It used to be two rows for two namespaces — the review row asked
+ * for a `[providers.<name>]` direct entry and fed a spawned CLI — and that
+ * second namespace died with the CLI (红线 8's "two namespaces" is retired).
  */
 export function providerRows(cfg: ConfigBranch | null | undefined): ProviderRow[] {
   const src: ConfigBranch = cfg && typeof cfg === 'object' ? cfg : {};
   const name = (v: unknown): string => (typeof v === 'string' && v.trim() !== '' ? v.trim() : '');
   const ask = name(src.defaultProvider);
-  const review = name(src.reviewDefaultProvider);
   return [
     {
-      slotName: 'ask',
-      label: '默认档位 · ask',
+      label: '默认档位',
       fallback: '未插手',
       value: ask || '未插手',
       pinned: ask !== '',
       title:
-        'atomcode_ask 走 daemon：这里选的是模型档位（GET /models 的 provider 字段，' +
-        '形如 AtomGit-glm5.3-flash）。未插手 = 连 provider 字段都不发，由 AtomCode 自己的默认决定。' +
+        'atomcode_ask、atomcode_review 与 /atomcode-review 共用这一条档位阶梯：' +
+        '这里选的是模型档位（GET /models 的 provider 字段，形如 AtomGit-glm5.3-flash），' +
+        '由 daemon 执行。未插手 = 连 provider 字段都不发，由 AtomCode 自己的默认决定。' +
         '只影响不显式传 provider 的调用。',
     },
-    {
-      slotName: 'review',
-      label: '默认 provider · review',
-      fallback: '未插手',
-      value: review || '未插手',
-      pinned: review !== '',
-      title:
-        'atomcode_review 走 CLI：这里选的是 config.toml 里的直连条目名（[providers.<name>]，' +
-        '形如 atomcode-local —— 那是个名字，不是文件路径）。未插手 = 由 config.toml 的默认或唯一直连条目顶上。' +
-        '与左边是两套命名空间，不能同一个名字两边用。',
-    },
   ];
+}
+
+/**
+ * Read one finished assistant message's prose out of the chat snapshot.
+ *
+ * WHY THIS IS POSSIBLE AT ALL (the P2 verdict says it should not be): the
+ * plugin cannot INJECT anything into the session, and it cannot call back into
+ * the host's conversation services. But the seat the chat's own action row uses
+ * — `conversation.chat.assistant-actions` — is handed `{ messageId }` as
+ * OWNER props and `useChat` as a standard prop. `useChat` is the rendered
+ * projection of the conversation: it is the same data the host's own 「复制」
+ * button reads (`assistantText(closing.blocks)`). So the text is not fetched,
+ * not intercepted, not scraped from the DOM — it is passed to us by the owner,
+ * exactly as the reply's own 复制 button gets it. The human still reads it
+ * before anything is sent, so this stays "a paste slot with the paste done".
+ *
+ * The lookup mirrors the host's own two halves, because the id and the text are
+ * built in DIFFERENT places:
+ *
+ *   · the id comes from the `turn-tail` node — the footer of a completed turn,
+ *     whose `data.closing` is the last assistant step carrying prose
+ *     (`turnTailDefinition.buildViewNode` publishes `tailData` verbatim, and
+ *     `TurnTailNodeView` reads `data.closing.finalNode.messageId`);
+ *   · the text comes from that closing step's own blocks.
+ *
+ * The first version of this function looked for `data.finalNode` on the
+ * `assistant-step` node instead and never matched — the assistant node carries
+ * `finalNode` under `data`, but the id the owner hands us belongs to the
+ * turn-tail's `closing`, so the search walked right past it. The fix is to read
+ * the same node the host reads, and to fall back to the assistant-step shape so
+ * a projection that publishes both keeps working.
+ *
+ * Text blocks only, concatenated with no separator: the host's own 复制 button
+ * does exactly this (`assistantText`). Returns null when the message is not
+ * there at all, '' when it is there but carries no prose (a tool-only step), so
+ * the two cases stay distinguishable.
+ */
+export function messageTextOf(snapshot: any, messageId: string | null | undefined): string | null {
+  if (!snapshot || typeof snapshot !== 'object' || messageId == null) return null;
+  const nodes = snapshot.nodes;
+  if (!nodes || typeof nodes.values !== 'function') return null;
+  const textOf = (settled: any): string => {
+    const blocks = Array.isArray(settled.blocks) ? settled.blocks : [];
+    return blocks
+      .filter((block: any) => block && block.kind === 'text' && typeof block.text === 'string')
+      .map((block: any) => block.text)
+      .join('');
+  };
+  try {
+    // Pass 1: the turn-tail footer — where the owner's messageId actually lives.
+    for (const node of nodes.values()) {
+      const closing = node && node.data && node.data.closing;
+      if (!closing || !closing.finalNode || closing.finalNode.messageId !== messageId) continue;
+      return textOf(closing);
+    }
+    // Pass 2: an assistant-step node that carries the settled message itself.
+    for (const node of nodes.values()) {
+      const data = node && node.data;
+      const settled = data && data.finalNode;
+      if (!settled || settled.messageId !== messageId) continue;
+      return textOf(settled);
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 /**
@@ -270,10 +351,9 @@ export function providerRows(cfg: ConfigBranch | null | undefined): ProviderRow[
  */
 export function providerSelectModel(
   provider: ProviderBranch | null | undefined,
-  slotName: ProviderSlotName,
   fallbackLabel: string,
 ): ProviderSelectModel {
-  const src = provider && typeof provider === 'object' ? provider[slotName] : null;
+  const src = provider && typeof provider === 'object' ? provider : null;
   if (!src || typeof src !== 'object') {
     return {
       value: '',
@@ -288,12 +368,11 @@ export function providerSelectModel(
   }
   const name = (v: unknown): string => (typeof v === 'string' && v.trim() !== '' ? v.trim() : '');
   const panel = name(src.panel);
-  // The two slots do NOT agree on the catalogue element shape, because the two
-  // endpoints do not: /models answers with OBJECTS ({provider, isDefault})
-  // while the review CLI's direct entries are plain STRINGS. Both go through
-  // here, so both are flattened to the option VALUE — and a shape the host did
-  // not send is null (unavailable), never [] (empty), which would read as
-  // "your machine has no models".
+  // One catalogue shape now: /models answers with OBJECTS ({provider,
+  // isDefault}). It used to be a union with the review CLI's plain-string
+  // direct entries, which is why this flattened both — objects only today, and
+  // a shape the host did not send is null (unavailable), never [] (empty),
+  // which would read as "your machine has no models".
   const optionValue = (v: string | { provider?: string }): string => {
     if (typeof v === 'string') return name(v);
     if (v && typeof v === 'object') {
@@ -305,27 +384,31 @@ export function providerSelectModel(
   // it says which profile AtomCode would pick by itself, i.e. whether a pin
   // changes anything. It ships as a LABEL, never as the value — the value is
   // what gets sent as `provider`, and "（默认）" is not a provider name.
-  const optionEntry = (v: string | { provider?: string; isDefault?: boolean }): { value: string; label: string } | null => {
+  const optionEntry = (v: string | { provider?: string; isDefault?: boolean; effortLevels?: string[]; currentEffort?: string | null }): { value: string; label: string; effortLevels?: string[]; currentEffort?: string | null } | null => {
     const value = optionValue(v);
     if (value === '') return null;
     const isDefault = !!(v && typeof v === 'object' && v.isDefault === true);
-    return { value, label: isDefault ? `${value}（默认）` : value };
+    const label = isDefault ? `${value}（默认）` : value;
+    const effortLevels = (v && typeof v === 'object' && Array.isArray(v.effortLevels) && v.effortLevels.length > 0) ? v.effortLevels : undefined;
+    const currentEffort = (v && typeof v === 'object' && typeof v.currentEffort === 'string') ? v.currentEffort : null;
+    return { value, label, ...(effortLevels ? { effortLevels } : {}), ...(currentEffort ? { currentEffort } : {}) };
   };
   const catalog = Array.isArray(src.catalog)
-    ? src.catalog.map(optionEntry).filter((e): e is { value: string; label: string } => e !== null)
+    ? src.catalog.map(optionEntry).filter((e): e is { value: string; label: string; effortLevels?: string[]; currentEffort?: string | null } => e !== null)
     : null;
   // A pinned name the catalogue can't vouch for (unfetchable, or a shape the
   // host never sent) still stays VISIBLE — a disabled select whose value has
   // no matching <option> renders as "nothing selected", which reads as a lie
   // when a pick is actually on disk.
-  const pinned = panel ? [{ value: panel, label: panel }] : [];
-  const list =
+  type OptionEntry = { value: string; label: string; effortLevels?: string[]; currentEffort?: string | null };
+  const pinned: OptionEntry[] = panel ? [{ value: panel, label: panel }] : [];
+  const list: OptionEntry[] =
     catalog === null
       ? pinned
       : catalog.some((e) => e.value === panel)
-        ? catalog
-        : pinned.concat(catalog);
-  const options = [{ value: '', label: fallbackLabel }].concat(list);
+        ? (catalog as OptionEntry[])
+        : pinned.concat(catalog as OptionEntry[]);
+  const options: OptionEntry[] = [{ value: '', label: fallbackLabel }].concat(list);
   const effective = name(src.effective);
   const source = name(src.source);
   const branch: ProviderBranch = provider as ProviderBranch;
@@ -339,29 +422,23 @@ export function providerSelectModel(
     reason = name(src.catalogError) || name(branch.storeError) || '档位列表暂不可用（daemon 未在线？）';
   } else if (list.length === 0) {
     disabled = true;
-    reason =
-      slotName === 'ask'
-        ? 'daemon 未列出档位'
-        : 'config.toml 里没有直连条目';
+    reason = 'daemon 未列出档位';
   }
   // `note` is a human-readable sentence about the effective value, worded by
   // SOURCE. The old shape was a bare `effective` that the caller formatted as
   // "这次调用实际用 X（不是这里选的）" — which is a lie when the user never
   // picked anything (panel === '') and the value came from config or AtomCode's
   // own default. Now:
-  //   - source === 'panel'  → "不是这里选的" (the pick lost to a later layer)
-  //   - source === 'config' → "来自配置" (the config field won)
-  //   - source === 'atomcode' → "AtomCode 默认" (nothing pinned; ask slot)
-  //   - source === 'auto'   → nothing (review slot: the CLI picks, see below)
+  //   - source === 'panel'    → "不是这里选的" (the pick lost to a later layer)
+  //   - source === 'config'   → "来自配置" (the config field won)
+  //   - source === 'atomcode' → "AtomCode 默认" (nothing pinned)
   //   - source === 'argument' → "本次调用指定" (per-call argument overrode)
-  // The last two are worth naming: `argument` is the execute path's own rung —
+  // The last one is worth naming: `argument` is the execute path's own rung —
   // a POLL snapshot asks the ladder with no argument, so the panel does not
-  // normally produce it, and it is handled anyway because the host's ladder
-  // (one ladder now, shared by both callers) can, and an unhandled source would
-  // render a silently empty note. `auto` says nothing on purpose: leaving review
-  // unpinned is not a value, it is a delegation to the CLI's own ladder.
-  // An empty note means "nothing to say" — the control shows what the user
-  // chose, so narrating that fact is decoration.
+  // normally produce it, and it is handled anyway because the ladder can, and
+  // an unhandled source would render a silently empty note. An empty note means
+  // "nothing to say" — the control shows what the user chose, so narrating that
+  // fact is decoration.
   let note = '';
   if (!disabled && effective !== '' && effective !== panel) {
     if (source === 'panel') {
@@ -374,26 +451,25 @@ export function providerSelectModel(
       note = '本次调用指定 ' + effective;
     }
   }
-  // The loopback warning is a DIFFERENT kind of sentence from `note`, so it
-  // gets its own field: it is about what the pick DEPENDS ON, not about which
-  // layer won. It fires on the SELECTED entry (loopback endpoint = a local
-  // sidecar process, which in the only measured working setup is the proxy
-  // that converts CodingPlan quota into a standard endpoint on a gateway that
-  // does not check signatures). README's risk table said this; the panel now
-  // says it at the moment of the click.
-  let warning = '';
-  if (slotName === 'review') {
-    // Read the endpoint map from the SLOT, which is where the host puts it
-    // (`provider.review.endpoints`). It used to be read from the branch ROOT
-    // (`provider.endpoints`), which no host build has ever written — so this
-    // warning was unreachable in practice while both halves' tests stayed green.
-    const endpoints = src.endpoints && typeof src.endpoints === 'object' ? src.endpoints : {};
-    const target = name(panel) || effective;
-    const baseUrl = name((endpoints as Record<string, unknown>)[target]);
-    if (baseUrl !== '' && isLoopbackBaseUrl(baseUrl)) {
-      warning = '本地端点 ' + baseUrl + '：评审经本机进程转发计费，它一停 review 立刻断（探活会给出具名诊断）';
-    }
-  }
+  // `warning` used to carry "this pick depends on a local sidecar process",
+  // read from the review namespace's name→base_url map. The CLI is gone, the
+  // daemon's `/models` returns profile names rather than endpoints, and the
+  // host no longer sends that map — so there is nothing left to warn about and
+  // the field stays permanently empty (it is part of the row contract, not
+  // part of this function's output surface).
+  const warning = '';
+  // The effort levels for the SELECTED model (if any). The panel shows them
+  // so the user knows which reasoning-effort values are legal for the current
+  // pick before firing a turn.
+  const selectedOption = panel
+    ? list.find((e: any) => e.value === panel)
+    : null;
+  const effortLevels = selectedOption && Array.isArray(selectedOption.effortLevels) && selectedOption.effortLevels.length > 0
+    ? selectedOption.effortLevels
+    : undefined;
+  const currentEffort = selectedOption && typeof selectedOption.currentEffort === 'string'
+    ? selectedOption.currentEffort
+    : null;
   return {
     value: panel,
     options,
@@ -403,5 +479,7 @@ export function providerSelectModel(
     source,
     note,
     warning,
+    ...(effortLevels ? { effortLevels } : {}),
+    ...(currentEffort ? { currentEffort } : {}),
   };
 }

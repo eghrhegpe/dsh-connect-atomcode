@@ -9,8 +9,10 @@
  *   - `./config.ts`    readConfig() + the shared tuning constants
  *   - `./runtime.ts`   createRuntime() — the stats bag + daemon lifecycle + quota
  *   - `./stats.ts`     writeJson/sameOrigin/describeDaemonDown/createStatsBag/buildStatsBody
- *   - `./routes.ts`    mountRoutes() — the two HTTP routes, disposed as one unit
- *   - `./tools.ts`     mountAskTool() + mountReviewTool() — the two tools
+ *   - `./routes.ts`    mountRoutes() — the HTTP routes, disposed as one unit
+ *   - `./tools.ts`     runAsk() + mountAskTool() + mountReviewTool()
+ *   - `./inject.ts`    injectAtomcodeAnswer() + injectReviewContinuation() —
+ *                      hands an answer / a review continuation to a session's model
  *
  * The split was done so a reader can find a concern by its file name instead of
  * reading 1,900 lines; the discipline (red lines 1–8, the two provider
@@ -23,6 +25,7 @@ import { readConfig } from './config.ts';
 import { createRuntime } from './runtime.ts';
 import { mountRoutes } from './routes.ts';
 import { mountAskTool, mountReviewTool } from './tools.ts';
+import { mountReviewCommand } from './command.ts';
 
 /**
  * The plugin version — hand-edited here and in `package.json`, and the two must
@@ -80,15 +83,36 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
 
   // Each tool owns its own description string end to end.
   const disposeAsk = mountAskTool({ tools, config, runtime });
-  const disposeReview = mountReviewTool({ tools, config, runtime, log });
+  const disposeReview = mountReviewTool({ tools, config, runtime });
 
   // `webServer` is declared in `inject`, but degrade quietly if a host mounts
   // this plugin without the route service rather than failing the whole mount.
   const webServer = ctx.get ? ctx.get('webServer') : ctx.webServer;
-  // Both routes — the stats read and the panel's provider write — live in
-  // mountRoutes(): `webServer` is their only outside dependency, and both read
-  // the same runtime, so they are mounted and disposed as one unit.
-  const disposeRoutes = mountRoutes({ webServer, runtime, log });
+  // The routes — the stats read, the panel's provider write, the session index,
+  // the reasoning-effort write and the answer-delivery POST — live in
+  // mountRoutes(): they share the runtime, so they are mounted and disposed as
+  // one unit. (The `/ask` route is gone: 方针 A deleted the private popover that
+  // was its only caller — see `./routes.ts`.)
+  //
+  // `agents` is the one service only `/inject` needs. `agent.inject(message)` is
+  // the public "queue model-facing context for the next pre-step" channel the
+  // delivery uses (see `./inject.ts`); the message FACTORY resolves from the
+  // Host's own module graph inside that module, so the registry is the whole
+  // dependency. Looked up optionally — a Host without it still serves the other
+  // routes and `/inject` refuses by name.
+  const agents = ctx.get ? ctx.get('agents') : ctx.agents;
+  const disposeRoutes = mountRoutes({ webServer, runtime, log, agents });
+
+  // `/atomcode-review` — the one channel that can run a review WITHOUT the
+  // session's model in the loop and still leave something the human sees.
+  // `ctx.commands` handlers run "against the receiving agent without sending
+  // the command to the model", which is the `/compact` shape. It goes through
+  // the SAME `runAsk` as `atomcode_review` (both live in `./tools.ts`), so it is
+  // a second entry point, not a second implementation — one runner, one channel,
+  // one set of fuses. Optional service: a Host without it degrades to "no
+  // command" rather than failing the mount.
+  const commands = ctx.get ? ctx.get('commands') : ctx.commands;
+  const disposeCommand = mountReviewCommand({ commands, config, runtime, log });
 
   // NOTE: the daemon is intentionally NOT started at mount. Mounting a plugin
   // should not spawn background processes. `auto_start: true` is honored at the
@@ -108,6 +132,7 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
       // there cannot be forgotten here (which is how the four separate checks
       // that used to live on these lines let a fifth disposer go missing).
       disposeRoutes();
+      disposeCommand();
     };
   });
 }

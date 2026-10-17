@@ -56,38 +56,35 @@ async function loadClient() {
 }
 
 describe('provider write — the panel adopts the value the server accepted', () => {
-  it('the response carries both branches, or nothing at all', async () => {
-    const { providerSlotsOf } = (await loadClient()).__test;
-    const answer = { ok: true, ask: { panel: 'A' }, review: { panel: 'B', effective: 'B' } };
-    assert.deepEqual(providerSlotsOf(answer), { ask: { panel: 'A' }, review: { panel: 'B', effective: 'B' } });
+  it('the response carries one flat branch, or nothing at all', async () => {
+    const { providerBranchOf } = (await loadClient()).__test;
+    const answer = { ok: true, provider: { panel: 'A', effective: 'A', source: 'panel' } };
+    assert.deepEqual(providerBranchOf(answer), { panel: 'A', effective: 'A', source: 'panel' });
     // A response with no branch is not a partial success — it adopts nothing, and
     // the caller falls back to the reload rather than publishing a half-truth.
-    assert.equal(providerSlotsOf({ ok: true }), null);
-    assert.equal(providerSlotsOf(null), null);
+    assert.equal(providerBranchOf({ ok: true }), null);
+    assert.equal(providerBranchOf(null), null);
   });
 
   it('adoption produces a NEW snapshot and leaves the old one untouched', async () => {
-    const { providerSlotsOf, snapshotWithSlots } = (await loadClient()).__test;
+    const { providerBranchOf, snapshotWithBranch } = (await loadClient()).__test;
     const before = {
-      provider: {
-        ask: { panel: 'old-ask', effective: 'old-ask' },
-        review: { panel: 'old-review', effective: 'old-review' },
-      },
+      provider: { panel: 'old-ask', effective: 'old-ask', storePath: '/x/provider.json' },
       daemon: { up: true },
     };
-    const slots = providerSlotsOf({ ok: true, ask: { panel: 'new-ask', effective: 'new-ask' } });
-    const after = snapshotWithSlots(before, slots);
+    const branch = providerBranchOf({ ok: true, provider: { panel: 'new-ask', effective: 'new-ask', storePath: '/x/provider.json' } });
+    const after = snapshotWithBranch(before, branch);
 
     assert.notEqual(after, before, 'a new object — an identical reference renders nothing');
-    assert.equal(after.provider.ask.panel, 'new-ask', 'the dropdown must show the value just accepted');
-    assert.equal(before.provider.ask.panel, 'old-ask', 'the previous snapshot must not be mutated');
-    assert.equal(after.provider.review.panel, 'old-review', 'the untouched branch is carried over, not cleared');
+    assert.equal(after.provider.panel, 'new-ask', 'the dropdown must show the value just accepted');
+    assert.equal(before.provider.panel, 'old-ask', 'the previous snapshot must not be mutated');
+    assert.equal(after.provider.storePath, '/x/provider.json', 'steps the answer did not carry are carried over, not cleared');
     assert.equal(after.daemon, before.daemon, 'everything outside the provider branch survives');
   });
 
   it('adopts nothing when there is no snapshot to adopt into', async () => {
     // First load failed / never happened: the reload fetches the truth instead.
-    const { snapshotWithSlots } = (await loadClient()).__test;
-    assert.equal(snapshotWithSlots(null, { ask: { panel: 'A' } }), null);
+    const { snapshotWithBranch } = (await loadClient()).__test;
+    assert.equal(snapshotWithBranch(null, { panel: 'A' }), null);
   });
 });

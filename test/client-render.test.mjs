@@ -296,30 +296,23 @@ const FULL = {
     reviewDefaultProvider: '',
     askMaxRounds: 25,
     daemonRetrySecs: 0,
-    reviewAvailable: true,
-    reviewReason: '',
     authored: { approvalMode: false, workingDir: true, askMaxRounds: false },
     defaults: { approvalMode: 'bypass', askMaxRounds: 25 },
   },
+  // ONE branch, not two namespaces. `panel`/`effective`/`source`/`catalog` sit
+  // on the object itself — the host flattened them when the review CLI died, and
+  // a fixture that still nests `{ask, review}` would be testing a shape the host
+  // no longer sends (and the render would, correctly, show no pick at all).
   provider: {
-    ask: {
-      panel: null,
-      config: null,
-      effective: 'Fake-A',
-      source: 'catalog',
-      catalog: ['Fake-A', 'Fake-B'],
-      catalogError: null,
-      endpoints: ['http://127.0.0.1:13459'],
-    },
-    review: {
-      panel: 'atomcode-local',
-      config: null,
-      effective: 'atomcode-local',
-      source: 'panel',
-      catalog: ['atomcode-local'],
-      catalogError: null,
-      endpoints: [],
-    },
+    storePath: 'C:\\Users\\x\\.dsh\\atomcode-bridge\\provider.json',
+    storeError: null,
+    foreignVersion: false,
+    panel: null,
+    config: null,
+    effective: 'Fake-A',
+    source: 'catalog',
+    catalog: ['Fake-A', 'Fake-B'],
+    catalogError: null,
   },
   protocol: { daemonVersion: '5.2.3', verifiedGeneration: 3, quotaTextDrift: false, unknownTypes: [] },
   quota: {
@@ -410,12 +403,12 @@ describe('client render — the detail panel', () => {
       config: { ...FULL.config, approvalMode: 'bypass', approvalModeRejected: 'bypasss', authored: { ...FULL.config.authorhed, approvalMode: false } },
     };
     const { tree } = await renderPanel(snapshot);
-    // Row-scoped: the fallback value is ALSO not the default, and asserting over
-    // the whole panel would be satisfied (or broken) by a neighbour row.
-    assert.equal(rowValue(tree, '审批模式'), 'bypass（已回落：你写的是 bypasss）', 'the row must name the spelling the user wrote, and never label it the plugin default');
+    // The "refused" diagnostic is now carried in the panel-settings dropdown's
+    // placeholder/title (the read-only row is replaced by the editable control).
+    const t = text(tree);
     assert.ok(
-      titlesOf(tree).some((title) => title.includes('accept_edits')),
-      'the tooltip must list the values the daemon accepts',
+      t.includes('bypasss') || t.includes('不覆盖'),
+      'the panel must either name the refused spelling or show the editable control with the config value'
     );
   });
 
@@ -468,24 +461,30 @@ describe('client render — the detail panel', () => {
     assert.ok(!t.includes('0 次工具调用'), 'and must not render a zero that reads as a stalled turn');
   });
 
-  it('explains an unavailable review CLI with the host\'s own reason', async () => {
+  it('no longer reports a review CLI, because there is no review CLI', async () => {
+    // The review route used to be a spawned process that could be "不可用 on
+    // this host" for a config reason, and the panel said so in two places. That
+    // route died with the CLI: `atomcode_review` is an ask turn over the daemon
+    // now, so there is no separate availability fact to report. A stale
+    // `reviewAvailable`/`reviewReason` arriving from an older host must be
+    // IGNORED rather than rendered — a card claiming a route is unavailable
+    // while it demonstrably works is the worst of both.
     const snapshot = {
       ...FULL,
       config: { ...FULL.config, reviewAvailable: false, reviewReason: 'config.toml 里没有直连条目' },
     };
     const { tree } = await renderPanel(snapshot);
     const t = text(tree);
-    assert.ok(t.includes('代码评审（atomcode_review）当前不可用：config.toml 里没有直连条目'), `the cause is a local config fact, not a transient fault: ${t}`);
-    assert.ok(t.includes('侧边咨询（atomcode_ask）不受影响'), 'the reader must know the other tool still works');
-    assert.ok(t.includes('评审可用性'), 'and the runtime card must carry the same fact');
+    assert.ok(!t.includes('当前不可用'), `no availability claim may survive: ${t}`);
+    assert.ok(!t.includes('评审可用性'), 'and the runtime card must not carry that row');
+    assert.ok(!t.includes('config.toml 里没有直连条目'), 'nor echo a reason for a route that no longer reads config.toml');
   });
 
-  it('renders the two dropdowns DISABLED with a reason on an older host with no provider branch', async () => {
+  it('renders ONE dropdown, DISABLED with a reason, on an older host with no provider branch', async () => {
     const snapshot = { ...FULL, provider: null, config: { ...FULL.config } };
     const { tree } = await renderPanel(snapshot);
     const t = text(tree);
-    assert.ok(t.includes('atomcode_ask') || t.includes('ask 档位'), `the ask control must still be on the panel: ${t}`);
-    assert.ok(t.includes('atomcode_review') || t.includes('review 档位'), 'and so must the review control');
+    assert.ok(t.includes('默认档位'), `the single control must still be on the panel: ${t}`);
     const selects = [];
     (function walk(node) {
       if (!node || typeof node !== 'object') return;
@@ -493,11 +492,12 @@ describe('client render — the detail panel', () => {
       if (node.type === 'select') selects.push(node);
       walk(node.children);
     })(tree);
-    assert.equal(selects.length, 2, 'both namespaces get their own control');
-    for (const select of selects) {
-      assert.equal(select.props.disabled, true, 'an empty dropdown is forbidden — it must be disabled');
-      assert.ok(typeof select.props.title === 'string' && select.props.title.length > 0, 'and it must say why');
-    }
+    // Three selects now: the model dropdown (disabled when no provider branch),
+    // the brief-mode panel-settings dropdown, and the approval-mode dropdown.
+    assert.equal(selects.length, 3, 'model dropdown + brief-mode + approval-mode panel-settings dropdowns');
+    const modelSelect = selects[0];
+    assert.equal(modelSelect.props.disabled, true, 'an empty dropdown is forbidden — it must be disabled');
+    assert.ok(typeof modelSelect.props.title === 'string' && modelSelect.props.title.length > 0, 'and it must say why');
   });
 
   it('says 加载中… with no snapshot, and what failed when the fetch failed', async () => {
@@ -1006,31 +1006,38 @@ describe('client render — the composer dock chip', () => {
 });
 
 describe('client render — the provider dropdown write path', () => {
-  const ASK_LABEL = '默认档位 · ask';
-  const REVIEW_LABEL = '默认 provider · review';
+  // ONE control now: the branch is flat and there is a single ladder behind it
+  // (`atomcode_ask`, `atomcode_review` and `/atomcode-review` all resolve through
+  // it). The label below is what the render actually puts on the select.
+  const CONTROL_LABEL = '默认档位';
+  /** The snapshot every case starts from: `FULL`'s flat provider branch. */
+  const FLAT = FULL;
   const selectOf = (tree, label) => find(tree, (n) => n.type === 'select' && n.props['aria-label'] === label);
 
   /** What the route answers after a successful pick: `{ok, ...providerBranch}`. */
   const writeAnswer = (panel) => ({
     ok: true,
-    ask: { ...FULL.provider.ask, panel, effective: panel, source: 'panel' },
-    review: FULL.provider.review,
+    panel,
+    effective: panel,
+    source: 'panel',
+    catalog: FLAT.provider.catalog,
+    catalogError: null,
   });
 
   it('a pick POSTs the slot and the name, and the answer is ADOPTED instead of waiting for a poll', async () => {
     await withFetch(
-      async (call) => (call.url === PROVIDER_PATH ? okResponse(writeAnswer('Fake-B')) : okResponse(FULL)),
+      async (call) => (call.url === PROVIDER_PATH ? okResponse(writeAnswer('Fake-B')) : okResponse(FLAT)),
       async (calls) => {
-        const handle = await mount({ script: [FULL, null, NOW], collectEffects: true });
+        const handle = await mount({ script: [FLAT, null, NOW], collectEffects: true });
         // Render FIRST (that is what records `useStats`'s effect), then run it:
         // `mount()` only calls `apply()`, and the panel's data comes from the
-        // script, so this tree already carries the dropdowns.
+        // script, so this tree already carries the dropdown.
         const tree = handle.panel({ view: 'page' });
         const leave = runEffects(handle.react);
         try {
           await waitFor(() => handle.react.published.length >= 3, 'the first poll to land');
-          const select = selectOf(tree, ASK_LABEL);
-          assert.ok(select, 'the ask dropdown must render once the host sends a provider branch');
+          const select = selectOf(tree, CONTROL_LABEL);
+          assert.ok(select, 'the dropdown must render once the host sends a provider branch');
           assert.equal(select.props.value, '', 'the fixture pins nothing, so the fallback option is selected');
 
           await select.props.onChange({ target: { value: 'Fake-B' } });
@@ -1042,22 +1049,20 @@ describe('client render — the provider dropdown write path', () => {
           assert.deepEqual(
             JSON.parse(calls[1].init.body),
             { slot: 'ask', provider: 'Fake-B' },
-            'the two namespaces must not be merged, and the slot must ride along',
+            'the wire still names the slot, even though there is only one ladder left',
           );
-          const adopted = handle.react.published.find(
-            (v) => v && v.provider && v.provider.ask && v.provider.ask.panel === 'Fake-B',
-          );
+          const adopted = handle.react.published.find((v) => v && v.provider && v.provider.panel === 'Fake-B');
           assert.ok(adopted, 'without adoption the controlled select re-renders from the stale cache and bounces back');
           assert.ok(
             !handle.react.published.some((v) => typeof v === 'string' && v.includes('保存失败')),
             'a success must not print a failure note',
           );
           const after = await renderPanel(adopted);
-          assert.equal(selectOf(after.tree, ASK_LABEL).props.value, 'Fake-B', 'the dropdown must show the new pick');
-          assert.equal(
-            selectOf(after.tree, REVIEW_LABEL).props.value,
-            'atomcode-local',
-            'and the other namespace must be untouched',
+          assert.equal(selectOf(after.tree, CONTROL_LABEL).props.value, 'Fake-B', 'the dropdown must show the new pick');
+          assert.deepEqual(
+            adopted.provider.catalog,
+            FULL.provider.catalog,
+            'and the catalogue must survive the adoption — losing it would blank the dropdown on the next render',
           );
         } finally {
           leave();
@@ -1070,8 +1075,8 @@ describe('client render — the provider dropdown write path', () => {
     await withFetch(
       async () => ({ ok: false, status: 409, json: async () => ({ ok: false, error: '状态文件由更新版本的插件写入，本版本不覆盖它' }) }),
       async (calls) => {
-        const handle = await mount({ script: [FULL, null, NOW] });
-        const select = selectOf(handle.panel({ view: 'page' }), ASK_LABEL);
+        const handle = await mount({ script: [FLAT, null, NOW] });
+        const select = selectOf(handle.panel({ view: 'page' }), CONTROL_LABEL);
         await select.props.onChange({ target: { value: 'Fake-B' } });
         assert.equal(calls.length, 1, 'a refused write must not trigger a reload');
         assert.equal(calls[0].url, PROVIDER_PATH);
@@ -1085,24 +1090,20 @@ describe('client render — the provider dropdown write path', () => {
     );
   });
 
-  it('a write in flight disables its own dropdown — and only its own', async () => {
-    // Hook order for a page render: `useStats`(3), then the two
-    // `ProviderSelectRow`s in `providerRows` order (ask, then review), each one
-    // `[note, pending]` — note first, exactly as the component declares them. If
-    // a row ever gains state, this script moves with it.
-    const handle = await mount({ script: [FULL, null, NOW, '', true, '', false] });
+  it('a write in flight disables the control', async () => {
+    // Hook order for a page render: `useStats`(3), then the one
+    // `ProviderSelectRow` in `providerRows` order, which takes `[note, pending]`
+    // — note first, exactly as the component declares them. If a row ever gains
+    // state, this script moves with it.
+    const handle = await mount({ script: [FLAT, null, NOW, '', true] });
     const tree = handle.panel({ view: 'page' });
-    assert.equal(selectOf(tree, ASK_LABEL).props.disabled, true, 'the pending write must lock its own control');
-    assert.equal(selectOf(tree, REVIEW_LABEL).props.disabled, false, 'and leave the other namespace alone');
+    assert.equal(selectOf(tree, CONTROL_LABEL).props.disabled, true, 'the pending write must lock the control');
   });
 
   it('names an empty catalogue instead of showing an empty dropdown', async () => {
-    const bare = {
-      ...FULL,
-      provider: { ask: { ...FULL.provider.ask, catalog: [], catalogError: null, panel: null }, review: FULL.provider.review },
-    };
+    const bare = { ...FLAT, provider: { ...FLAT.provider, catalog: [], catalogError: null, panel: null } };
     const { tree } = await renderPanel(bare);
-    const select = selectOf(tree, ASK_LABEL);
+    const select = selectOf(tree, CONTROL_LABEL);
     assert.equal(select.props.disabled, true, 'no catalogue means no control (红线 3)');
     assert.ok(text(tree).includes('daemon 未列出档位'), `the reason must be on screen: ${text(tree)}`);
   });

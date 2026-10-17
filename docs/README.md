@@ -26,12 +26,10 @@
 
 ## 三个已知要点
 
-1. **`atomcode_review` 在 AtomGit 登录态下默认用不了——但已有实测通路。**
-   网关对推理端点强制 AtomCode 专有签名（未签名请求 → `ATOMCODE_SIG_MISSING`），而 review CLI（`atomcodex`）不会签。
-   修法 = 加一个**标准 + 显式 `api_key`** 的直连 provider；本机实测通路是本地代理。
-   **三条证据、零额度对照实验与已验证的修法**全部在
-   [`AtomGit-网关与-review-通路.md`](./AtomGit-网关与-review-通路.md)，README 只留摘要。
-   配套的 provider 自动选择与回环探活也在那篇里说清了。
+1. **`atomcode_review` 与 `atomcode_ask` 现在走同一条 daemon `/chat` 通道（m01249 单通道决定）。**
+   此前的 CLI 通路（`atomcodex`）因 AtomGit 网关签名限制已删除。历史档案（为什么 CLI 不通、
+   签名门对照实验、本地代理修法）在 [`AtomGit-网关与-review-通路.md`](./AtomGit-网关与-review-通路.md)。
+   代价：没有结构化 `findings[]`（报告是文字）。收益：不再有"ask 能跑而 review 不能"的分裂态。
 
 2. **额度显示是从本地化文本解析出来的。**
    AtomCode 没有额度 HTTP 接口，唯一来源是 `POST /command {"command":"status"}` 返回的 `text`。
@@ -50,7 +48,7 @@
 | [`../CHANGELOG.md`](../CHANGELOG.md) | 想知道「哪个版本改了什么」 | 按主题分组的变更史。版本↔提交回查看 `git tag` |
 | [`RELEASING.md`](./RELEASING.md) | 要发一个新版本（断点续发先读它 §1 状态判定表） | **发版手册**：状态判定与不可逆点、版本号两处手改、验证三连、CI 绿后打 tag、npm 发布（钉 npmjs、防镜像劫持）、内容一致性核验、GitHub Release、市场投稿、闭环清单 |
 | [`DECISIONS.md`](./DECISIONS.md) | 想改设计前 / 怀疑「这事是不是忘了做」 | 仍然有效的设计约束 + 明确不做的清单 |
-| [`AtomGit-网关与-review-通路.md`](./AtomGit-网关与-review-通路.md) | review 不通 / 想弄明白签名门 | **事故卷宗**：三条证据 + 两个网关 × 5 种签名形态的对照实验 + 端到端实测的修法 + 残留风险 |
+| [`AtomGit-网关与-review-通路.md`](./AtomGit-网关与-review-通路.md) | 历史档案（为什么 CLI 不通、单通道决定） | **事故卷宗**：三条证据 + 签名门对照实验 + 本地代理修法（历史）+ 单通道改造说明（当前）。review 现在走 daemon 通道，本文是「为什么当初 CLI 不通」的证据 |
 | [`AtomCode-CLI与daemon接口参考.md`](./AtomCode-CLI与daemon接口参考.md) | 要调 AtomCode 的命令 / 端点 | **实测速查**：CLI 命令与选项、daemon 全部 HTTP 端点、SSE 词表、`ATOMCODE_SIG_MISSING` 签名门、本插件实际用到的子集。**命令数与选项数一律以本篇实测为准**（本文不转抄） |
 | [`AtomCode-CodingPlan网页版可用信息.md`](./AtomCode-CodingPlan网页版可用信息.md) | 要核对套餐规则 | 网页版（ai.atomgit.com）CodingPlan 页面素材：Lite / Pro 的支持模型与窗口规则 |
 | [`AtomCode-CodingPlan网页版额度卡片.md`](./AtomCode-CodingPlan网页版额度卡片.md) | 要核对额度卡的字段与文案 | ⚠️ **原始 HTML 转储，不是给人读的文档**（一条三四千字符的超长单行 + 几条兜底行）。供人工比对用；可执行的实测载荷在 `../test/quota.test.mjs` |
@@ -85,29 +83,38 @@ src/host/index.ts           → lib/index.js           apply() 装配点：注�
                                                        额度缓存 + daemon 拉起策略；stats body 的 version 是版本号真源之一
 src/host/config.ts          → lib/config.js          readConfig：每个配置字段的类型兜底 + detectProfileKey（多 profile 隔离）
 src/host/runtime.ts         → lib/runtime.js         挂载期状态容器：daemon / 额度 / 熔断 / 错误观察者，被 apply() 组装
-src/host/routes.ts          → lib/routes.js          /stats 只读 + /provider 只写面板偏好（同源门禁 + 4KB body 上限）
-src/host/tools.ts           → lib/tools.js           两个工具的挂载与描述（description 里写出本机可用性、优先级顺序）
-src/host/daemon.ts          → lib/daemon.js          纯 daemon HTTP 客户端（/health /models /command /chat SSE），零宿主依赖
-src/host/review.ts          → lib/review.js          `atomcode review` CLI 包装（argv 构造 + 有界熔断 + checkReviewProvision
-                                                       静态探针 + selectReviewProvider 自动选择 + probeLocalEndpoint 回环探活）
-src/host/quota.ts           → lib/quota.js           CodingPlan 额度文本解析（纯函数，按结构而非措辞；解析失败带 reason 不编数字）
-src/host/sessions.ts        → lib/sessions.js        侧边会话映射（read-modify-write，跨 profile 键前缀隔离）
-src/host/provider-store.ts  → lib/provider-store.js  面板选的模型档位/直连条目（provider.json：版本化、
-                                                       损坏保留旁路、拒覆盖更新版本）
-src/host/state-file.ts      → lib/state-file.js      state JSON 文件读写层，被 sessions / provider-store 共用
+src/host/routes.ts          → lib/routes.js          /stats 只读 + /provider 只写面板偏好 + /inject（把回答交给会话的模型）+
+                                                        /reasoning-effort（面板力度写入点）+ /sessions（会话列表只读）；
+                                                        全部同源门禁 + body 上限，wire 上两个方向都 snake_case
+src/host/inject.ts          → lib/inject.js          把一条 AtomCode 回答投进目标会话（按 agent.status 分流：
+                                                        跑着的用 agent.inject 挂到下一步、空闲的用 agent.steer 唤醒）：
+                                                        composeInjection 的框注 + 具名拒绝 + 运行时解析宿主的 createUserMessage
+src/host/command.ts         → lib/command.js           /atomcode-review 斜杠命令：不经模型跑一次评审，与工具共用同一份
+                                                        runAsk + composeReviewMessage（宿主直接干活，零 LLM 调用）
+src/host/tools.ts           → lib/tools.js             两个工具的挂载与描述（description 里写出可用档位与优先级顺序）；
+                                                        两个入口都走 runAsk —— review 就是一次带 diff 任务的 ask 回合
+src/host/daemon.ts          → lib/daemon.js            纯 daemon HTTP 客户端（/health /models /command /chat SSE），零宿主依赖
+src/host/quota.ts           → lib/quota.js             CodingPlan 额度文本解析（纯函数，按结构而非措辞；解析失败带 reason 不编数字）
+src/host/sessions.ts        → lib/sessions.js          侧边会话映射（read-modify-write，跨 profile 键前缀隔离）
+src/host/provider-store.ts  → lib/provider-store.js    面板选的模型档位（provider.json：版本化、损坏保留旁路、拒覆盖更新版本）
+src/host/panel-settings-store.ts → lib/panel-settings-store.js  面板覆盖 briefMode + workingDir（panel-settings.json：执行时读取，下次调用即生效）
+src/host/state-file.ts      → lib/state-file.js      state JSON 文件读写层，被 sessions / provider-store / panel-settings-store 共用
 src/host/stats.ts           → lib/stats.js           buildStatsBody：把 daemon / binary / config / provider / protocol /
                                                        quota / sessions / ask / review 拼成一份 /stats 快照
 
 # shared —— 被两半同时读的模块（"这个 base_url 是不是本机端点" / "这份快照的字段契约" 是同一个事实）
-src/shared/loopback.ts      → lib/loopback.js        isLoopbackBaseUrl：host 决定要不要探活，client 写那句"代理一停 review 立刻断"
+src/shared/loopback.ts      → lib/loopback.js        isLoopbackBaseUrl：判断"这个 base_url 是不是本机端点"（两个 consumer 已随
+                                                        review CLI 消失，predicate 保留并仍被 client 侧导出为 isLoopbackEndpoint）
 src/shared/stats.ts         (inlined both sides)     StatsSnapshot 及其分支的共享类型契约（只有类型，无运行时产物）
 
 # client —— 渲染端半身，下面每个源文件都被 bundle 进同一个 client.js（IIFE）
-src/client/index.ts          → client.js              entry：座位注册与控件装配（详情页两个 seat 的取舍 + dock 行）
+src/client/index.ts          → client.js              entry：座位注册与控件装配（详情页两个 seat 的取舍 + dock 行 + 工具行）
 src/client/status-section.ts → client.js              详情页那张卡的分区渲染（环境 / 模型 / 协议 / 额度 / 用量）
 src/client/rows.ts           → client.js              每行的文字与 tooltip（turnBoundaryRows / providerRows / inFlightText）
 src/client/quota.ts          → client.js              quotaView()：把额度分支折成可渲染的读数（含解析失败的原样回落）
 src/client/quota-chip.ts     → client.js              输入框额度 chip 的弹窗（portal + Tooltip + 打开时的 1s tick）
+src/client/review-handoff.ts → client.js              工具行上渲染 null 的「插入轨」+ requestReview：把回复预填成 /atomcode-review（方针 A 后唯一剩下的交接）
+src/client/message-ask.ts    → client.js              每条助手回复下方的「锐评」按钮（ownerProps 的 messageId → 读该条正文 → 预填上面那条命令）
 src/client/styles.ts         → client.js              行内样式表（行高 / 网格 / 三级色）
 src/client/types.ts          → client.js              客户端类型别名，re-export ../shared/stats.ts 的契约
 ```

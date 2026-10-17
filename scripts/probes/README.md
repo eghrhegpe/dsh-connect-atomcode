@@ -12,7 +12,6 @@
 |---|---|---|---|
 | `signature-gate.mjs` | `.probe-signing.mjs` | ✅ **零额度** | 已登录的 `~/.atomcode/auth.toml` |
 | `real-completion.mjs` | `.probe-real-call.mjs` | ⚠️ **1 个 completion 回合** | 同上 |
-| `real-review.mjs` | `.probe-review.mjs` | ⚠️ **1 个评审回合** | 同上 + 可用的直连 provider（本地代理） |
 | `chat-stop.mjs` | （直接入库） | ✅ **零额度**（只探 422/未知 id，不停真回合） | 运行中的 daemon（token 运行时读） |
 | `approval-mode.mjs` | （直接入库） | ⚠️ **1 个 flash 档位回合/模式**（422 枚举门零额度） | 运行中的 daemon + 登录态 |
 | `probe-gate-diff.mjs` | （直接入库） | ✅ **零额度**（重建到临时目录，不碰磁盘上的 `lib/`） | 本机 `tsdown`（devDependency）+ 已构建的工作树 |
@@ -25,15 +24,11 @@
 `signature-gate.mjs` 之所以零额度：它用**不存在的模型名 + 畸形 body**，请求必然卡在模型门或参数门，
 到不了真正的补全。这是刻意设计的——探签名门不该花钱。
 
-`real-review.mjs` 要从**仓库根**跑（`node scripts/probes/real-review.mjs`）：
-它把 `process.cwd()` 当作评审的 `working_dir`。
-
 ## 它们验证了什么
 
 - `signature-gate.mjs` → `llm-api.atomgit.com` 连**正确的签名**都不认（第三个结论最重要：
   第三方照 `signing.py` 复刻走不通），而 `api-ai.gitcode.com` **裸请求即 200**。
 - `real-completion.mjs` → 同一 token 在 `api-ai.gitcode.com` 上端到端跑通（代理方案的前提）。
-- `real-review.mjs` → 本地代理 + 直连 provider 让 `atomcode_review` 真的能用（6.1s / exit 0 / `--json` findings）。
 - `chat-stop.mjs` → `/chat/stop` 的契约（`session_id` 必填；未知 id 回 200 "was not running"，200 ≠ 回合被停），
   结论落在 `docs/AtomCode-CLI与daemon接口参考.md` §4 与 `docs/DECISIONS.md`。
 - `approval-mode.mjs` → **非 bypass 无人值守回合不会卡在审批上**：422 门枚举出合法值

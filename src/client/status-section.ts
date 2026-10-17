@@ -14,9 +14,15 @@
  * point rather than imported here. What this file imports directly is only what
  * is React-free: `S`, and the pure formatters in `quota.ts` / `rows.ts`.
  *
- * Nothing in here is a behaviour change: the body was moved verbatim (indent
- * re-based, text unchanged). Seats, ordering, wording and the degradation
- * notices are exactly as they were.
+ * LAYOUT (2026-10, rewritten to the sibling sensenova panel's language): a
+ * PINNED page header over a scrolling body, content grouped into collapsible
+ * section cards inside three THEME TABS (运行 / 用量 / 会话), the active pane
+ * laid out as a responsive grid so a wide window reads two columns instead of
+ * one long one. The panel stops reading as six equal grey boxes and starts
+ * reading as one page with a readable anchor; hierarchy comes from background
+ * steps (section on layer-1, metric blocks on layer-2) instead of a border per
+ * row. No data was dropped — every heading and every row is still here, each
+ * section just owns a fold of its own and a tab of its own.
  *
  * @module dsh-connect-atomcode/client/status-section
  */
@@ -70,11 +76,28 @@ export interface StatusSectionDeps {
     updatedAt: number;
     reload: () => void;
   };
+  /**
+   * The collapse-state hook, consumed by `Section` (each section owns its own
+   * fold). `StatusSection` itself takes NO hook for the layout, so the hook
+   * order asserted by `test/client-render.test.mjs` (`useStats` then
+   * `ProviderSelectRow`) is unchanged by the collapsible skin.
+   */
+  useState: <T>(initial: T) => [T, (value: T | ((prev: T) => T)) => void];
   StatusPill: (props: { up: boolean }) => ReactElement;
   Row: (props: { label: string }, children?: unknown) => ReactElement;
   CallStat: (props: NumProps) => ReactElement;
-  /** The model dropdown row (ask + review are two namespaces — 红线 8). */
+  /**
+   * The model dropdown row. ONE row now: ask, `atomcode_review` and
+   * `/atomcode-review` all resolve through the same daemon profile ladder, so
+   * there is one knob to show (the second namespace died with the review CLI).
+   */
   ProviderSelectRow: (props: any) => ReactElement;
+  /**
+   * The panel-settings controls: brief-mode dropdown + working-dir input.
+   * These override the patch fields at execution time (panel-settings.json),
+   * so a click takes effect on the very next turn.
+   */
+  PanelSettingsControls?: (props: { cfg: any; reload?: () => void }) => ReactElement;
 }
 
 /**
@@ -84,15 +107,14 @@ export interface StatusSectionDeps {
  * @returns {(props: any) => ReactElement} the `StatusSection` component.
  */
 export function createStatusSection(deps: StatusSectionDeps) {
-  const { h, useStats, StatusPill, Row, CallStat, ProviderSelectRow } = deps;
+  const { h, useStats, useState, StatusPill, Row, CallStat, ProviderSelectRow, PanelSettingsControls } = deps;
 
   /**
    * The bundle card's one-liner (`view: 'summary'`).
    *
    * DEFINED HERE, not injected: it has exactly one caller — the `view: 'summary'`
    * branch of `StatusSection` below — so it travels with the component that
-   * renders it. Injecting it would have made the panel's assembly point carry a
-   * dependency only one of its two branches ever touches.
+   * renders it.
    *
    * Reports LIVE state only. The card already prints the localized description
    * from `locale/*.json` directly above this line, so any prose here would both
@@ -103,13 +125,102 @@ export function createStatusSection(deps: StatusSectionDeps) {
     const { data, error } = useStats();
     if (error || !data) return h('span', { style: S.provLabel }, '状态未知');
     const d = data.daemon || {};
-    const cfg = data.config || {};
     const parts = [
       daemonStatusLine(d, data.protocol && data.protocol.daemonVersion),
       '端口 ' + (d.port == null ? '—' : d.port),
     ];
-    if (cfg.reviewAvailable === false) parts.push('评审不可用');
     return h('span', { style: S.provLabel, title: parts.join(' · ') }, parts.join(' · '));
+  }
+
+  /**
+   * One collapsible section: a full-width toggle head (title + chevron) over the
+   * body, inside a single layer-1 card.
+   *
+   * A SEPARATE COMPONENT, on purpose — not a helper rendered inline by
+   * `StatusSection`. Each section owns its own collapse state, and React tracks
+   * hooks PER COMPONENT. If `StatusSection` called `useState` once up front and
+   * passed `open` down, it would add one hook to `StatusSection`'s sequence; the
+   * panel also renders `ProviderSelectRow` (the model dropdown), whose own
+   * `[note, pending]` pair is asserted by position in `test/client-render.test.mjs`
+   * — a comment there warns the script moves if a row gains state. Keeping the
+   * fold inside this component means `StatusSection`'s hook order is unchanged
+   * by the collapsible layout.
+   *
+   * The heading is the SAME string a test or a reader greps for, and it stays in
+   * the DOM whether the section is open or not (it lives in the toggle button),
+   * so nothing that names a section disappears with a click. Sections START
+   * open: a panel that greets the reader with six collapsed folds would hide the
+   * very facts it exists to show.
+   */
+  function Section(props: { title: string; titleRight?: any; children?: any }): any {
+    const [open, setOpen] = useState(true);
+    return h(
+      'div',
+      { style: S.section },
+      h(
+        'button',
+        {
+          style: S.sectionHead,
+          onClick: () => setOpen((current) => !current),
+          'aria-expanded': open,
+          type: 'button',
+        },
+        h('span', { style: S.sectionTitle }, props.title),
+        props.titleRight || null,
+        h('span', { style: { ...S.chevron, ...(open ? S.chevronOpen : {}) }, 'aria-hidden': true }, '▾')
+      ),
+      open ? h('div', { style: S.sectionBody }, props.children) : null
+    );
+  }
+
+  /**
+   * The theme tabs (运行 / 用量 / 会话). Same rule as `Section` above: it is a
+   * separate component so its `useState` never shifts the hook order that
+   * `test/client-render.test.mjs` asserts for `StatusSection`.
+   *
+   * Every pane STAYS RENDERED — the inactive ones are `display: none`, not
+   * unmounted. Two reasons: the headings a reader (and a test) greps for must
+   * not vanish with a click, and the `quotaTextDrift` / protocol notices live
+   * OUTSIDE these panes precisely because a silent degradation must never hide
+   * behind a tab. The cost is negligible — the whole panel is a handful of rows.
+   *
+   * @param {Array<{label: string, pane: any}>} props.tabs
+   */
+  function Tabbed(props: { tabs: Array<{ label: string; pane: any }> }): any {
+    const [active, setActive] = useState(0);
+    return h(
+      'div',
+      { style: S.tabs },
+      h(
+        'div',
+        { style: S.tabBar, role: 'tablist' },
+        props.tabs.map((tab, index) =>
+          h(
+            'button',
+            {
+              key: tab.label,
+              style: index === active ? { ...S.tab, ...S.tabActive } : S.tab,
+              onClick: () => setActive(index),
+              'aria-selected': index === active,
+              role: 'tab',
+              type: 'button',
+            },
+            tab.label
+          )
+        )
+      ),
+      props.tabs.map((tab, index) =>
+        h(
+          'div',
+          {
+            key: tab.label,
+            style: { ...S.tabPane, display: index === active ? 'grid' : 'none' },
+            role: 'tabpanel',
+          },
+          tab.pane
+        )
+      )
+    );
   }
 
   return function StatusSection(props: any): any {
@@ -127,11 +238,6 @@ export function createStatusSection(deps: StatusSectionDeps) {
       const name = subject && subject.kind === 'bundle' ? subject.pkg && subject.pkg.name : undefined;
       if (name !== 'dsh-connect-atomcode') return null;
     }
-    // `summary` is the plugin CARD's one-liner, which already renders the bundle
-    // description (from locale/*.json) right above us. Repeating the blurb there
-    // would be the "four lines of English" problem again AND a second source of
-    // truth for the same string — so the summary reports the one thing the
-    // description cannot: whether the bridge is actually live right now.
     if (view === 'summary') {
       return h(SummaryLine, null);
     }
@@ -146,10 +252,8 @@ export function createStatusSection(deps: StatusSectionDeps) {
     // `error && !data`, not plain `error`: a failed poll must not throw away the
     // last snapshot. The panel below reports the failure three ways already —
     // the badge turns 已断开, `最后更新 <time>` dates the reading, and the raw
-    // error is repeated next to them — while blanking the panel would also hide
-    // an in-flight turn and re-flow every card, for a blip that heals on the
-    // next 5s poll. It also made those three branches UNREACHABLE, which is how
-    // this line was found: the bare notice is only for having nothing to show.
+    // notice names the error — so keeping the previous numbers on screen is what
+    // a reader wants, not another blank.
     if (error && !data) {
       body = h('div', { style: S.notice }, h('p', { style: S.error }, failureNote));
     } else if (!data) {
@@ -160,8 +264,8 @@ export function createStatusSection(deps: StatusSectionDeps) {
       const cfg = data.config || {};
       const quota = data.quota || {};
       // Normalized field by field, not `data.ask || {…}`: an EMPTY branch is
-      // truthy, so the fallback object never applies and every field would
-      // render as `undefined` (see `count` above).
+      // truthy, so the fields under it reach the renderer as `undefined`
+      // (see `count` above) — `data.ask || {calls: 0}` would only catch `null`.
       const rawAsk = data.ask || {};
       const ask = {
         calls: count(rawAsk.calls),
@@ -169,8 +273,6 @@ export function createStatusSection(deps: StatusSectionDeps) {
         err: count(rawAsk.err),
         msTotal: count(rawAsk.msTotal),
         tokens: count(rawAsk.tokens),
-        // Carried through, NOT counted: it is a whole live turn or nothing, and
-        // the strip below renders only when it is truthy.
         inFlight: rawAsk.inFlight ?? null,
       };
       const rawReview = data.review || {};
@@ -181,24 +283,17 @@ export function createStatusSection(deps: StatusSectionDeps) {
         msTotal: count(rawReview.msTotal),
       };
       const proto = data.protocol || {};
-      // Worded once, rendered once: `''` on an ordinary install (the host sends
-      // no unknown types), so the notice cannot become furniture.
       const protoNotice = protocolDriftNotice(proto);
-      // The model knobs. `null` = an older host that has no provider branch;
-      // the rows still render, disabled and WITH a reason, so the panel never
-      // shows an empty dropdown (红线 3).
       const prov = data.provider || null;
       const retryNote = cfg.daemonRetrySecs > 0 ? cfg.daemonRetrySecs + 's' : '每次轮询';
-      // Countdown is derived locally from the snapshot's fetch time, so it
-      // keeps ticking between polls instead of showing a frozen server string.
+      // Countdown is derived locally from the snapshot's own fetch time, so it
+      // never claims to be fresher than the panel that shows it.
       const liveResetSecs = liveRemaining(quota.resetInSecs, quota.fetchedAt, Date.now());
       const quotaPct = typeof quota.usagePercent === 'number' ? quota.usagePercent : null;
       const quotaExpiry = [quota.expires, quota.planWindow].filter(Boolean).join(' · ');
       const askAvg = ask.calls > 0 ? Math.round(ask.msTotal / ask.calls) : 0;
       const reviewAvg = review.calls > 0 ? Math.round(review.msTotal / review.calls) : 0;
       const binPath = bin.configured || bin.env || '自动探测（PATH）';
-      // Check `up` first: a daemon that answered while a start is still
-      // winding down must not be labelled "starting".
       const spawnNote = d.up
         ? d.spawnTried
           ? '已自动拉起'
@@ -209,44 +304,219 @@ export function createStatusSection(deps: StatusSectionDeps) {
             ? '自动拉起失败'
             : '未触发自动拉起';
 
-      body = h(
+      // 额度 headline: ONE number plus one clarifying clause — not two peer
+      // gauges. `0%` is a RATIO and `1h26m` is a DURATION; rendering both at
+      // 18px/700 side by side asked the reader to compare two different
+      // quantities as if they were the same kind of fact.
+      const quotaCard = h(
         'div',
-        { style: S.wrap },
+        { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+        !quota.available
+          ? h('p', { style: S.error }, quota.reason || '额度不可用（daemon 未运行或命令不可用）')
+          : quotaPct == null && !quota.plan
+            ? h(
+                'div',
+                { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+                h('p', { style: S.key }, quota.reason || '未能从 status 文本中识别出额度'),
+                quota.raw && quota.raw.usageLine ? h('p', { style: S.key }, quota.raw.usageLine) : null,
+                quota.raw && quota.raw.planLine ? h('p', { style: S.key }, quota.raw.planLine) : null
+              )
+            : h(
+                'div',
+                { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+                quotaPct == null
+                  ? h(
+                      'div',
+                      { style: S.metric },
+                      h('span', { style: S.metricLabel }, quota.reason || '额度读数不可用')
+                    )
+                  : h(
+                      'div',
+                      { style: S.metric },
+                      h(
+                        'span',
+                        { style: { ...S.metricNum, color: quotaColor(quotaPct, quota.limited) } },
+                        pctLabel(quotaPct)
+                      ),
+                      h(
+                        'span',
+                        { style: S.metricLabel },
+                        '当前时间窗口用量' +
+                          (liveResetSecs == null ? '' : ' · ' + fmtCountdown(liveResetSecs) + ' 后重置')
+                      ),
+                      h(
+                        'div',
+                        { style: S.bar },
+                        h('div', {
+                          style: {
+                            width: barWidth(quotaPct) + '%',
+                            background: quotaColor(quotaPct, quota.limited),
+                          },
+                        })
+                      )
+                    ),
+                h(Row, { label: '套餐' }, quota.plan || '—'),
+                h(Row, { label: '到期' }, quotaExpiry || '—'),
+                h(Row, { label: '重置于' }, quota.resetAt || '—'),
+                quota.limited
+                  ? h('p', { style: S.error }, '当前 ' + windowLabel(quota.planWindow) + ' 窗口已用尽，回合会被限流')
+                  : null
+              )
+      );
+
+      // 启动情况
+      const startupCard = h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        h(Row, { label: '监听端口' }, d.port == null ? '—' : String(d.port)),
+        h(Row, { label: '自动启动' }, d.autoStart ? '开启' : '关闭'),
+        h(Row, { label: '拉起状态' }, spawnNote),
+        !d.up && !d.starting ? h(Row, { label: '未就绪原因' }, d.downMessage || '未上报（宿主较旧）') : null,
+        h(Row, { label: 'daemon 版本' }, proto.daemonVersion || (d.up ? '未知' : '—')),
+        !d.up && d.spawnFailures > 1
+          ? h(Row, { label: '拉起重试' }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`)
+          : null
+      );
+
+      // 运行环境
+      const envCard = h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+        h(Row, { label: 'AtomCode' }, binPath),
         h(
           'div',
-          { style: S.titleRow },
-          h('h3', { style: S.title }, '运行统计'),
-          // The badge reports the ACTUAL freshness, not a hopeful constant. It used
-          // to read 实时 unconditionally, including while the panel was showing an
-          // error or a snapshot from minutes ago — a "live" label over stale data
-          // is exactly the silent degradation this plugin forbids.
-          h(
-            'span',
-            { style: error ? { ...S.live, ...S.liveStale } : S.live },
-            error ? '已断开' : '实时'
-          ),
-          updatedAt
-            ? h(
+          { style: S.provGrid },
+          providerRows(cfg).map((row) =>
+            h(ProviderSelectRow, {
+              key: 'provider-' + row.label,
+              label: row.label,
+              provider: prov,
+              fallbackLabel: row.fallback,
+              title: row.title,
+              reload,
+            })
+          )
+        )
+      );
+
+      // 回合边界
+      // The ask control is deliberately NOT on this page: the plugin owns no ask
+      // control any more. A review is the `/atomcode-review` command (or the
+      // model calling `atomcode_review`), and a free-form question is the model's
+      // `atomcode_ask` tool — both official, neither on a detail page that has no
+      // session to run a turn in (see ./review-handoff.ts).
+      // Split out of the card above because these are not "runtime": they
+      // are the SAFETY POSTURE and SCOPE of a bridged turn.
+      // "审批模式" and "ask 轮数上限" remain patch-only (no panel edit);
+      // "brief 注入" and "工作目录" are now panel-editable (panel-settings.json),
+      // so they render as inline editable controls instead of a read-only row
+      // + a duplicate section below.
+      const allBoundaryRows = turnBoundaryRows(cfg);
+      // All four boundary rows are now panel-editable (approval_mode, ask_max_rounds,
+      // brief_mode, working_dir). When PanelSettingsControls is available, the
+      // editable controls REPLACE the read-only rows (no duplication). When it is
+      // absent (older host without the panel-settings route), fall back to the
+      // read-only rendering so the panel still shows the values.
+      const boundaryCard = h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        PanelSettingsControls
+          ? null
+          : allBoundaryRows.map((row) =>
+              h(Row, { key: 'bound-' + row.label, label: row.label }, h('span', { title: row.title }, row.text))
+            ),
+        PanelSettingsControls
+          ? h(PanelSettingsControls, { cfg, reload })
+          : null
+      );
+
+      // 侧边会话
+      const sessionCard = h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        h(CallStat, { num: count(data.sessions && data.sessions.tracked), label: '已跟踪会话' }),
+        data.sessions && typeof data.sessions.oldestAgeMs === 'number'
+          ? h(
+              Row,
+              { label: '最旧一条' },
+              h(
                 'span',
-                { style: S.updated, title: error || '' },
-                (error ? '最后更新 ' : '更新于 ') + new Date(updatedAt).toLocaleTimeString('zh-CN')
-              )
-            : null,
-          error
-            ? h('span', { style: { ...S.updated, ...S.staleReason }, title: error }, failureNote)
-            : null
+                {
+                  title:
+                    '这些会话键里最老一条的存活时长。超过插件设定的存活期的键会被丢弃，之后的 continue 会开一条新线（不会静默复用一条死会话）',
+                },
+                fmtDuration(data.sessions.oldestAgeMs),
+              ),
+            )
+          : null,
+        h(Row, { label: '运行时长' }, fmtDuration(data.uptimeMs)),
+        data.sessions && data.sessions.error
+          ? h('p', { style: S.error }, '会话续接已降级（回复不受影响）：' + data.sessions.error)
+          : null
+      );
+
+      // 工具使用
+      const toolCard = h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        h(
+          'div',
+          { style: S.callGroups },
+          h(
+            'div',
+            { style: S.callGroup },
+            h('span', { style: S.callGroupLabel }, 'atomcode_ask'),
+            h(CallStat, { num: ask.calls, label: '调用' }),
+            h(CallStat, { num: ask.ok, label: '成功', color: ask.ok ? 'var(--dsw-alias-state-success-primary)' : undefined }),
+            h(CallStat, { num: ask.err, label: '失败', color: ask.err ? 'var(--dsw-alias-state-error-primary)' : undefined })
+          ),
+          h(
+            'div',
+            { style: { ...S.callGroup, borderRight: 'none', paddingRight: 0 } },
+            h('span', { style: S.callGroupLabel }, 'atomcode_review'),
+            h(CallStat, { num: review.calls, label: '调用' })
+          )
         ),
-        // Live strip for a turn that is running RIGHT NOW — the only fact on
-        // this page that changes while the user reads it, so it sits directly
-        // under the header instead of inside a card. It used to be the
-        // `ask 进行中` row of the 工具调用统计 card: the one living number on
-        // the panel, parked at the bottom of the grid — the last place anyone
-        // looks mid-turn. Rendered ONLY while a turn is in flight — absent
-        // means "no turn running", the normal state, which must not be given
-        // a fabricated value (`0 次工具调用` reads as a stalled turn, not an
-        // idle bridge). Numbers come from the same 5s poll as everything
-        // else, so they can lag by up to one interval; the tooltip says so
-        // rather than letting the reader assume a live socket.
+        h(Row, { label: 'ask 累计 tokens' }, String(ask.tokens)),
+        h(Row, { label: 'ask 平均耗时' }, fmtDuration(askAvg)),
+        h(Row, { label: 'review 平均耗时' }, fmtDuration(reviewAvg))
+      );
+
+      // Pinned page header: the panel's name on the left, the freshness cluster
+      // on the right (实时/已断开 badge, the reading's age, the refresh verb).
+      const headerBar = h(
+        'div',
+        { style: S.headerBar },
+        h(
+          'div',
+          { style: S.header },
+          h('h3', { style: S.title }, '运行统计'),
+          h(
+            'div',
+            { style: S.cluster },
+            h(
+              'span',
+              { style: error ? { ...S.live, ...S.liveStale } : S.live },
+              error ? '已断开' : '实时'
+            ),
+            updatedAt
+              ? h(
+                  'span',
+                  { style: S.updated, title: error || '' },
+                  (error ? '最后更新 ' : '更新于 ') + new Date(updatedAt).toLocaleTimeString('zh-CN')
+                )
+              : null,
+            error ? h('span', { style: S.staleReason, title: error }, failureNote) : null,
+            h('button', { style: S.refresh, onClick: reload, type: 'button' }, '刷新')
+          )
+        )
+      );
+
+      const content = h(
+        'div',
+        { style: S.content },
+        // Live strip for a turn running RIGHT NOW — the only fact on this page
+        // that changes while the user reads it, so it leads the body.
         ask.inFlight
           ? h(
               'div',
@@ -275,289 +545,37 @@ export function createStatusSection(deps: StatusSectionDeps) {
                 '下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。'
             )
           : null,
-        // The SSE-vocabulary twin of the notice above: a renamed event type is
-        // the same class of silent degradation (see protocolDriftNotice), and
-        // it is the one that can disarm the round fuse while every turn keeps
-        // reporting success. Shown whenever the daemon has EVER sent one.
         protoNotice ? h('div', { style: S.notice }, protoNotice) : null,
-        // 评审 CLI 受限时把原因摊开：这是本机配置事实，不是临时故障
-        cfg.reviewAvailable
-          ? null
-          : h(
-              'div',
-              { style: S.notice },
-              '代码评审（atomcode_review）当前不可用：' +
-                (cfg.reviewReason || '本机 AtomCode 配置没有可用的直连 provider') +
-                '。侧边咨询（atomcode_ask）不受影响。'
-            ),
-        h(
-          'div',
-          { style: S.grid },
-          // Card order is by what each card changes for the reader's NEXT
-          // action, not by how the code happens to be written. CodingPlan 额度
-          // LEADS: it is the figure that decides whether a turn will be
-          // throttled — the only number here that gates what you can do right
-          // now. It used to sit LAST in this list while the comment above the
-          // grid argued for exactly the opposite; the order quietly lost that
-          // argument for as long as the card existed, and a reader asking
-          // "can I keep working" had to reach the end of the panel to find
-          // out. After it: check-once setup (启动情况 / 运行环境 / 回合边界),
-          // then the rest (侧边会话 / 工具调用统计) in their previous order.
-          // CodingPlan 额度
-          h(
-            'div',
-            { style: S.card },
-            h('p', { style: S.cardTitle }, 'CodingPlan 额度'),
-            !quota.available
-              ? h('p', { style: S.error }, quota.reason || '额度不可用（daemon 未运行或命令不可用）')
-              : quotaPct == null && !quota.plan
-                ? h(
-                    'div',
-                    null,
-                    h('p', { style: S.key }, quota.reason || '未能从 status 文本中识别出额度'),
-                    quota.raw && quota.raw.usageLine
-                      ? h('p', { style: S.key }, quota.raw.usageLine)
-                      : null,
-                    quota.raw && quota.raw.planLine
-                      ? h('p', { style: S.key }, quota.raw.planLine)
-                      : null
-                  )
-                : h(
-                    'div',
-                    // No extra inner wrapper: the card itself is already a
-                    // `flex-direction: column` with `gap: 6px`. Nesting another
-                    // `gap: 8px` column made THIS card's rhythm differ from every
-                    // neighbour, so its rows sat further apart and the card grew
-                    // taller than the ones beside it.
-                    null,
-                    // ONE headline number plus one clarifying clause — not two peer
-                    // gauges. `0%` is a RATIO and `1h26m` is a DURATION; rendering
-                    // both at 18px/700 side by side asked the reader to compare two
-                    // different quantities as if they were the same kind of fact.
-                    // The countdown is supporting detail, so it follows the number
-                    // in the label line at normal weight.
-                    quotaPct == null
-                      ? h(
-                          'div',
-                          { style: S.metric },
-                          h('span', { style: S.metricLabel }, quota.reason || '额度读数不可用')
-                        )
-                      : h(
-                          'div',
-                          { style: S.metric },
-                          h(
-                            'span',
-                            { style: { ...S.metricNum, color: quotaColor(quotaPct, quota.limited) } },
-                            pctLabel(quotaPct)
-                          ),
-                          h(
-                            'span',
-                            { style: S.metricLabel },
-                            '当前时间窗口用量' +
-                              (liveResetSecs == null ? '' : ' · ' + fmtCountdown(liveResetSecs) + ' 后重置')
-                          )
-                        ),
-                    quotaPct == null
-                      ? null
-                      : h(
-                          'div',
-                          {
-                            style: {
-                              height: '6px',
-                              borderRadius: '3px',
-                              border: '1px solid var(--dsw-alias-border-l1)',
-                              overflow: 'hidden',
-                            },
-                          },
-                          h('div', {
-                            style: {
-                              height: '100%',
-                              width: barWidth(quotaPct) + '%',
-                              background: quotaColor(quotaPct, quota.limited),
-                            },
-                          })
-                        ),
-                    h(Row, { label: '套餐' }, quota.plan || '—'),
-                    h(Row, { label: '到期' }, quotaExpiry || '—'),
-                    h(Row, { label: '重置于' }, quota.resetAt || '—'),
-                    quota.limited
-                      ? h('p', { style: S.error }, '当前 ' + windowLabel(quota.planWindow) + ' 窗口已用尽，回合会被限流')
-                      : null
-                  )
-          ),
-          // 启动情况
-          h(
-            'div',
-            { style: S.card },
-            // The status pill rides in the TITLE row, not on a data row of its own.
-            // It is a state of the card, not a field of it: giving it a full row
-            // (with the same layout as 监听端口) made one badge occupy as much
-            // vertical space as a labelled value, and left a visibly empty line
-            // under the heading.
-            h(
-              'p',
-              { style: { ...S.cardTitle, display: 'flex', alignItems: 'center', gap: '8px' } },
-              '启动情况',
-              h(StatusPill, { up: !!d.up })
-            ),
-            h(Row, { label: '监听端口' }, d.port == null ? '—' : String(d.port)),
-            h(Row, { label: '自动启动' }, d.autoStart ? '开启' : '关闭'),
-            h(Row, { label: '拉起状态' }, spawnNote),
-            // WHY it is down, only when it is down. A cause is the one thing
-            // "未运行" cannot tell you, and the three causes behind it (nothing
-            // listening / a different service holding the port / accepting then
-            // going silent) have nothing in common but the symptom.
-            !d.up && !d.starting
-              ? h(Row, { label: '未就绪原因' }, d.downMessage || '未上报（宿主较旧）')
-              : null,
-            // Which daemon build the bridged (private, unversioned) protocol
-            // is being spoken against — the earliest drift signal.
-            h(Row, { label: 'daemon 版本' }, proto.daemonVersion || (d.up ? '未知' : '—')),
-            !d.up && d.spawnFailures > 1
-              ? h(Row, { label: '拉起重试' }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`)
-              : null
-          ),
-          // 运行环境 ────────────────────────────────────────────────────
-          // Only what varies. `来源` was merged into the path line (it WAS the
-          // path line's provenance, said twice), and `评审可用性` appears only
-          // when it is NOT 可用 — a row that always reads "可用" is a row the
-          // user learns to skip, which is how a real warning gets missed.
-          h(
-            'div',
-            { style: S.card },
-            h('p', { style: S.cardTitle }, '运行环境'),
-            h(Row, { label: 'AtomCode' }, binPath),
-            // Two columns, one line, NEVER one merged control: two DIFFERENT
-            // namespaces (红线 8). providerRows() owns the wording, the
-            // snapshot's `provider` branch owns what is selectable right now — so
-            // an older host without the branch renders the same two controls
-            // disabled, with a reason, rather than an empty dropdown.
-            h(
-              'div',
-              { style: S.provGrid },
-              providerRows(cfg).map((row) =>
-                h(ProviderSelectRow, {
-                  key: 'provider-' + row.slotName,
-                  label: row.label,
-                  slotName: row.slotName,
-                  provider: prov,
-                  fallbackLabel: row.fallback,
-                  title: row.title,
-                  reload,
-                })
-              )
-            ),
-            cfg.reviewAvailable
-              ? null
-              : h(
-                  Row,
-                  { label: '评审可用性' },
-                  h('span', { style: S.error }, '不可用 — 改用 atomcode_ask')
-                )
-          ),
-          // 回合边界 ────────────────────────────────────────────────────
-          // Split out of the card above because these are not "runtime": they
-          // are the SAFETY POSTURE and SCOPE of a bridged turn, and they are
-          // patch-only fields this panel cannot edit (no input exists for them).
-          // So each row says whether it is the plugin's own default or something
-          // the user actually set — reporting an unset default as if it were a
-          // live setting is how six constant rows ended up on screen. The
-          // verdict comes from cfg.authored (the HOST's record of what the patch
-          // supplied), never from comparing against a hardcoded default here.
-          h(
-            'div',
-            { style: S.card },
-            h('p', { style: S.cardTitle }, '回合边界'),
-            turnBoundaryRows(cfg).map((row) =>
-              h(Row, { key: 'bound-' + row.label, label: row.label }, h('span', { title: row.title }, row.text))
-            )
-          ),
-          // 侧边会话
-          h(
-            'div',
-            { style: S.card },
-            h('p', { style: S.cardTitle }, '侧边会话'),
-            // Inline counter, not a stacked metric: the 18px/700 number over
-            // an 11px caption was a SECOND type scale inside a card whose
-            // other rows are 12.5px, and this count is plumbing — it does not
-            // earn hero typography the way the 额度 headline does. The inline
-            // form is the one the 工具调用统计 card already uses.
-            h(CallStat, { num: count(data.sessions && data.sessions.tracked), label: '已跟踪会话' }),
-            // How stale the oldest surviving key is. Rendered ONLY when the host
-            // actually knows the age: an unknown age must not print as `0s`,
-            // which reads as "just now". The count above alone could not tell
-            // "one live line" from "nine ids a daemon that exited last week left
-            // behind" — both were `已跟踪会话 9`.
-            //
-            // The lifetime itself is NOT spelled here on purpose: it is a host
-            // constant, and a number in the UI would drift from it silently
-            // (AGENTS.md: 别把会变的计数写进文档).
-            data.sessions && typeof data.sessions.oldestAgeMs === 'number'
-              ? h(
-                  Row,
-                  { label: '最旧一条' },
-                  h(
-                    'span',
-                    {
-                      title:
-                        '这些会话键里最老一条的存活时长。超过插件设定的存活期的键会被丢弃，之后的 continue 会开一条新线（不会静默复用一条死会话）',
-                    },
-                    fmtDuration(data.sessions.oldestAgeMs),
-                  ),
-                )
-              : null,
-            h(Row, { label: '运行时长' }, fmtDuration(data.uptimeMs)),
-            // Not a constant row: it renders only while the store reports a
-            // degradation, and it names the cause. Without it the panel kept
-            // showing a tracked count that had quietly stopped growing, which
-            // reads as "nothing to see here" — the exact silent failure 红线 3
-            // is about.
-            data.sessions && data.sessions.error
-              ? h('p', { style: S.error }, '会话续接已降级（回复不受影响）：' + data.sessions.error)
-              : null
-          ),
-          // 工具使用
-          h(
-            'div',
-            { style: S.card },
-            h('p', { style: S.cardTitle }, '工具调用统计'),
-            // Two GROUPS on one line, each rendered as `label  数字 数字 数字`
-            // rather than as stacked metrics. The stacked form put each caption
-            // UNDER its own number while the group label sat on the baseline, so
-            // the row mixed two alignment conventions and read as scattered text.
-            // Inline (number followed by its caption) keeps everything on one
-            // baseline, which is how the host's own dock readouts do it.
-            h(
-              'div',
-              { style: S.callGroups },
-              h(
-                'div',
-                { style: S.callGroup },
-                h('span', { style: S.callGroupLabel }, 'atomcode_ask'),
-                h(CallStat, { num: ask.calls, label: '调用' }),
-                h(CallStat, { num: ask.ok, label: '成功', color: ask.ok ? 'var(--dsw-alias-state-success-primary)' : undefined }),
-                h(CallStat, { num: ask.err, label: '失败', color: ask.err ? 'var(--dsw-alias-state-error-primary)' : undefined })
-              ),
-              h(
-                'div',
-                { style: { ...S.callGroup, borderRight: 'none', paddingRight: 0 } },
-                h('span', { style: S.callGroupLabel }, 'atomcode_review'),
-                h(CallStat, { num: review.calls, label: '调用' })
-              )
-            ),
-            h(Row, { label: 'ask 累计 tokens' }, String(ask.tokens)),
-            // The live "a turn is running" reading moved OUT of this card to a
-            // full-width strip under the panel header (see `S.inFlight`): it is
-            // the only fact on the page that changes while the user reads it,
-            // and it sat here at the bottom of the grid — the last place anyone
-            // looks mid-turn. Its rendering rules travel with it: present ONLY
-            // while a turn is in flight, counts and names but never reply
-            // content, and the 5s-poll lag stated in the tooltip rather than
-            // left for the reader to assume a live socket.
-            h(Row, { label: 'ask 平均耗时' }, fmtDuration(askAvg)),
-            h(Row, { label: 'review 平均耗时' }, fmtDuration(reviewAvg))
-          )
-        )
+        h(Tabbed, {
+          tabs: [
+            {
+              label: '运行',
+              pane: [
+                h(Section, { title: '启动情况', titleRight: h(StatusPill, { up: !!d.up }) }, startupCard),
+                h(Section, { title: '运行环境' }, envCard),
+                h(Section, { title: '回合边界' }, boundaryCard),
+              ],
+            },
+            {
+              label: '用量',
+              pane: [
+                h(Section, { title: 'CodingPlan 额度' }, quotaCard),
+                h(Section, { title: '工具调用统计' }, toolCard),
+              ],
+            },
+            {
+              label: '会话',
+              pane: [h(Section, { title: '侧边会话' }, sessionCard)],
+            },
+          ],
+        })
+      );
+
+      body = h(
+        'div',
+        { style: S.page },
+        headerBar,
+        h('div', { style: S.scroll }, content)
       );
     }
 

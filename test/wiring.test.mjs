@@ -20,17 +20,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // client half is generated from `src/client/*.ts` into `client.js`.
 //
 // These must stay on the ARTIFACTS, and that is load-bearing rather than
-// stylistic: `wiring` installs the fake review spawner through
-// `setSpawnOverride`, which is module-level state. `lib/index.js` imports
-// `./review.js`, so the override only reaches it when the test and the plugin
-// hold the SAME module instance. Pointing this at `src/host/review.ts` instead
-// gives the test a private copy, the override lands on a module nobody calls,
-// and the suite drives the REAL review CLI. `test/build-gate.test.mjs` is what
-// guarantees these artifacts are a faithful build of `src/`.
+// stylistic: a suite that installs a fake for a module-level seam
+// (`setSpawnOverride` and friends) must hold the SAME module instance the
+// plugin calls. Pointing it at `src/host/<file>.ts` instead gives the test a
+// private copy, the override lands on a module nobody calls, and the suite
+// drives the REAL seam. `test/build-gate.test.mjs` is what guarantees these
+// artifacts are a faithful build of `src/`.
 const BRIDGE = join(__dirname, '..', 'lib', 'index.js');
-const REVIEW = join(__dirname, '..', 'lib', 'review.js');
 const SESSIONS = join(__dirname, '..', 'lib', 'sessions.js');
 const PROVIDER_STORE = join(__dirname, '..', 'lib', 'provider-store.js');
+const BRIDGE_COMMAND = join(__dirname, '..', 'lib', 'command.js');
 // apply() split: `detectProfileKey` lives in config.ts now (lib/config.js), not
 // in the God module — it is a pure config helper, not part of the assembly.
 const CONFIG = join(__dirname, '..', 'lib', 'config.js');
@@ -128,6 +127,63 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
     }
   });
 
+  it('registers the /atomcode-review command, and mounts without it when the service is absent', async () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wiring-')), 'sessions.json');
+    const mod = await import(fileUrl(BRIDGE));
+
+    // 1. A host WITHOUT `commands`: the tools still mount. The command is an
+    //    addition, so a missing service must degrade — not take `apply()` down
+    //    with it (红线 3: a refusal is fine, a silent no-op is not, and here
+    //    "no command" IS the visible outcome).
+    {
+      const { ctx, calls } = fakeCtx();
+      mod.apply(ctx, { state_path: statePath, auto_start: false });
+      assert.deepEqual(calls.tools.map((t) => t.name).sort(), ['atomcode_ask', 'atomcode_review']);
+    }
+
+    // 2. A host WITH `commands`: the command is registered under its own name,
+    //    and `apply()` does not throw.
+    {
+      const registered = [];
+      const { ctx, calls } = fakeCtx();
+      const commands = {
+        register(definition) {
+          registered.push(definition);
+          return () => {};
+        },
+      };
+      // BOTH spellings: `apply()` reads `ctx.get('commands')` first and only
+      // falls back to the property, so setting just one would silently exercise
+      // the degrade path and the assertion would pass for the wrong reason.
+      ctx.commands = commands;
+      ctx.get = ((original) => (name) => (name === 'commands' ? commands : original(name)))(ctx.get);
+      mod.apply(ctx, { state_path: statePath, auto_start: false });
+      assert.deepEqual(calls.tools.map((t) => t.name).sort(), ['atomcode_ask', 'atomcode_review']);
+      assert.deepEqual(
+        registered.map((d) => d.name),
+        ['atomcode-review'],
+        'exactly one command, registered by its bare name',
+      );
+      assert.equal(typeof registered[0].handler, 'function');
+      // 红线 (refined 2026-10, 方针 A+continue): the review BODY runs against the
+      // agent WITHOUT a model turn. `followup`/`steer`/`inject` are the only
+      // three ways a plugin can reach the model, so the review path must not
+      // contain them at all. The ONE exception is the named continuation after a
+      // successful review — and that is not one of these three: it goes through
+      // `injectReviewContinuation` in lib/inject.js, which owns the phase split.
+      // This scan therefore keeps its teeth: calling a raw method here still
+      // fails, while the sanctioned hand-off lives behind a named import.
+      const source = readFileSync(BRIDGE_COMMAND, 'utf8');
+      for (const method of ['followup', 'steer', 'inject']) {
+        assert.ok(
+          !new RegExp(`\\.${method}\\(`).test(source),
+          `lib/command.js must never call .${method}() directly — the review body is not a model turn` +
+            ' (the only allowed hand-off is the named injectReviewContinuation import)',
+        );
+      }
+    }
+  });
+
   it('registered schemas stay inside the host-accepted JSON Schema subset (no array-typed `type`)', async () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wiring-')), 'sessions.json');
     const { ctx, calls } = fakeCtx();
@@ -173,8 +229,13 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
       ask.output.schema.properties.daemon_tool_calls,
       ask.output.schema.properties.daemon_rounds,
     ];
+    // Review's output is a plain report now, and the same rule applies to ITS
+    // null-carrying field: `working_dir` is null when a turn resolved no
+    // directory, so it must stay annotation-only. (`provider` is NOT one of
+    // these any more — it is a single-type string that always carries a value,
+    // because a review turn is an ask turn and ask always reports one.)
     const review = calls.tools.find((t) => t.name === 'atomcode_review');
-    const reviewFields = ['severity', 'file', 'line'].map((key) => review.output.schema.properties.findings.items.properties[key]);
+    const reviewFields = [review.output.schema.properties.working_dir];
     for (const node of [...askFields, ...reviewFields]) {
       assert.ok(!('type' in node), 'null-carrying field must stay annotation-only (no single-type fold)');
     }
@@ -205,19 +266,33 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
     }
   });
 
-  it('atomcode_review schema carries the diff selection + fuses', async () => {
+  it('atomcode_review schema carries the diff selection + fuses, and no CLI-only knobs', async () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wiring-')), 'sessions.json');
     const { ctx, calls } = fakeCtx();
     const mod = await import(fileUrl(BRIDGE));
     mod.apply(ctx, { state_path: statePath });
     const review = calls.tools.find((t) => t.name === 'atomcode_review');
-    for (const key of ['working_dir', 'task', 'base', 'staged', 'pr', 'diff_text', 'provider', 'max_rounds', 'max_duration_secs', 'enable_web']) {
+    for (const key of ['working_dir', 'task', 'base', 'staged', 'pr', 'diff_text', 'provider', 'max_rounds', 'timeout_secs']) {
       assert.ok(review.parameters.properties[key], `missing param ${key}`);
     }
     assert.deepEqual(review.parameters.required, [], 'review has no required params (working_dir has a config fallback)');
-    for (const key of ['ok', 'report', 'error', 'exit_code', 'duration_ms']) {
+    // The CLI's knobs must be GONE, not merely optional: `max_duration_secs` and
+    // `enable_web` were argv flags (`--max-duration`, `--no-web`) and a daemon
+    // turn takes neither. Keeping them would advertise control the plugin does
+    // not have — the same "description states an outcome the code cannot
+    // deliver" failure this suite exists to prevent.
+    for (const key of ['max_duration_secs', 'enable_web']) {
+      assert.ok(!review.parameters.properties[key], `\`${key}\` was a CLI argv flag — a daemon turn has no such knob`);
+    }
+    // Output is a report, not a findings[] document. `findings` staying here as
+    // an always-empty array would be the misleading half of the old shape.
+    for (const key of ['ok', 'report', 'truncated', 'tokens', 'usage', 'rounds', 'tools', 'working_dir', 'provider', 'error']) {
       assert.ok(review.output.schema.properties[key], `missing output field ${key}`);
     }
+    assert.ok(
+      !review.output.schema.properties.findings,
+      'the CLI used to return a structured `findings[]`; the daemon returns prose, so the field must not survive as a constant empty array',
+    );
   });
 
   it('config {get()} boxes are unwrapped and malformed values degrade', async () => {
@@ -242,167 +317,30 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
     mod.apply(ctx, {}); // must not throw
   });
 
-  it('atomcode_review description reflects checkReviewProvision (no direct provider = warning prefix)', async () => {
-    // Create a config.toml with only account-resolved models (no [providers.<name>] with base_url)
-    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-prov-'));
-    const cfgDir = join(fakeHome, '.atomcode');
-    mkdirSync(cfgDir, { recursive: true });
-    const cfgPath = join(cfgDir, 'config.toml');
-    writeFileSync(cfgPath, [
-      'default_provider = "AtomGit-qwen3.8-27b"',
-      '',
-      '[provider_accounts.AtomGit]',
-      'provider = "openai"',
-      'base_url = "https://llm-api.atomgit.com/v1"',
-      '',
-      '[models."AtomGit-qwen3.8-27b"]',
-      'account = "AtomGit"',
-      'model = "qwen3.8-27b"',
-    ].join('\n'), 'utf8');
-
-    // Override homedir temporarily. BOTH variables, because `os.homedir()`
-    // reads HOME on POSIX and USERPROFILE on Windows: setting only HOME is a
-    // no-op here on Windows, so the day this block grows an assertion that
-    // actually dereferences `homedir()` it would be green on Linux and red on
-    // the machine the author runs. (Today it is belt-and-braces anyway —
-    // `checkReviewProvision` is handed the config directory explicitly.)
-    const origHome = process.env.HOME;
-    const origUserProfile = process.env.USERPROFILE;
-    try {
-      process.env.HOME = fakeHome;
-      process.env.USERPROFILE = fakeHome;
-      // Re-import review module (has cached checkReviewProvision import, but the probe reads fresh each call).
-      const { checkReviewProvision } = await import(fileUrl(REVIEW));
-      const prov = checkReviewProvision(join(fakeHome, '.atomcode'));
-      assert.equal(prov.available, false);
-      assert.ok(prov.reason.length > 0);
-      // The reason CARRIES the self-contained fix (it ships to every
-      // workspace in the tool description, where this repo's docs/ do not):
-      // it must name the local sidecar, where it comes from, and where the
-      // login token lives — not just "a local server".
-      assert.match(prov.reason, /atomcode-open-api/);
-      assert.match(prov.reason, /github\.com\/baimocn\/atomcode-open-api/);
-      assert.match(prov.reason, /auth\.toml/);
-    } finally {
-      // Put back EXACTLY what was there: assigning `undefined` writes the string
-      // "undefined" into the variable (env values are strings), so a genuinely
-      // unset HOME/USERPROFILE — the Windows default is USERPROFILE only — has
-      // to be DELETED, not "restored".
-      if (origHome === undefined) delete process.env.HOME;
-      else process.env.HOME = origHome;
-      if (origUserProfile === undefined) delete process.env.USERPROFILE;
-      else process.env.USERPROFILE = origUserProfile;
-      const { rmSync } = await import('node:fs');
-      rmSync(fakeHome, { recursive: true, force: true });
-    }
-  });
-
   it('atomcode_review REFUSES rather than falling back to the host process cwd', async () => {
-    // The v0.3 hole: with neither `working_dir` on the call nor the plugin
-    // config, the review spawned with cwd = process.cwd() — the DSH launch
-    // directory — so `git diff` reviewed the wrong tree (or nothing) while the
-    // tool reported whatever the CLI said. A wrong-repo review that looks
-    // successful is worse than a refusal.
+    // The v0.3 hole, still live after the channel change: with neither
+    // `working_dir` on the call nor the plugin config, the turn would run in
+    // cwd = process.cwd() - the DSH launch directory - so AtomCode's own
+    // `git diff` reviews the wrong tree (or nothing) while the tool reports
+    // whatever the model said. A wrong-repo review that looks successful is
+    // worse than a refusal. It is now the SAME refusal `atomcode_ask` gives,
+    // for the same reason: one channel, one rule about cwd.
     const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wd-')), 'sessions.json');
     const { ctx, calls } = fakeCtx();
     const mod = await import(fileUrl(BRIDGE));
-    // NOTE: no working_dir / review_working_dir in this config.
+    // NOTE: no working_dir in this config.
     mod.apply(ctx, { state_path: statePath, auto_start: false });
     const review = calls.tools.find((t) => t.name === 'atomcode_review');
     const r = await review.execute({ base: 'main' }, {});
     assert.equal(r.ok, false);
-    assert.match(r.error, /needs a repository/, 'the refusal must name what is missing');
-    assert.match(r.error, /working_dir/);
-    assert.equal(r.exit_code, -1);
-  });
-
-  it('a configured review_working_dir is used instead of the host cwd', async () => {
-    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wd2-')), 'sessions.json');
-    const repo = mkdtempSync(join(tmpdir(), 'atomcode-repo-'));
-    // Inject a config the probe accepts, so the repo requirement is what decides
-    // the outcome (on this host the real config has only the gateway).
-    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-wd2-home-'));
-    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
-    writeFileSync(join(fakeHome, '.atomcode', 'config.toml'), [
-      'default_provider = "direct"',
-      '[providers.direct]',
-      'base_url = "https://some-llm.test/v1"',
-      'api_key = "sk-test"',
-    ].join('\n'), 'utf8');
-    const { ctx, calls } = fakeCtx();
-    const mod = await import(fileUrl(BRIDGE));
-    const { setSpawnOverride } = await import(fileUrl(REVIEW));
-    const savedHome = process.env.HOME;
-    const savedUserProfile = process.env.USERPROFILE;
-    process.env.HOME = fakeHome;
-    process.env.USERPROFILE = fakeHome;
-    try {
-      // Stub the CLI seam. Without this the run reaches the REAL atomcode binary
-      // (this host has one on PATH, so "there is no such binary" was a hope, not
-      // a premise) — a live CLI run inside the offline gate, on a tree that is
-      // not meant to be reviewed. The stub also makes the second assertion
-      // possible: the failure must be the STUBBED CLI failing, which is what
-      // proves the configured repo satisfied the requirement without spawning it.
-      setSpawnOverride(() => {
-        const child = new EventEmitter();
-        child.stdout = new EventEmitter();
-        child.stderr = new EventEmitter();
-        child.kill = () => {};
-        setImmediate(() => {
-          child.stderr.emit('data', 'stub: no review CLI ran');
-          child.emit('exit', 1);
-        });
-        return child;
-      });
-      mod.apply(ctx, { state_path: statePath, auto_start: false, review_working_dir: repo });
-      const review = calls.tools.find((t) => t.name === 'atomcode_review');
-      // The failure must NOT be the "needs a repository" refusal: the config
-      // satisfied the repo requirement.
-      const r = await review.execute({ base: 'main' }, {});
-      assert.doesNotMatch(r.error, /needs a repository/, 'the configured repo must satisfy the requirement');
-      assert.match(r.error, /stub: no review CLI ran/, 'the stubbed CLI must be what failed');
-    } finally {
-      setSpawnOverride(null);
-      if (savedHome !== undefined) process.env.HOME = savedHome;
-      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
-      const { rmSync } = await import('node:fs');
-      rmSync(repo, { recursive: true, force: true });
-      rmSync(fakeHome, { recursive: true, force: true });
-    }
-  });
-
-  it('review refuses with a config diagnostic when no usable provider exists', async () => {
-    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wd3-')), 'sessions.json');
-    const repo = mkdtempSync(join(tmpdir(), 'atomcode-repo-'));
-    // A gateway-only config: the repo is fine, the PROVIDER is not. This is the
-    // case the re-read probe exists for.
-    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-wd3-home-'));
-    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
-    writeFileSync(join(fakeHome, '.atomcode', 'config.toml'), [
-      'default_provider = "gw"',
-      '[providers.gw]',
-      'base_url = "https://llm-api.atomgit.com/v1"',
-    ].join('\n'), 'utf8');
-    const { ctx, calls } = fakeCtx();
-    const mod = await import(fileUrl(BRIDGE));
-    const savedHome = process.env.HOME;
-    const savedUserProfile = process.env.USERPROFILE;
-    process.env.HOME = fakeHome;
-    process.env.USERPROFILE = fakeHome;
-    try {
-      mod.apply(ctx, { state_path: statePath, auto_start: false });
-      const review = calls.tools.find((t) => t.name === 'atomcode_review');
-      const r = await review.execute({ working_dir: repo, base: 'main' }, {});
-      assert.equal(r.ok, false);
-      assert.match(r.error, /unavailable on this host/);
-      assert.match(r.error, /atomcode_ask/, 'the diagnostic must name the working alternative');
-    } finally {
-      if (savedHome !== undefined) process.env.HOME = savedHome;
-      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
-      const { rmSync } = await import('node:fs');
-      rmSync(repo, { recursive: true, force: true });
-      rmSync(fakeHome, { recursive: true, force: true });
-    }
+    // The same refusal `atomcode_ask` gives (it IS the same runner now), and it
+    // names the field, the reason and the ways forward. Pinning the wording
+    // loosely: it is a message, not a wire contract — but "拒绝" and the field
+    // name are the two things a model needs to retry correctly.
+    assert.match(r.error, /working_dir/, 'the refusal must name the missing field');
+    assert.match(r.error, /拒绝|refus/i, 'and say it refused rather than reporting a review');
+    assert.equal(r.working_dir, null, 'a refused review ran nowhere — not "ran in the host cwd"');
+    assert.doesNotMatch(r.error, /stub|CLI/, 'nothing was spawned: the refusal is before the daemon');
   });
 });
 
@@ -578,67 +516,6 @@ describe('lib/index.js — cancelled startup', () => {
   });
 });
 
-describe('src/host/review.ts — checkReviewProvision', () => {
-  it('returns available=false with reason on absent config.toml', async () => {
-    const { checkReviewProvision } = await import(fileUrl(REVIEW));
-    const r = checkReviewProvision(join(tmpdir(), 'atomcode-nonexistent-999'));
-    assert.equal(r.available, false);
-    assert.ok(r.reason.includes('not found'), `reason=${r.reason}`);
-  });
-
-  it('returns available=false with reason when only gateway provider exists', async () => {
-    const f = mkdtempSync(join(tmpdir(), 'atomcode-gw-'));
-    writeFileSync(join(f, 'config.toml'), [
-      'default_provider = "gw"',
-      '',
-      '[provider_accounts.gw]',
-      'provider = "openai"',
-      'base_url = "https://llm-api.atomgit.com/v1"',
-      '',
-      '[providers.gw]',
-      'account = "gw"',
-    ].join('\n'), 'utf8');
-    const { checkReviewProvision } = await import(fileUrl(REVIEW));
-    const r = checkReviewProvision(f);
-    assert.equal(r.available, false);
-    assert.ok(r.reason.length > 0);
-    assert.match(r.reason, /atomcode-open-api/, 'the gateway-only reason must carry the local fix text');
-    assert.match(r.reason, /github\.com\/baimocn\/atomcode-open-api/);
-    const { rmSync } = await import('node:fs');
-    rmSync(f, { recursive: true, force: true });
-  });
-
-  it('returns available=false with the two-option fix text when config.toml has no providers at all', async () => {
-    const f = mkdtempSync(join(tmpdir(), 'atomcode-none-'));
-    writeFileSync(join(f, 'config.toml'), '# no providers, no default_provider\n', 'utf8');
-    const { checkReviewProvision } = await import(fileUrl(REVIEW));
-    const r = checkReviewProvision(f);
-    assert.equal(r.available, false);
-    assert.match(r.reason, /no direct \[providers\.<name>\] entry/);
-    assert.match(r.reason, /atomcode-open-api/, 'the "nothing configured" reason must also carry the fix text');
-    assert.match(r.reason, /127\.0\.0\.1:8899/);
-    const { rmSync } = await import('node:fs');
-    rmSync(f, { recursive: true, force: true });
-  });
-
-  it('returns available=true when a direct [providers.X] with non-gateway base_url exists', async () => {
-    const f = mkdtempSync(join(tmpdir(), 'atomcode-ok-'));
-    writeFileSync(join(f, 'config.toml'), [
-      'default_provider = "direct"',
-      '',
-      '[providers.direct]',
-      'provider = "openai"',
-      'base_url = "https://some-llm.test/v1"',
-      'api_key = "sk-test"',
-    ].join('\n'), 'utf8');
-    const { checkReviewProvision } = await import(fileUrl(REVIEW));
-    const r = checkReviewProvision(f);
-    assert.equal(r.available, true, `expected available=true, got reason=${r.reason}`);
-    const { rmSync } = await import('node:fs');
-    rmSync(f, { recursive: true, force: true });
-  });
-});
-
 describe('lib/index.js — default_provider / review_default_provider (two namespaces)', () => {
   // What this suite pins is the PRECEDENCE reaching the wire, not the string in
   // the config: a configured default that silently never gets sent is the worst
@@ -762,7 +639,7 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     // Comments have no tests, which is exactly why three stale ones shipped in a
     // single round: `default_provider` carried TWO contradictory `Precedence:`
     // paragraphs (an older one without the panel, left behind when the panel was
-    // added), `review_working_dir` described a fallback the code deliberately
+    // added), a working-directory knob described a fallback the code deliberately
     // REFUSES, and the docs quoted a function count that had doubled.
     //
     // `cordis.patch.yml` is this repo's field documentation of record, so a
@@ -785,7 +662,10 @@ describe('lib/index.js — default_provider / review_default_provider (two names
       }
     }
 
-    for (const key of ['default_provider', 'review_default_provider']) {
+    // ONE model knob left: every entry point resolves a daemon profile through
+    // the same ladder, so `review_default_provider` is gone and must not come
+    // back as a second `Precedence:` paragraph on this field.
+    for (const key of ['default_provider']) {
       const block = owners.get(key);
       assert.ok(block, `${key} must have a comment block`);
       const precedence = block.match(/Precedence:/g) || [];
@@ -797,18 +677,18 @@ describe('lib/index.js — default_provider / review_default_provider (two names
       );
       assert.match(block, /panel|detail page/i, `${key}'s documented precedence must include the panel pick`);
     }
-
-    // review_working_dir: empty REFUSES; it does not fall back to the host cwd.
-    const rwd = owners.get('review_working_dir');
-    assert.ok(rwd, 'review_working_dir must have a comment block');
     assert.ok(
-      /does NOT fall back|REFUSE/i.test(rwd),
-      'review_working_dir must document the refusal — the code rejects a call with no repository rather than ' +
-        'reviewing the host process cwd (see the "REFUSES rather than falling back" test above)',
+      !owners.has('review_default_provider'),
+      'the review namespace died with the CLI — a second provider knob would name a namespace nothing reads',
     );
+
+    // working_dir: the refusal is documented where people set the knob.
+    const wd = owners.get('working_dir');
+    assert.ok(wd, 'working_dir must have a comment block');
     assert.ok(
-      !/Empty = the\s*\n?\s*#?\s*HOST PROCESS/i.test(rwd),
-      'the old wording claimed an empty value uses the host cwd, which is the behaviour the code refuses',
+      /REFUSES/i.test(wd),
+      'working_dir must document the refusal — the code rejects a call with no directory rather than running ' +
+        'tools unattended in the daemon cwd (see the "REFUSES rather than falling back" test above)',
     );
 
     // ask_max_rounds: the client labels default-vs-authored from config.defaults, so
@@ -917,11 +797,11 @@ describe('lib/index.js — default_provider / review_default_provider (two names
   });
 
   it('a panel pick for one slot never lands on the other path', async () => {
-    // 红线 8 with the new layer in play: pin BOTH slots and the ask wire must still
-    // carry ONLY the model profile.
+    // The panel pick is the ASK-side profile and only that; pinning it must not
+    // change the ask wire into anything but that profile name.
     const { ask, chats } = await mountAsk(
-      { default_provider: 'AtomGit-qwen3.8-27b', review_default_provider: 'atomcode-local' },
-      { ask: 'AtomGit-glm5.3-flash', review: 'atomcode-local' }
+      { default_provider: 'AtomGit-qwen3.8-27b' },
+      { ask: 'AtomGit-glm5.3-flash' }
     );
     await ask.execute({ message: 'hi' }, {});
     assert.equal(chats[0].provider, 'AtomGit-glm5.3-flash');
@@ -946,314 +826,56 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     assert.equal(chats[0].provider, 'AtomGit-glm5.3-flash');
   });
 
-  it('review_default_provider does not leak onto the ask wire', async () => {
-    // The other direction of the namespace split: "atomcode-local" is a direct
-    // [providers.<name>] entry the CLI understands, and nothing else. Sending it
-    // to /chat would ask the daemon for a profile it does not have.
-    const { ask, chats } = await mountAsk({ review_default_provider: 'atomcode-local' });
+  it('a blank review-shaped config key is simply not read any more', async () => {
+    // The knob is gone from readConfig, and a stale profile patch may still carry
+    // it. Config is unvalidated input: the mount must shrug it off, not fail, and
+    // the value must never reach /chat (it is a `[providers.<name>]` entry name,
+    // which the daemon's profile ladder does not know).
+    const { ask, chats, calls } = await mountAsk({ review_default_provider: 'atomcode-local' });
+    assert.equal(calls.tools.length, 2, 'the mount survives a knob it no longer reads');
     const r = await ask.execute({ message: 'hi' }, {});
     assert.equal(r.ok, true, r.error);
-    assert.ok(!('provider' in chats[0]), `review knob must not reach /chat, got ${JSON.stringify(chats[0].provider)}`);
+    assert.ok(!('provider' in chats[0]), `a dead knob must not reach /chat, got ${JSON.stringify(chats[0].provider)}`);
   });
 
-  it('both tool descriptions teach that `provider` takes a model PROFILE name', async () => {
+  it('the tool descriptions teach that `provider` takes a model PROFILE name', async () => {
     // 红线 1 discipline applied to model selection: the model is told BEFORE the
     // call. AtomCode 5.x has no "provider == vendor" notion on this path; passing
     // "glm5.3-flash" instead of "AtomGit-glm5.3-flash" is the obvious wrong move.
     //
-    // HOME is pinned (like the review-selection test below) because the review
-    // description interpolates the machine's usable direct providers: reading the
-    // DEVELOPER'S real ~/.atomcode/config.toml would make the "must not mention the
-    // ask profile" assertion a property of this host rather than of the code.
-    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-dp-desc-'));
-    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
-    writeFileSync(
-      join(fakeHome, '.atomcode', 'config.toml'),
-      [
-        'default_provider = "account-gw"',
-        '[providers.direct]',
-        'provider = "openai"',
-        'base_url = "https://direct.test/v1"',
-        'api_key = "sk-1"',
-      ].join('\n'),
-      'utf8',
-    );
+    // Both tools now describe the SAME ladder (one channel), so both descriptions
+    // are checked here — and neither may claim an OUTCOME. A tool description is
+    // registered ONCE at mount, while the panel pick is read PER CALL, so the
+    // order of resolution is safe to state and "empty means this one" is not.
     const dir = mkdtempSync(join(tmpdir(), 'atomcode-dp-desc2-'));
     stateDirs.push(dir);
-    const savedHome = process.env.HOME;
-    const savedUserProfile = process.env.USERPROFILE;
-    process.env.HOME = fakeHome;
-    process.env.USERPROFILE = fakeHome;
-    try {
-      const { ctx, calls } = fakeCtx();
-      const mod = await import(fileUrl(BRIDGE));
-      mod.apply(ctx, {
-        state_path: join(dir, 'sessions.json'),
-        auto_start: false,
-        default_provider: 'AtomGit-glm5.3-flash',
-        review_default_provider: 'direct',
-      });
-      const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
-      assert.match(ask.description, /档位名/, 'the ask description must name the kind of value expected');
-      assert.match(ask.description, /default_provider="AtomGit-glm5.3-flash"/, 'the ACTIVE default is echoed');
-      assert.match(ask.description, /详情页面板上选的档位/, 'and the panel slot above it');
-      assert.match(ask.parameters.properties.provider.description, /GET \/models/);
-      assert.match(ask.parameters.properties.provider.description, /不要传裸模型 id/);
-      assert.match(ask.parameters.properties.provider.description, /面板上选的档位/);
-
-      const review = calls.tools.find((t) => t.name === 'atomcode_review');
-      assert.match(review.description, /直连 provider：direct/, 'the review note names the real entry');
-      // A tool description is registered ONCE at mount, while the panel pick is read
-      // PER CALL — so the note may state the ORDER of resolution and must never
-      // state the OUTCOME. Both sentences below are the outcome-claims that this
-      // test has already had to kill twice (a pinned "留空即点名它", an unpinned
-      // "留空时自动选择"): each is false as soon as someone touches the dropdown.
-      assert.match(review.description, /按顺序取：详情页面板选的条目/, 'the ladder must lead with the panel pick');
-      assert.match(review.description, /只有前面几档都没配上.*才会要求你点名/, 'the refusal must stay conditional');
-      assert.doesNotMatch(review.description, /留空即点名它/, 'no unconditional "empty means this one" claim');
-      assert.doesNotMatch(review.description, /provider 留空时自动选择——/, 'no unconditional auto-select claim');
-      // What IS safe to echo: the mount-time config value, which cannot change under
-      // the registered description.
-      assert.match(review.description, /当前="direct"/, 'the config field echo is a mount-time fact');
-      assert.match(
-        review.parameters.properties.provider.description,
-        /providers\.<name>/,
-        'the review parameter must name its OWN namespace',
-      );
-      assert.match(
-        review.parameters.properties.provider.description,
-        /review_default_provider/,
-        'and the knob it falls back to, not the ask one',
-      );
-      assert.match(
-        review.parameters.properties.provider.description,
-        /面板上选的条目/,
-        'and the panel slot above it',
-      );
-      assert.doesNotMatch(
-        review.description,
-        /AtomGit-glm5\.3-flash/,
-        'the ask-side profile must not leak into the review namespace',
-      );
-
-      // Unpinned: the config echo flips to 未配, and the ladder is unchanged — the
-      // point of the conditional phrasing is that ONE sentence stays true either way.
-      const unpinned = fakeCtx();
-      mod.apply(unpinned.ctx, { state_path: join(mkdtempSync(join(tmpdir(), 'atomcode-dp-desc3-')), 's.json'), auto_start: false });
-      const review2 = unpinned.calls.tools.find((t) => t.name === 'atomcode_review');
-      assert.match(review2.description, /当前未配/, 'the echo must follow the real config');
-      assert.doesNotMatch(review2.description, /当前="direct"/);
-      assert.match(review2.description, /按顺序取：详情页面板选的条目/);
-    } finally {
-      if (savedHome !== undefined) process.env.HOME = savedHome;
-      else delete process.env.HOME;
-      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
-      else delete process.env.USERPROFILE;
-      rmSync(fakeHome, { recursive: true, force: true });
-    }
-  });
-
-  it('review: a configured review_default_provider fills the selection slot instead of refusing to guess', async () => {
-    // A config with TWO usable direct providers and an unusable config.toml
-    // default: with no plugin default, selection must refuse rather than pick a
-    // billing channel. Naming one in the plugin config resolves that refusal.
-    //
-    // Both direct entries point at DEAD LOOPBACK ports on purpose — sentinels
-    // 11/12 from dead-port.mjs, verified before use because the assertion reads
-    // the port back out of the diagnostic. The CLI's argv
-    // is not observable from here (the run dies at a missing binary), so "which
-    // entry did selection pick" would otherwise be unassertable — and a weaker
-    // version of this test passed vacuously: the fake binary fails identically for
-    // `first` and `second`, so a regression that ignored the per-call argument
-    // stayed green. A dead loopback entry instead dies in probeLocalEndpoint, whose
-    // diagnostic NAMES the selected provider and its base_url, which makes the
-    // precedence claim assertable in the positive direction.
-    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-dp-rev-'));
-    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
-    const FIRST_PORT = await requireDeadPort(sentinelPort(11));
-    const SECOND_PORT = await requireDeadPort(sentinelPort(12));
-    const FIRST = `http://127.0.0.1:${FIRST_PORT}/v1`;
-    const SECOND = `http://127.0.0.1:${SECOND_PORT}/v1`;
-    writeFileSync(
-      join(fakeHome, '.atomcode', 'config.toml'),
-      [
-        'default_provider = "AtomGit-qwen3.8-27b"',
-        '[providers.first]',
-        'provider = "openai"',
-        `base_url = "${FIRST}"`,
-        'api_key = "sk-1"',
-        '[providers.second]',
-        'provider = "openai"',
-        `base_url = "${SECOND}"`,
-        'api_key = "sk-2"',
-      ].join('\n'),
-      'utf8',
-    );
-    const repo = mkdtempSync(join(tmpdir(), 'atomcode-dp-repo-'));
-    const savedHome = process.env.HOME;
-    const savedUserProfile = process.env.USERPROFILE;
-    process.env.HOME = fakeHome;
-    process.env.USERPROFILE = fakeHome;
-    const mountReview = async (extra) => {
-      const dir = mkdtempSync(join(tmpdir(), 'atomcode-dp-revs-'));
-      stateDirs.push(dir);
-      const { ctx, calls } = fakeCtx();
-      const bridge = await import(fileUrl(BRIDGE));
-      // A binary that cannot exist, as a backstop: this test must NEVER spawn the
-      // real CLI even if the probe order ever changes.
-      bridge.apply(ctx, {
-        state_path: join(dir, 'sessions.json'),
-        auto_start: false,
-        binary: join(fakeHome, 'definitely-not-atomcode.exe'),
-        ...extra,
-      });
-      return calls.tools.find((t) => t.name === 'atomcode_review');
-    };
-    try {
-      const withoutDefault = await mountReview({});
-      const r1 = await withoutDefault.execute({ working_dir: repo, task: 'noop' }, {});
-      assert.equal(r1.ok, false);
-      assert.match(r1.error, /several direct providers/, 'precondition: ambiguity is a refusal, not a guess');
-
-      const withDefault = await mountReview({ review_default_provider: 'second' });
-      const r2 = await withDefault.execute({ working_dir: repo, task: 'noop' }, {});
-      assert.equal(r2.ok, false, 'the run still fails — at the dead endpoint, not at selection');
-      assert.doesNotMatch(r2.error, /needs a repository/);
-      assert.match(r2.error, /provider "second"/, 'the configured entry must be the one selected');
-      assert.match(r2.error, new RegExp(String(SECOND_PORT)), 'and its base_url is what got probed');
-      assert.doesNotMatch(r2.error, new RegExp(String(FIRST_PORT)), 'the other direct entry must not be touched');
-
-      // A per-call argument outranks the configured default — asserted in the
-      // POSITIVE direction, which is what the earlier version could not do.
-      const withArg = await mountReview({ review_default_provider: 'second' });
-      const r3 = await withArg.execute({ working_dir: repo, task: 'noop', provider: 'first' }, {});
-      assert.match(r3.error, /provider "first"/, 'the argument must win over the configured default');
-      assert.doesNotMatch(r3.error, new RegExp(String(SECOND_PORT)), 'the pinned default must not be the one dialed');
-
-      // The namespaces stay apart: the ASK-side profile must not resolve the
-      // review ambiguity, because "AtomGit-qwen3.8-27b" is not a billable direct
-      // entry — silently using it would point the CLI at a provider it cannot
-      // authenticate against.
-      const withAskProfile = await mountReview({ default_provider: 'AtomGit-qwen3.8-27b' });
-      const r4 = await withAskProfile.execute({ working_dir: repo, task: 'noop' }, {});
-      assert.match(r4.error, /several direct providers/, 'ask config must not leak into review selection');
-    } finally {
-      if (savedHome !== undefined) process.env.HOME = savedHome;
-      else delete process.env.HOME;
-      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
-      else delete process.env.USERPROFILE;
-      rmSync(fakeHome, { recursive: true, force: true });
-      rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it('review: the selected provider actually lands in the CLI argv', async () => {
-    // The positive form of the precedence claim. The loopback test above proves
-    // WHICH entry selection picked (via the probe's named diagnostic); this one
-    // proves the picked name is what the CLI is handed — via review.js's documented
-    // `setSpawnOverride` seam, so nothing real is ever spawned.
-    //
-    // Why both tests exist: the original version of this suite asserted precedence
-    // through a missing binary, where `first` and `second` produce an identical
-    // ENOENT. That assertion could not fail, which is exactly how a precedence
-    // regression would ship green.
-    const { setSpawnOverride } = await import(fileUrl(REVIEW));
-    const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-argv-'));
-    mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
-    writeFileSync(
-      join(fakeHome, '.atomcode', 'config.toml'),
-      [
-        'default_provider = "account-gw"',
-        '[providers.first]',
-        'provider = "openai"',
-        'base_url = "https://first.test/v1"',
-        'api_key = "sk-1"',
-        '[providers.second]',
-        'provider = "openai"',
-        'base_url = "https://second.test/v1"',
-        'api_key = "sk-2"',
-      ].join('\n'),
-      'utf8',
-    );
-    const repo = mkdtempSync(join(tmpdir(), 'atomcode-argv-repo-'));
-    const savedHome = process.env.HOME;
-    const savedUserProfile = process.env.USERPROFILE;
-    process.env.HOME = fakeHome;
-    process.env.USERPROFILE = fakeHome;
-    /** @type {string[][]} */
-    const spawned = [];
-    const providerOf = (argv) => {
-      const i = argv.indexOf('--provider');
-      return i >= 0 ? argv[i + 1] : undefined;
-    };
-    setSpawnOverride((_bin, args) => {
-      spawned.push(args);
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.kill = () => {};
-      setImmediate(() => {
-        child.stdout.emit('data', '{"findings":[]}');
-        child.emit('exit', 0);
-      });
-      return child;
+    const { ctx, calls } = fakeCtx();
+    const mod = await import(fileUrl(BRIDGE));
+    mod.apply(ctx, {
+      state_path: join(dir, 'sessions.json'),
+      auto_start: false,
+      default_provider: 'AtomGit-glm5.3-flash',
     });
-    const mount = async (extra, picks) => {
-      const dir = mkdtempSync(join(tmpdir(), 'atomcode-argv-s-'));
-      stateDirs.push(dir);
-      if (picks && Object.keys(picks).length > 0) {
-        const { createProviderStore } = await import(fileUrl(PROVIDER_STORE));
-        const store = createProviderStore(join(dir, 'provider.json'));
-        for (const [slot, name] of Object.entries(picks)) store.set(slot, name);
-      }
-      const { ctx, calls } = fakeCtx();
-      const bridge = await import(fileUrl(BRIDGE));
-      bridge.apply(ctx, { state_path: join(dir, 'sessions.json'), auto_start: false, ...extra });
-      return calls.tools.find((t) => t.name === 'atomcode_review');
-    };
-    try {
-      const pinned = await mount({ review_default_provider: 'second' });
-      const r1 = await pinned.execute({ working_dir: repo, task: 'noop' }, {});
-      assert.equal(r1.ok, true, `the fake CLI must have "run": ${r1.error}`);
-      assert.equal(providerOf(spawned[0]), 'second', 'the configured default reaches --provider');
+    const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
+    assert.match(ask.description, /档位名/, 'the ask description must name the kind of value expected');
+    assert.match(ask.description, /default_provider="AtomGit-glm5.3-flash"/, 'the ACTIVE default is echoed');
+    assert.match(ask.description, /详情页面板上选的档位/, 'and the panel slot above it');
+    assert.match(ask.parameters.properties.provider.description, /GET \/models/);
+    assert.match(ask.parameters.properties.provider.description, /不要传裸模型 id/);
+    assert.match(ask.parameters.properties.provider.description, /面板上选的档位/);
 
-      const argued = await mount({ review_default_provider: 'second' });
-      const r2 = await argued.execute({ working_dir: repo, task: 'noop', provider: 'first' }, {});
-      assert.equal(r2.ok, true, r2.error);
-      assert.equal(providerOf(spawned[1]), 'first', 'the per-call argument must outrank the configured default');
-
-      const before = spawned.length;
-      const ambiguous = await mount({});
-      const r3 = await ambiguous.execute({ working_dir: repo, task: 'noop' }, {});
-      assert.equal(r3.ok, false);
-      assert.match(r3.error, /several direct providers/);
-      assert.equal(spawned.length, before, 'a refused selection must never reach the spawner');
-
-      // The panel layer, in the same observable form. A pick resolves the ambiguity
-      // with NO config edit (this is what the dropdown is for), and it outranks the
-      // patch field when both are set. Indexed off `spawned.length` because a
-      // refused selection never reaches the spawner at all.
-      const iPanel = spawned.length;
-      const byPanel = await mount({}, { review: 'first' });
-      const r4 = await byPanel.execute({ working_dir: repo, task: 'noop' }, {});
-      assert.equal(r4.ok, true, `a panel pick must resolve the ambiguity: ${r4.error}`);
-      assert.equal(providerOf(spawned[iPanel]), 'first', 'the panel pick reaches --provider');
-
-      const iVsConfig = spawned.length;
-      const panelVsConfig = await mount({ review_default_provider: 'first' }, { review: 'second' });
-      const r5 = await panelVsConfig.execute({ working_dir: repo, task: 'noop' }, {});
-      assert.equal(r5.ok, true, r5.error);
-      assert.equal(providerOf(spawned[iVsConfig]), 'second', 'the panel pick must outrank review_default_provider');
-    } finally {
-      setSpawnOverride(null);
-      if (savedHome !== undefined) process.env.HOME = savedHome;
-      else delete process.env.HOME;
-      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
-      else delete process.env.USERPROFILE;
-      rmSync(fakeHome, { recursive: true, force: true });
-      rmSync(repo, { recursive: true, force: true });
-    }
+    const review = calls.tools.find((t) => t.name === 'atomcode_review');
+    assert.match(review.description, /档位名/, 'the review description must name the kind of value expected');
+    assert.match(review.description, /详情页面板上选的档位/, 'and lead with the panel pick');
+    assert.match(review.description, /不是裸模型 id/, 'the bare model id warning is the same warning');
+    assert.doesNotMatch(review.description, /留空即点名它/, 'no unconditional "empty means this one" claim');
+    assert.doesNotMatch(
+      review.description,
+      /直连条目|providers\.<name>/,
+      'the direct [providers.<name>] namespace died with the CLI and must not be taught any more',
+    );
   });
+
 });
 
 describe('version truth — the manifest and the reported version cannot disagree', () => {

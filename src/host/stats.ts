@@ -110,6 +110,8 @@ export function describeDaemonDown(reason: HealthFailure): string {
 export interface ModelCatalogEntry {
   provider: string;
   isDefault: boolean;
+  effortLevels?: string[];
+  currentEffort?: string | null;
 }
 
 /**
@@ -160,26 +162,42 @@ export interface StatsBag {
    * branch beside `approvalMode` — which is the value the code actually honours.
    */
   approvalModeRejected: string | null;
+  /**
+   * The resolved `review_brief_mode` (always / when-empty / never) — which prompt
+   * shape a review with empty user text takes. Mirrored for the panel the same
+   * way `approvalMode` is: a resolved CONFIGURATION fact, not a runtime reading.
+   */
+  reviewBriefMode: string;
+  /** The off-enum `review_brief_mode` spelling, or null when legal. Same shape as `approvalModeRejected`. */
+  reviewBriefModeRejected: string | null;
   defaultWorkingDir: string | null;
-  reviewWorkingDir: string | null;
   defaultProvider: string | null;
-  reviewDefaultProvider: string | null;
-  // ── the panel's own state: its picks, and what the NEXT call will use ──────
-  panelProvider: { ask: string | null; review: string | null };
+  // ── the panel's own state: its pick, and what the NEXT call will use ───────
+  /**
+   * The panel's stored pick, one name for the whole plugin.
+   *
+   * It used to be `{ask, review}` — two picks for two provider namespaces
+   * (红线 8). The `[providers.<name>]` namespace died with the review CLI, so
+   * there is one question left ("which model profile do bridged turns ask for")
+   * and one answer to it.
+   */
+  panelProvider: string | null;
   panelStorePath: string;
   panelStoreError: string;
   panelStoreForeign: boolean;
   effectiveAsk: string | null;
   /** 'panel' | 'config' | 'atomcode' — see `resolveProvider`. */
   effectiveAskSource: string;
-  effectiveReview: string | null;
-  /** 'panel' | 'config' | 'auto' — NOT 'atomcode' (红线 8). */
-  effectiveReviewSource: string;
   modelCatalog: ModelCatalogEntry[] | null;
   modelCatalogAt: number;
   modelCatalogError: string;
-  reviewCatalog: string[];
-  reviewEndpoints: Record<string, string>;
+  // ── panel settings (briefMode + workingDir + approvalMode + askMaxRounds overrides) ──
+  panelBriefMode: string | null;
+  panelWorkingDir: string | null;
+  panelApprovalMode: string | null;
+  panelAskMaxRounds: number | null;
+  panelSettingsStorePath: string;
+  panelSettingsError: string;
   // ── daemon liveness + the auto-start bookkeeping ──────────────────────────
   daemonUp: boolean;
   daemonVersion: string;
@@ -191,8 +209,6 @@ export interface StatsBag {
   lastSpawnAt: number;
   daemonStarting: boolean;
   lastHealthAt: number;
-  reviewAvailable: boolean;
-  reviewReason: string;
   // ── session glue ──────────────────────────────────────────────────────────
   sessionsTracked: number;
   /**
@@ -207,8 +223,8 @@ export interface StatsBag {
   // ── the two patch-only knobs, plus which of them the user authored ────────
   askRounds: number;
   retrySecs: number;
-  authored: { approvalMode: boolean; workingDir: boolean; askMaxRounds: boolean };
-  defaults: { approvalMode: string; askMaxRounds: number };
+  authored: { approvalMode: boolean; workingDir: boolean; askMaxRounds: boolean; reviewBriefMode: boolean };
+  defaults: { approvalMode: string; askMaxRounds: number; reviewBriefMode: string };
   // ── drift signals ─────────────────────────────────────────────────────────
   quotaDriftSeen: boolean;
   /** A UNION across the mount, never replaced — see `askChat`. */
@@ -283,19 +299,16 @@ export interface StatsSeed {
   binaryEnv: string | undefined;
   approvalMode: string;
   approvalModeRejected: string | null;
+  reviewBriefMode: string;
+  reviewBriefModeRejected: string | null;
   defaultWorkingDir: string | null;
-  reviewWorkingDir: string | null;
   defaultProvider: string | null;
-  reviewDefaultProvider: string | null;
   panelStorePath: string;
-  reviewCatalog: string[];
-  reviewEndpoints: Record<string, string>;
-  reviewAvailable: boolean;
-  reviewReason: string;
+  panelSettingsStorePath: string;
   askRounds: number;
   retrySecs: number;
-  authored: { approvalMode: boolean; workingDir: boolean; askMaxRounds: boolean };
-  defaults: { approvalMode: string; askMaxRounds: number };
+  authored: { approvalMode: boolean; workingDir: boolean; askMaxRounds: boolean; reviewBriefMode: boolean };
+  defaults: { approvalMode: string; askMaxRounds: number; reviewBriefMode: string };
 }
 
 /**
@@ -315,23 +328,25 @@ export function createStatsBag(seed: StatsSeed): StatsBag {
     binaryEnv: seed.binaryEnv,
     approvalMode: seed.approvalMode,
     approvalModeRejected: seed.approvalModeRejected,
+    reviewBriefMode: seed.reviewBriefMode,
+    reviewBriefModeRejected: seed.reviewBriefModeRejected,
     defaultWorkingDir: seed.defaultWorkingDir,
-    reviewWorkingDir: seed.reviewWorkingDir,
     defaultProvider: seed.defaultProvider,
-    reviewDefaultProvider: seed.reviewDefaultProvider,
-    panelProvider: { ask: null, review: null },
+    panelProvider: null,
     panelStorePath: seed.panelStorePath,
     panelStoreError: '',
     panelStoreForeign: false,
     effectiveAsk: null,
     effectiveAskSource: 'atomcode',
-    effectiveReview: null,
-    effectiveReviewSource: 'auto',
     modelCatalog: null,
     modelCatalogAt: 0,
     modelCatalogError: '',
-    reviewCatalog: seed.reviewCatalog,
-    reviewEndpoints: seed.reviewEndpoints,
+    panelBriefMode: null,
+    panelWorkingDir: null,
+    panelApprovalMode: null,
+    panelAskMaxRounds: null,
+    panelSettingsStorePath: seed.panelSettingsStorePath,
+    panelSettingsError: '',
     daemonUp: false,
     daemonVersion: '',
     daemonDownReason: '',
@@ -341,8 +356,6 @@ export function createStatsBag(seed: StatsSeed): StatsBag {
     lastSpawnAt: 0,
     daemonStarting: false,
     lastHealthAt: 0,
-    reviewAvailable: seed.reviewAvailable,
-    reviewReason: seed.reviewReason,
     sessionsTracked: 0,
     sessionsOldestAgeMs: null,
     sessionsError: '',
@@ -409,18 +422,18 @@ export function buildStatsBody(stats: StatsBag, quota: any): StatsSnapshot {
     config: {
       approvalMode: stats.approvalMode,
       approvalModeRejected: stats.approvalModeRejected,
+      reviewBriefMode: stats.reviewBriefMode,
+      reviewBriefModeRejected: stats.reviewBriefModeRejected,
       defaultWorkingDir: stats.defaultWorkingDir,
-      reviewWorkingDir: stats.reviewWorkingDir,
       // The model profile bridged turns ask for when the call names none. On the
       // snapshot rather than hidden in the mount: a typo'd profile is only
       // diagnosable if the panel says which default the bridge is pinning.
+      // There used to be a second row here for the review CLI's own namespace
+      // (红线 8); that namespace died with the CLI, and this bridge now has one
+      // knob and one name for it.
       defaultProvider: stats.defaultProvider,
-      // The review CLI's configured direct entry (a DIFFERENT namespace from the
-      // field above — see 红线 8 in AGENTS.md).
-      reviewDefaultProvider: stats.reviewDefaultProvider,
       askMaxRounds: stats.askRounds,
       daemonRetrySecs: stats.retrySecs,
-      reviewAvailable: stats.reviewAvailable,
       // Which of the patch-only knobs the USER actually authored, and what the
       // built-in fallback is. The panel cannot edit these (no input exists), so
       // without this it can only print a value and let the reader guess whether it
@@ -429,39 +442,31 @@ export function buildStatsBody(stats: StatsBag, quota: any): StatsSnapshot {
       // hardcoding it client-side) keeps ONE source of truth for `25`.
       authored: stats.authored,
       defaults: stats.defaults,
-      reviewReason: stats.reviewReason,
+      // Panel-side overrides, read per call from panel-settings.json.
+      // null = no override, the patch value applies.
+      panelBriefMode: stats.panelBriefMode,
+      panelWorkingDir: stats.panelWorkingDir,
+      panelApprovalMode: stats.panelApprovalMode,
+      panelAskMaxRounds: stats.panelAskMaxRounds,
+      panelSettingsStorePath: stats.panelSettingsStorePath,
+      panelSettingsError: stats.panelSettingsError,
     },
-    // The model knobs, one entry per slot. Kept as TWO entries with identical
-    // shape on purpose: merging them would let the panel read them as one knob,
-    // which is the confusion 红线 8 exists to prevent. `effective` answers the
-    // question a click raises — "what will the NEXT call actually use, and why" —
-    // so a pick that did not take effect is visible on the panel instead of
-    // being a mystery that needs a host restart to diagnose.
+    // `effective` answers the question a click raises — "what will the NEXT call
+    // actually use, and why" — so a pick that did not take effect is visible on
+    // the panel instead of being a mystery that needs a host restart to
+    // diagnose. It used to be two identically-shaped entries, one per namespace
+    // (红线 8), and every reader had to pick one; with the review CLI gone there
+    // is one ladder and one answer.
     provider: {
       storePath: stats.panelStorePath,
       storeError: stats.panelStoreError,
       foreignVersion: stats.panelStoreForeign,
-      ask: {
-        panel: stats.panelProvider.ask,
-        config: stats.defaultProvider,
-        effective: stats.effectiveAsk,
-        source: stats.effectiveAskSource,
-        catalog: stats.modelCatalog,
-        catalogError: stats.modelCatalogError,
-      },
-      review: {
-        panel: stats.panelProvider.review,
-        config: stats.reviewDefaultProvider,
-        effective: stats.effectiveReview,
-        source: stats.effectiveReviewSource,
-        catalog: stats.reviewCatalog,
-        // name → base_url, so the panel can say what the pick DEPENDS on. A
-        // loopback entry means a local sidecar process (in the one measured
-        // working setup, the proxy that turns CodingPlan quota into a standard
-        // endpoint on a gateway that does not check signatures) — the user is
-        // told at click time instead of when the review dies.
-        endpoints: stats.reviewEndpoints,
-      },
+      panel: stats.panelProvider,
+      config: stats.defaultProvider,
+      effective: stats.effectiveAsk,
+      source: stats.effectiveAskSource,
+      catalog: stats.modelCatalog,
+      catalogError: stats.modelCatalogError,
     },
     // Drift/provenance signals: which daemon build we talk to, and whether the
     // quota parser has stopped recognizing the status text. Both are silent

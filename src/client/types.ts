@@ -2,18 +2,22 @@
  * Types shared by the client half — renderer-only shapes.
  *
  * The SNAPSHOT branch types (`ConfigBranch`, `ProviderBranch`, `DaemonBranch`,
- * `ProtocolBranch`, `QuotaBranch`, `StatsSnapshot`, `ProviderSlotName`,
- * `UnknownRecord`) live in `src/shared/stats.ts` now, because both halves need
- * them: the host's `buildStatsBody` PRODUCES the snapshot and the renderer
- * CONSUMES it. Keeping one copy in one module is what makes a renamed key a
- * compile error on both sides instead of a silently empty card.
+ * `ProtocolBranch`, `QuotaBranch`, `StatsSnapshot`, `UnknownRecord`) live in
+ * `src/shared/stats.ts` now, because both halves need them: the host's
+ * `buildStatsBody` PRODUCES the snapshot and the renderer CONSUMES it. Keeping
+ * one copy in one module is what makes a renamed key a compile error on both
+ * sides instead of a silently empty card.
+ *
+ * There used to be a `ProviderSlotName` here for "which of the two namespaces a
+ * control addresses"; there is one namespace now (the `[providers.<name>]`
+ * direct-entry one died with the review CLI), so one control addresses all of
+ * it and nothing needs naming.
  *
  * Everything below is renderer-only: how a row is worded, how a dropdown
  * resolves, whether a quota number is known. These shapes exist because the
  * previous shape was `any` and the contract lived nowhere.
  */
 
-import type { ProviderSlotName } from '../shared/stats.ts';
 
 export type {
   ConfigBranch,
@@ -21,8 +25,6 @@ export type {
   InFlightTurn,
   ProtocolBranch,
   ProviderBranch,
-  ProviderSlot,
-  ProviderSlotName,
   QuotaBranch,
   SessionsBranch,
   StatsSnapshot,
@@ -45,7 +47,6 @@ export type QuotaView =
 
 /** One model control's wording, from `providerRows`. */
 export interface ProviderRow {
-  slotName: ProviderSlotName;
   label: string;
   value: string;
   fallback: string;
@@ -56,7 +57,7 @@ export interface ProviderRow {
 /** What `providerSelectModel` decides for one control. */
 export interface ProviderSelectModel {
   value: string;
-  options: Array<{ value: string; label: string }>;
+  options: Array<{ value: string; label: string; effortLevels?: string[]; currentEffort?: string | null }>;
   disabled: boolean;
   reason: string;
   effective: string;
@@ -68,6 +69,10 @@ export interface ProviderSelectModel {
    * process this pick then depends on. A different sentence kind from `note`.
    */
   warning: string;
+  /** The effort levels the selected model supports (empty = none / unknown). */
+  effortLevels?: string[];
+  /** The daemon's current persistent effort for the selected model (null = unset). */
+  currentEffort?: string | null;
 }
 
 /** One row of the「回合边界」card. */

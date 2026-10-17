@@ -28,10 +28,11 @@
  * its throttle: shared by design, do not "make it consistent" with the others.)
  *
  * Concurrency follows `sessions.js`: every mutation re-reads the file
- * (read-modify-write), so one profile setting `ask` cannot clobber the other's
- * `review`. It is NOT transactional (Node has no portable flock); the residual
- * window is microseconds and the worst loss is one field reverting to "no pick",
- * which degrades to the mount-time `default_provider` — bounded, never corrupt.
+ * (read-modify-write), so a web host and a desktop host writing at the same time
+ * cannot clobber each other's pick. It is NOT transactional (Node has no portable
+ * flock); the residual window is microseconds and the worst loss is one field
+ * reverting to "no pick", which degrades to the mount-time `default_provider` —
+ * bounded, never corrupt.
  *
  * ## Version guard (write side)
  *
@@ -57,13 +58,18 @@ export const PROVIDER_FILE_VERSION = 1;
  */
 export const KNOWN_PROVIDER_VERSIONS = [PROVIDER_FILE_VERSION];
 
-/** The two slots, identical on the wire and on disk (红线 8: two namespaces). */
-export const PROVIDER_SLOTS = ['ask', 'review'];
+/**
+ * One slot, both on the wire and on disk. It used to be TWO (`ask` and
+ * `review`) for two different provider namespaces — 红线 8 — until the review
+ * CLI was deleted and every entry point started asking the daemon for the same
+ * model profiles. One question remains ("which profile do bridged turns use")
+ * and it has one answer.
+ */
+export const PROVIDER_SLOT = 'ask';
 
-/** One state-file reading: the two slots as this build reads them, plus why. */
+/** One state-file reading: the pick as this build reads it, plus why. */
 export interface ProviderDoc {
   ask: string | null;
-  review: string | null;
   foreignVersion: boolean;
   error: string;
   /** Present only when the file carried a version this build refuses to use. */
@@ -93,10 +99,9 @@ export function normalizeProviderName(raw: unknown) {
   if (trimmed.length > MAX_NAME_LEN) {
     return { ok: false, value: null, error: `provider name is longer than ${MAX_NAME_LEN} characters` };
   }
-  // The name is forwarded VERBATIM as one CLI argv element (`--provider <name>`).
-  // The write endpoint accepts any string, so a value like `--no-web` would be
-  // handed to the CLI's argv parser, which decides on its own whether it is an
-  // OPTION or this option's VALUE. No real provider name starts with a dash;
+  // The name is forwarded VERBATIM as the ask body's `provider` field. The write
+  // endpoint accepts any string, so a value like `--no-web` would travel as a
+  // trusted identifier. No real provider name starts with a dash;
   // refuse HERE (a named write error on the panel) rather than let the CLI
   // guess, which surfaces as an unrelated flag error three layers away.
   if (trimmed.startsWith('-')) {
@@ -118,7 +123,7 @@ export function createProviderStore(path: string = defaultProviderStatePath()) {
   // copy of the same loop, and the copy is where drift hides.
   sweepStaleArtifacts(path);
 
-  const blank = (error: string = '') => ({ ask: null, review: null, foreignVersion: false, error });
+  const blank = (error: string = '') => ({ ask: null, foreignVersion: false, error });
 
   /**
    * The document as it sits on disk, or a neutral reading. Never throws: an
@@ -169,7 +174,7 @@ export function createProviderStore(path: string = defaultProviderStatePath()) {
       const n = normalizeProviderName(v);
       return n.ok ? n.value : null;
     };
-    return { ask: clean(parsed.ask), review: clean(parsed.review), foreignVersion: false, error: '' };
+    return { ask: clean(parsed.ask), foreignVersion: false, error: '' };
   }
 
   function writeDoc(doc: Record<string, unknown>) {
@@ -177,13 +182,17 @@ export function createProviderStore(path: string = defaultProviderStatePath()) {
   }
 
   return {
-    /** @returns {{ask:string|null, review:string|null, foreignVersion:boolean, error:string}} */
+    /** @returns {{ask:string|null, foreignVersion:boolean, error:string}} */
     read(): ProviderDoc {
       return readDoc();
     },
     /**
-     * Set or clear one slot (`null`/'' = clear = 未插手). Re-reads first so the
-     * OTHER slot — possibly owned by the other profile — survives this write.
+     * Set or clear the one slot (`null`/'' = clear = 未插手). Re-reads first so a
+     * concurrent write is not clobbered.
+     *
+     * `slot` is still taken and checked rather than dropped: the wire has always
+     * carried it, and an old client posting the review namespace must get a
+     * named refusal, not a write that lands somewhere unexpected.
      *
      * Refusals carry a machine-readable `code`, not just prose: the route maps
      * `foreign-version` to 409 and everything else to 500, and doing that by
@@ -194,12 +203,12 @@ export function createProviderStore(path: string = defaultProviderStatePath()) {
      * @returns {{ok:boolean, value:string|null, error:string, code:string}}
      */
     set(slot: string, name: unknown) {
-      if (!PROVIDER_SLOTS.includes(slot)) {
+      if (slot !== PROVIDER_SLOT) {
         return {
           ok: false,
           value: null,
           code: 'unknown-slot',
-          error: `unknown provider slot "${String(slot)}" (expected ${PROVIDER_SLOTS.join(' / ')})`,
+          error: `unknown provider slot "${String(slot)}" (expected ${PROVIDER_SLOT} — the second namespace died with the review CLI)`,
         };
       }
       const normalized = normalizeProviderName(name);
@@ -213,8 +222,7 @@ export function createProviderStore(path: string = defaultProviderStatePath()) {
           error: current.error || `state file was written by a newer build of this plugin (version ${current.version}); refusing to overwrite it`,
         };
       }
-      const doc: Record<string, unknown> = { version: PROVIDER_FILE_VERSION, ask: current.ask, review: current.review, updatedAt: Date.now() };
-      doc[slot] = normalized.value;
+      const doc: Record<string, unknown> = { version: PROVIDER_FILE_VERSION, ask: normalized.value, updatedAt: Date.now() };
       try {
         writeDoc(doc);
       } catch (error: any) {

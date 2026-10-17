@@ -132,7 +132,7 @@ async function callRoute(route, { method = 'GET', headers = {}, body } = {}) {
  * pinned panel pick, then hand the REAL snapshot to the REAL client reader.
  *
  * @param {string[]} configLines - ~/.atomcode/config.toml contents
- * @param {string|null} panelPick - the review slot's stored pick (null = 未插手)
+ * @param {string|null} panelPick - the stored pick in `provider.json` (null = 未插手)
  */
 async function snapshotThenRender(configLines, panelPick) {
   const savedHome = process.env.HOME;
@@ -150,7 +150,7 @@ async function snapshotThenRender(configLines, panelPick) {
   if (panelPick !== null) {
     writeFileSync(
       join(stateDir, 'provider.json'),
-      JSON.stringify({ version: 1, ask: null, review: panelPick, updatedAt: Date.now() }),
+      JSON.stringify({ version: 1, ask: panelPick, updatedAt: Date.now() }),
       'utf8',
     );
   }
@@ -164,7 +164,7 @@ async function snapshotThenRender(configLines, panelPick) {
     return {
       body: res.body,
       client,
-      model: client.providerSelectModel(res.body.provider, 'review', REVIEW_FALLBACK),
+      model: client.providerSelectModel(res.body.provider, REVIEW_FALLBACK),
     };
   } finally {
     if (savedHome === undefined) delete process.env.HOME;
@@ -194,49 +194,59 @@ describe('snapshot contract — host snapshot read by the client reader', () => 
     /* temp dirs are reclaimed per case */
   });
 
-  it('the host-written endpoints reach the client that warns about them', async () => {
-    // THE regression this file exists for. Both halves were green while the
-    // warning was dead: the host writes provider.review.endpoints, the client
-    // read provider.endpoints. Assert the joint, not either side alone.
-    const { body, model } = await snapshotThenRender(LOOPBACK_CONFIG, 'atomcode-local');
+  it('the pick written by the host is the pick the panel shows', async () => {
+    // THE joint. The host writes `provider.json`; the panel reads that pick back
+    // out of a snapshot it did not produce. Each half was green while the joint
+    // was broken once already (the host wrote `provider.review.endpoints`, the
+    // client read `provider.endpoints`), so this asserts the round trip rather
+    // than either side against its own fixture.
+    //
+    // The daemon is down here (CLOSED_PORT), so the control is disabled with a
+    // reason — but the value still round-trips from disk.
+    const { body, model } = await snapshotThenRender(LOOPBACK_CONFIG, 'far-away');
+    assert.equal(body.provider.panel, 'far-away', 'the host must publish the stored pick as `panel`');
+    assert.equal(model.value, 'far-away', 'and the panel must show exactly that even when disabled');
+    assert.equal(model.disabled, true, 'no catalogue → disabled with a reason');
+    assert.notEqual(model.reason, '', 'the reason must be non-empty');
+  });
+
+  it('a pick for a profile the daemon does not list is still shown, not silently dropped', async () => {
+    // The daemon here answers nothing (CLOSED_PORT), so there is no catalogue to
+    // validate against. A panel that blanked an unknown pick would look like the
+    // write failed; showing it and letting the next real turn report the error is
+    // the honest half of the contract.
+    const { model } = await snapshotThenRender(LOOPBACK_CONFIG, 'atomcode-local');
+    assert.equal(model.value, 'atomcode-local', 'the pick survives even when the daemon is down');
+    assert.equal(model.disabled, true, 'and the control is disabled because there is no catalogue');
+  });
+
+  it('an untouched panel says so rather than inventing a target', async () => {
+    const { body, model } = await snapshotThenRender(LOOPBACK_CONFIG, null);
+    assert.equal(body.provider.panel, null, 'no pick on disk must be published as null, not as a guess');
+    assert.equal(model.value, '', 'the control value is empty, not a guess');
+    assert.equal(model.options[0].label, REVIEW_FALLBACK, 'the first option is the fallback label');
+  });
+
+  it('a sidecar warning is not sent, and the client would ignore it if it were', async () => {
+    // The host stops publishing `endpoints`; the client stops reading it. This
+    // asserts BOTH halves of that deletion on one real snapshot — a field the
+    // client would still act on, or a host still sending one, would be a
+    // half-done removal rather than a contract change.
+    const { body, client } = await snapshotThenRender(LOOPBACK_CONFIG, 'atomcode-local');
+    assert.equal(body.provider.endpoints, undefined, 'the host must publish no endpoint map');
+    const branch = { ...body.provider, endpoints: { 'atomcode-local': 'http://127.0.0.1:8899/v1' } };
     assert.equal(
-      body.config.reviewAvailable,
-      true,
-      'the fixture must describe a host where review is provisioned',
+      client.providerSelectModel(branch, REVIEW_FALLBACK).warning,
+      '',
+      'and the client must ignore one even when handed it',
     );
-    assert.deepEqual(
-      body.provider.review.endpoints['atomcode-local'],
-      'http://127.0.0.1:8899/v1',
-      'the host must publish the endpoint for the pinned entry',
-    );
-    assert.equal(model.disabled, false, 'the control still works — this is a dependency, not a refusal');
-    assert.match(
-      model.warning,
-      /本地端点 http:\/\/127\.0\.0\.1:8899\/v1/,
-      'a loopback pick must name the local process the review now depends on',
-    );
-  });
-
-  it('a remote pick carries no warning down the same joint', async () => {
-    // The counter-case: a blanket warning is how a real one gets trained out,
-    // so the joint must distinguish the two, not merely fire.
-    const { model } = await snapshotThenRender(LOOPBACK_CONFIG, 'far-away');
-    assert.equal(model.warning, '');
-  });
-
-  it('an unpinned review slot says nothing rather than inventing a target', async () => {
-    // No pick on disk: `target` falls back to `effective`, and an empty one must
-    // not be looked up in the endpoint map — `endpoints['']` is undefined, and
-    // isLoopbackEndpoint('') is false, so this is a silence, not a guess.
-    const { model } = await snapshotThenRender(LOOPBACK_CONFIG, null);
-    assert.equal(model.warning, '');
   });
 
   it('the protocol drift field is published by the host AND read by the client', async () => {
-    // The joint, not either half. Both halves of the `endpoints` warning once
-    // had their own passing test while the warning itself was dead — a field the
-    // client never reads looks identical to a feature that works, from the
-    // inside of each half. Assert that the host publishes the drift list and
+    // The joint, not either half. Both halves of the deleted `endpoints` warning
+    // once had their own passing test while the warning itself was dead — a
+    // field the client never reads looks identical to a feature that works, from
+    // the inside of each half. Assert that the host publishes the drift list and
     // that the client reads THAT field and stays silent on it.
     const { body, client } = await snapshotThenRender(LOOPBACK_CONFIG, null);
     assert.deepEqual(

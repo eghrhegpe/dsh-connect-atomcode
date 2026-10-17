@@ -24,27 +24,38 @@
  */
 import { defineConfig } from "tsdown";
 
-/** Peer/runtime packages that must resolve from the Host, never be bundled. */
-const NEVER_BUNDLE_HOST = ["@deepseek-ai/cordis"];
+/**
+ * Peer/runtime packages that must resolve from the Host, never be bundled.
+ *
+ * `@deepseek-ai/dsh-llm` joined this list for the `/inject` route: it needs
+ * `createUserMessage`, and bundling it would put a SECOND copy of the message
+ * factory inside this plugin. A message built by that copy carries a different
+ * module instance's identity handling than the one the Host loaded — the same
+ * class of seam the per-module `lib/` entries above exist to protect. It is
+ * resolved lazily and an unresolvable host is reported BY NAME at the route,
+ * never silently skipped.
+ */
+const NEVER_BUNDLE_HOST = ["@deepseek-ai/cordis", "@deepseek-ai/dsh-llm"];
 
 export default defineConfig([
   {
     name: "host",
     // Multiple entries, NOT one bundle. The host half is loaded as ESM from disk
-    // by Node, and its module graph is load-bearing at TEST time: `wiring` and
-    // `protocol` reach into `lib/review.js` to install the fake spawner
-    // (`setSpawnOverride`) that `lib/index.js` then runs. Bundling everything into
-    // `lib/index.js` inlined a SECOND copy of that module, so the override landed
-    // on a module nobody called and the test drove the REAL review CLI — which is
-    // how this was caught. Emitting one artifact per source file keeps the shared
-    // instance, and the suites keep driving the built host half.
+    // by Node, and its module graph is load-bearing at TEST time: a suite that
+    // installs a fake for a module-level seam (`setSpawnOverride` and friends)
+    // must be installing it on the SAME module instance `lib/index.js` imports.
+    // Bundling everything into `lib/index.js` inlined a SECOND copy, so the
+    // override landed on a module nobody called and the test drove the real
+    // binary — that is how this was caught. Emitting one artifact per source
+    // file keeps the shared instance, and the suites keep driving the built host
+    // half.
     entry: {
       index: "src/host/index.ts",
       daemon: "src/host/daemon.ts",
-      review: "src/host/review.ts",
       quota: "src/host/quota.ts",
       sessions: "src/host/sessions.ts",
       "provider-store": "src/host/provider-store.ts",
+      "panel-settings-store": "src/host/panel-settings-store.ts",
       // apply()-split of the former God module: each concern is its own entry so
       // `lib/` stays "one artifact per source module" and a reader can find a
       // concern by its file name. These are NEW entries — nothing that already
@@ -55,12 +66,23 @@ export default defineConfig([
       runtime: "src/host/runtime.ts",
       routes: "src/host/routes.ts",
       tools: "src/host/tools.ts",
+      // Delivery of an AtomCode answer to the session's model (`/inject`). Its
+      // own entry for the same reason as the rest: `test/inject.test.mjs` drives
+      // THIS module, and importing it through `routes.js` would run the HTTP
+      // shell around every assertion.
+      inject: "src/host/inject.ts",
+      // `/atomcode-review` — a review started from the composer with no model
+      // in the loop. Its own entry so `test/command.test.mjs` can drive it
+      // without mounting `apply()`; it imports `runAsk` from `tools.js`, which
+      // is exactly the seam the split-entry layout protects.
+      command: "src/host/command.ts",
       // The one module BOTH halves read (`src/client/rows.ts` bundles it too).
       // It gets its own entry so it lands at a stable path instead of being
       // inlined into whichever host module happened to import it first — that
-      // is how `lib/review.js` once became a re-export shell with the real code
-      // in a generated `lib/review2.js`, which breaks the "one artifact per
-      // source module" naming this config promises (see the header).
+      // is how a shared module once turned its importer into a re-export shell
+      // with the real code in a generated `lib/<name>2.js`, which breaks the
+      // "one artifact per source module" naming this config promises (see the
+      // header).
       loopback: "src/shared/loopback.ts",
     },
     outDir: "lib",

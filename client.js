@@ -1,62 +1,104 @@
 (function() {
 
 //#region src/client/styles.ts
+/** The shared small button skin (刷新 / 折叠头). */
+	const BUTTON = {
+		height: 28,
+		padding: "0 10px",
+		borderRadius: 8,
+		border: "1px solid var(--dsw-alias-border-l2)",
+		background: "var(--dsw-alias-bg-layer-2)",
+		color: "var(--dsw-alias-label-primary)",
+		fontSize: 12,
+		cursor: "pointer",
+		appearance: "none",
+		fontFamily: "inherit"
+	};
 	const S = {
-		wrap: {
-			width: "100%",
-			maxWidth: "1180px",
-			minWidth: 0,
+		page: {
+			flex: "1 1 auto",
+			height: "100%",
+			minHeight: 0,
 			display: "flex",
 			flexDirection: "column",
-			gap: "12px",
-			color: "var(--dsw-alias-label-primary)"
+			overflow: "hidden",
+			color: "var(--dsw-alias-label-primary)",
+			fontSize: 13,
+			lineHeight: "20px"
 		},
-		titleRow: {
+		headerBar: {
+			flex: "none",
+			position: "relative",
+			zIndex: 1
+		},
+		header: {
 			display: "flex",
 			alignItems: "center",
-			gap: "8px",
-			margin: "0 0 2px"
+			gap: 12,
+			padding: "2px 0 10px"
 		},
 		title: {
 			margin: 0,
-			fontSize: "13px",
+			fontSize: 18,
 			fontWeight: 600,
-			lineHeight: "20px"
+			lineHeight: "24px",
+			letterSpacing: "-0.01em"
+		},
+		cluster: {
+			display: "inline-flex",
+			alignItems: "center",
+			gap: 10,
+			flexWrap: "wrap",
+			justifyContent: "flex-end",
+			marginLeft: "auto"
 		},
 		live: {
-			fontSize: "11px",
-			padding: "1px 7px",
-			borderRadius: "999px",
+			fontSize: 11,
+			padding: "2px 8px",
+			borderRadius: 999,
 			color: "var(--dsw-alias-state-success-primary)",
 			border: "1px solid var(--dsw-alias-state-success-primary)"
-		},
-		updated: {
-			marginLeft: "auto",
-			fontSize: "11px",
-			color: "var(--dsw-alias-label-tertiary)"
 		},
 		liveStale: {
 			color: "var(--dsw-alias-state-error-primary)",
 			borderColor: "var(--dsw-alias-state-error-primary)"
 		},
+		updated: {
+			fontSize: 11,
+			color: "var(--dsw-alias-label-tertiary)"
+		},
 		staleReason: {
 			color: "var(--dsw-alias-state-error-primary)",
-			maxWidth: "40ch"
+			maxWidth: "40ch",
+			fontSize: 11
+		},
+		refresh: BUTTON,
+		scroll: {
+			flex: "1 1 auto",
+			minHeight: 0,
+			overflowY: "auto",
+			overflowX: "hidden"
+		},
+		content: {
+			padding: "2px 0 24px",
+			display: "flex",
+			flexDirection: "column",
+			gap: 12
 		},
 		inFlight: {
 			display: "flex",
 			alignItems: "center",
-			gap: "8px",
+			gap: 8,
 			border: "1px solid var(--dsw-alias-border-l1)",
 			background: "var(--dsw-alias-bg-layer-1)",
-			borderRadius: "8px",
-			padding: "7px 12px",
-			fontSize: "12.5px",
+			borderRadius: 10,
+			padding: "8px 12px",
+			fontSize: 12.5,
 			lineHeight: "18px"
 		},
 		inFlightDot: {
-			width: "6px",
-			height: "6px",
+			width: 6,
+			height: 6,
 			borderRadius: "50%",
 			background: "var(--dsw-alias-state-success-primary)",
 			flexShrink: 0
@@ -70,42 +112,118 @@
 			color: "var(--dsw-alias-label-secondary)",
 			wordBreak: "break-word"
 		},
-		grid: {
-			display: "grid",
-			gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-			gap: "10px",
-			alignItems: "start"
-		},
-		card: {
+		notice: {
 			border: "1px solid var(--dsw-alias-border-l1)",
 			background: "var(--dsw-alias-bg-layer-1)",
-			borderRadius: "8px",
+			borderRadius: 10,
 			padding: "12px 14px",
+			color: "var(--dsw-alias-label-secondary)",
+			fontSize: 12.5
+		},
+		error: {
+			color: "var(--dsw-alias-state-error-primary)",
+			fontSize: 12.5
+		},
+		tabs: {
 			display: "flex",
 			flexDirection: "column",
-			gap: "6px",
-			minWidth: 0
+			gap: 12
 		},
-		cardTitle: {
-			margin: 0,
-			fontSize: "12px",
+		tabBar: {
+			display: "flex",
+			gap: 4,
+			borderBottom: "1px solid var(--dsw-alias-border-l1)",
+			overflowX: "auto"
+		},
+		tab: {
+			appearance: "none",
+			background: "none",
+			border: "none",
+			borderBottom: "2px solid transparent",
+			padding: "8px 12px",
+			fontSize: 13,
+			color: "var(--dsw-alias-label-secondary)",
+			cursor: "pointer",
+			outline: "none",
+			fontFamily: "inherit",
+			whiteSpace: "nowrap"
+		},
+		tabActive: {
+			color: "var(--dsw-alias-label-primary)",
 			fontWeight: 600,
+			borderBottom: "2px solid var(--dsw-alias-accent, #6C5CE7)"
+		},
+		tabPane: {
+			display: "grid",
+			gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))",
+			gap: 12,
+			alignItems: "start"
+		},
+		section: {
+			border: "1px solid var(--dsw-alias-border-l1)",
+			borderRadius: 12,
+			background: "var(--dsw-alias-bg-layer-1)",
+			overflow: "hidden"
+		},
+		sectionHead: {
+			appearance: "none",
+			display: "flex",
+			alignItems: "center",
+			gap: 10,
+			width: "100%",
+			padding: "10px 14px",
+			background: "none",
+			border: "none",
+			cursor: "pointer",
+			textAlign: "left",
+			fontFamily: "inherit"
+		},
+		sectionTitle: {
+			margin: 0,
+			flex: "1 1 auto",
+			minWidth: 0,
+			fontSize: 13,
+			fontWeight: 600,
+			color: "var(--dsw-alias-label-primary)"
+		},
+		chevron: {
+			display: "inline-flex",
+			flex: "none",
+			transition: "transform 0.15s ease",
 			color: "var(--dsw-alias-label-secondary)"
+		},
+		chevronOpen: { transform: "rotate(180deg)" },
+		sectionBody: {
+			borderTop: "1px solid var(--dsw-alias-border-l1)",
+			margin: "0 14px",
+			padding: "10px 0 12px"
 		},
 		row: {
 			display: "flex",
-			alignItems: "center",
+			alignItems: "baseline",
 			justifyContent: "space-between",
-			gap: "10px",
-			fontSize: "12.5px",
+			gap: 12,
+			fontSize: 12.5,
 			lineHeight: "18px",
 			minHeight: "18px"
 		},
-		key: { color: "var(--dsw-alias-label-tertiary)" },
+		key: {
+			color: "var(--dsw-alias-label-tertiary)",
+			flexShrink: 0
+		},
 		val: {
 			color: "var(--dsw-alias-label-primary)",
 			wordBreak: "break-word",
 			textAlign: "right"
+		},
+		pill: {
+			display: "inline-block",
+			padding: "1px 8px",
+			borderRadius: 999,
+			fontSize: 11,
+			fontWeight: 600,
+			lineHeight: "18px",
+			whiteSpace: "nowrap"
 		},
 		valIdle: {
 			color: "var(--dsw-alias-label-secondary)",
@@ -113,96 +231,94 @@
 			textAlign: "right"
 		},
 		valWarn: {
-			color: "var(--dsw-alias-state-warning-primary)",
+			color: "var(--dsw-alias-state-warn-primary)",
 			wordBreak: "break-word",
 			textAlign: "right"
 		},
 		provGrid: {
 			display: "flex",
-			gap: "10px",
-			fontSize: "12.5px"
+			gap: 12,
+			fontSize: 12.5
 		},
 		provCell: {
 			display: "flex",
 			flexDirection: "column",
-			gap: "4px",
+			gap: 4,
 			flex: "1 1 0",
 			minWidth: 0
 		},
 		provLabel: { color: "var(--dsw-alias-label-tertiary)" },
 		select: {
 			font: "inherit",
-			fontSize: "12.5px",
+			fontSize: 12.5,
 			color: "var(--dsw-alias-label-primary)",
 			background: "transparent",
 			border: "1px solid rgba(128, 128, 128, 0.35)",
-			borderRadius: "5px",
+			borderRadius: 5,
 			padding: "2px 6px",
 			maxWidth: "100%",
 			width: "100%"
 		},
 		selectOff: { opacity: .55 },
-		pill: {
-			fontSize: "11px",
-			fontWeight: 600,
-			padding: "1px 8px",
-			borderRadius: "5px",
-			lineHeight: "16px"
-		},
 		metric: {
 			display: "flex",
 			flexDirection: "column",
-			gap: "2px"
+			gap: 2,
+			padding: "10px 12px",
+			borderRadius: 10,
+			background: "var(--dsw-alias-bg-layer-2)"
 		},
 		metricNum: {
-			fontSize: "18px",
-			fontWeight: 700,
-			lineHeight: "22px"
+			fontSize: 20,
+			fontWeight: 650,
+			lineHeight: "24px",
+			letterSpacing: "-0.02em",
+			fontVariantNumeric: "tabular-nums"
 		},
 		metricLabel: {
-			fontSize: "11px",
-			color: "var(--dsw-alias-label-tertiary)"
+			fontSize: 11,
+			color: "var(--dsw-alias-label-secondary)"
+		},
+		bar: {
+			height: 6,
+			borderRadius: 3,
+			background: "var(--dsw-alias-bg-layer-1)",
+			overflow: "hidden",
+			border: "1px solid var(--dsw-alias-border-l1)"
+		},
+		barFill: {
+			height: "100%",
+			borderRadius: 3
 		},
 		callGroups: {
 			display: "flex",
-			gap: "16px",
+			gap: 16,
 			flexWrap: "wrap",
 			alignItems: "baseline"
 		},
 		callGroup: {
 			display: "flex",
-			gap: "12px",
+			gap: 12,
 			alignItems: "baseline",
-			paddingRight: "16px",
+			paddingRight: 16,
 			borderRight: "1px solid var(--dsw-alias-border-l1)"
 		},
 		callGroupLabel: {
-			fontSize: "11px",
+			fontSize: 11,
 			color: "var(--dsw-alias-label-tertiary)",
 			whiteSpace: "nowrap"
 		},
 		callStat: {
-			fontSize: "13px",
+			fontSize: 13,
 			fontWeight: 600,
-			whiteSpace: "nowrap"
+			whiteSpace: "nowrap",
+			fontVariantNumeric: "tabular-nums"
 		},
 		callStatLabel: {
-			marginLeft: "3px",
-			fontSize: "11px",
+			marginLeft: 3,
+			fontSize: 11,
 			fontWeight: 400,
 			color: "var(--dsw-alias-label-tertiary)"
-		},
-		notice: {
-			border: "1px solid var(--dsw-alias-border-l1)",
-			background: "var(--dsw-alias-bg-layer-1)",
-			borderRadius: "8px",
-			padding: "14px 16px",
-			color: "var(--dsw-alias-label-secondary)",
-			fontSize: "12.5px"
-		},
-		error: {
-			color: "var(--dsw-alias-state-error-primary)",
-			fontSize: "12.5px"
 		},
 		panelHead: {
 			display: "flex",
@@ -276,13 +392,6 @@
 	* this one is an account-scoped environment fact that happens to be
 	* visible here. The `tertiary` token alone carries that distinction.
 	*
-	* It used to ALSO multiply by `opacity: 0.85`, which stacked a second dim
-	* onto the weakest label token — at 11px that is where the readout stopped
-	* being legible at a glance, and the user flagged it twice ("底下这个 atom
-	* 长的也比较暗"). One dimming mechanism is a hierarchy; two is a defect.
-	* The neighbours ship at full strength with an icon, so the chip must not
-	* be quieter than the strip it sits in by more than the token.
-	*
 	* `color` overrides the text color ONLY for the one state that is a real
 	* alarm — an exhausted window throttles turns, so it must not be styled
 	* like decoration.
@@ -310,6 +419,24 @@
 		background: "transparent",
 		border: "none",
 		padding: 0,
+		cursor: "pointer",
+		whiteSpace: "nowrap",
+		WebkitAppearance: "none"
+	};
+	/**
+	* The 锐评 entry in an assistant message's own action row. One state only: the
+	* button pre-fills a slash command and returns, so it has no busy state to show
+	* (the turn it starts belongs to the composer, not to this row).
+	*/
+	const MESSAGE_ACTION_STYLE = {
+		font: "inherit",
+		fontSize: "11px",
+		lineHeight: "16px",
+		color: "var(--dsw-alias-label-tertiary)",
+		background: "transparent",
+		border: "none",
+		borderRadius: "4px",
+		padding: "2px 4px",
 		cursor: "pointer",
 		whiteSpace: "nowrap",
 		WebkitAppearance: "none"
@@ -467,20 +594,29 @@
 /**
 	* loopback.ts — "is this base_url a process on THIS machine?", asked once.
 	*
-	* Two halves need the same answer about the same string:
+	* Both halves once needed the same answer about the same string:
 	*
-	*  - the HOST, before spawning a review, decides whether to probe the endpoint
+	*  - the HOST, before spawning a review, decided whether to probe the endpoint
 	*    first (a dead local proxy deserves a named diagnosis, not the CLI's bare
 	*    `Cancelled`);
-	*  - the RENDERER, when the user picks that entry, words the dependency warning
-	*    ("评审经本机进程转发计费，它一停 review 立刻断").
+	*  - the RENDERER, when the user picked that entry, worded the dependency
+	*    warning ("评审经本机进程转发计费，它一停 review 立刻断").
 	*
-	* Those two used to be two hand-written copies of the same four-line predicate.
-	* The copies agreed, which is exactly why nobody noticed — and the day one of
-	* them learned about, say, `0.0.0.0` or a bracketed IPv6 form, the panel would
-	* warn about an endpoint the host never probes (or stay silent about one it
-	* does). This repository's rule is one fact, one place; a predicate shared by
-	* two bundles is the case that rule exists for.
+	* BOTH CONSUMERS ARE GONE. The review CLI was deleted and a review is now an
+	* ordinary daemon turn, so the host has nothing to probe and the panel has no
+	* direct-entry list to warn about. What survives is the predicate itself, still
+	* correct and still exported (`isLoopbackEndpoint` on the client), for the next
+	* caller that has to tell a local process from a remote one. Deleting it is a
+	* separate decision from deleting its callers: it is small, tested, and the
+	* alternative is somebody re-deriving `0.0.0.0` and bracketed-IPv6 handling by
+	* hand a third time.
+	*
+	* That is the history worth keeping: those were two hand-written copies of the
+	* same four-line predicate. The copies agreed, which is exactly why nobody
+	* noticed — and the day one of them learned about, say, `0.0.0.0` or a bracketed
+	* IPv6 form, the panel would warn about an endpoint the host never probes (or
+	* stay silent about one it does). This repository's rule is one fact, one place;
+	* a predicate shared by two bundles is the case that rule exists for.
 	*
 	* ## Why not a `shared/` type-only module
 	*
@@ -607,6 +743,9 @@
 		const modeRejected = typeof src.approvalModeRejected === "string" && src.approvalModeRejected !== "" ? src.approvalModeRejected : "";
 		const dir = typeof src.defaultWorkingDir === "string" ? src.defaultWorkingDir : "";
 		const rounds = Number.isInteger(src.askMaxRounds) ? src.askMaxRounds : null;
+		const briefMode = typeof src.reviewBriefMode === "string" ? src.reviewBriefMode : "";
+		const briefRejected = typeof src.reviewBriefModeRejected === "string" && src.reviewBriefModeRejected !== "" ? src.reviewBriefModeRejected : "";
+		const briefDefault = typeof defaults.reviewBriefMode === "string" ? defaults.reviewBriefMode : "";
 		const verdict = (key, value, fallback) => {
 			if (authored && key in authored) return authored[key] === true ? "changed" : "default";
 			if (fallback === null || fallback === void 0 || fallback === "") return "unknown";
@@ -628,37 +767,93 @@
 				label: "ask 轮数上限",
 				text: rounds === null ? "—" : rounds > 0 ? String(rounds) + tag(verdict("askMaxRounds", rounds, askDefault)) : "不限",
 				title: "patch 字段 ask_max_rounds。超出即停止等待（不是远端 kill：daemon 侧的回合可能仍在后台跑完）。"
+			},
+			{
+				label: "brief 注入",
+				text: briefMode === "" ? "—" : briefRejected !== "" ? `${briefMode}（已回落：你写的是 ${briefRejected}）` : briefMode + tag(verdict("reviewBriefMode", briefMode, briefDefault)),
+				title: "patch 字段 review_brief_mode：/atomcode-review 与 atomcode_review 在用户文本留空时，内置评审简报的注入方式。always = 简报总在（留空补简报，非空附加在后）；when-empty = 仅留空时补简报（非空按原样发送）；never = 从不注入（留空直接拒绝）。" + (briefRejected !== "" ? `你写的「${briefRejected}」不是合法取值（always / when-empty / never），已回落到 ${briefMode}。` : "")
 			}
 		];
 	}
 	/**
-	* The model rows, derived from ONE stats snapshot.
+	* The model row, derived from ONE stats snapshot.
 	*
-	* Two entries, always both, never collapsed into one: they are TWO DIFFERENT
-	* namespaces (ask = daemon model profile, review = CLI direct entry), and one
-	* merged row would read as "same knob, two names" — the exact confusion
-	* 红线 8 exists to prevent.
+	* There is exactly ONE row because there is exactly ONE ladder now
+	* (per-call `provider` > panel pick > `default_provider` > AtomCode's own
+	* default). It used to be two rows for two namespaces — the review row asked
+	* for a `[providers.<name>]` direct entry and fed a spawned CLI — and that
+	* second namespace died with the CLI (红线 8's "two namespaces" is retired).
 	*/
 	function providerRows(cfg) {
 		const src = cfg && typeof cfg === "object" ? cfg : {};
 		const name = (v) => typeof v === "string" && v.trim() !== "" ? v.trim() : "";
 		const ask = name(src.defaultProvider);
-		const review = name(src.reviewDefaultProvider);
 		return [{
-			slotName: "ask",
-			label: "默认档位 · ask",
+			label: "默认档位",
 			fallback: "未插手",
 			value: ask || "未插手",
 			pinned: ask !== "",
-			title: "atomcode_ask 走 daemon：这里选的是模型档位（GET /models 的 provider 字段，形如 AtomGit-glm5.3-flash）。未插手 = 连 provider 字段都不发，由 AtomCode 自己的默认决定。只影响不显式传 provider 的调用。"
-		}, {
-			slotName: "review",
-			label: "默认 provider · review",
-			fallback: "未插手",
-			value: review || "未插手",
-			pinned: review !== "",
-			title: "atomcode_review 走 CLI：这里选的是 config.toml 里的直连条目名（[providers.<name>]，形如 atomcode-local —— 那是个名字，不是文件路径）。未插手 = 由 config.toml 的默认或唯一直连条目顶上。与左边是两套命名空间，不能同一个名字两边用。"
+			title: "atomcode_ask、atomcode_review 与 /atomcode-review 共用这一条档位阶梯：这里选的是模型档位（GET /models 的 provider 字段，形如 AtomGit-glm5.3-flash），由 daemon 执行。未插手 = 连 provider 字段都不发，由 AtomCode 自己的默认决定。只影响不显式传 provider 的调用。"
 		}];
+	}
+	/**
+	* Read one finished assistant message's prose out of the chat snapshot.
+	*
+	* WHY THIS IS POSSIBLE AT ALL (the P2 verdict says it should not be): the
+	* plugin cannot INJECT anything into the session, and it cannot call back into
+	* the host's conversation services. But the seat the chat's own action row uses
+	* — `conversation.chat.assistant-actions` — is handed `{ messageId }` as
+	* OWNER props and `useChat` as a standard prop. `useChat` is the rendered
+	* projection of the conversation: it is the same data the host's own 「复制」
+	* button reads (`assistantText(closing.blocks)`). So the text is not fetched,
+	* not intercepted, not scraped from the DOM — it is passed to us by the owner,
+	* exactly as the reply's own 复制 button gets it. The human still reads it
+	* before anything is sent, so this stays "a paste slot with the paste done".
+	*
+	* The lookup mirrors the host's own two halves, because the id and the text are
+	* built in DIFFERENT places:
+	*
+	*   · the id comes from the `turn-tail` node — the footer of a completed turn,
+	*     whose `data.closing` is the last assistant step carrying prose
+	*     (`turnTailDefinition.buildViewNode` publishes `tailData` verbatim, and
+	*     `TurnTailNodeView` reads `data.closing.finalNode.messageId`);
+	*   · the text comes from that closing step's own blocks.
+	*
+	* The first version of this function looked for `data.finalNode` on the
+	* `assistant-step` node instead and never matched — the assistant node carries
+	* `finalNode` under `data`, but the id the owner hands us belongs to the
+	* turn-tail's `closing`, so the search walked right past it. The fix is to read
+	* the same node the host reads, and to fall back to the assistant-step shape so
+	* a projection that publishes both keeps working.
+	*
+	* Text blocks only, concatenated with no separator: the host's own 复制 button
+	* does exactly this (`assistantText`). Returns null when the message is not
+	* there at all, '' when it is there but carries no prose (a tool-only step), so
+	* the two cases stay distinguishable.
+	*/
+	function messageTextOf(snapshot, messageId) {
+		if (!snapshot || typeof snapshot !== "object" || messageId == null) return null;
+		const nodes = snapshot.nodes;
+		if (!nodes || typeof nodes.values !== "function") return null;
+		const textOf = (settled) => {
+			return (Array.isArray(settled.blocks) ? settled.blocks : []).filter((block) => block && block.kind === "text" && typeof block.text === "string").map((block) => block.text).join("");
+		};
+		try {
+			for (const node of nodes.values()) {
+				const closing = node && node.data && node.data.closing;
+				if (!closing || !closing.finalNode || closing.finalNode.messageId !== messageId) continue;
+				return textOf(closing);
+			}
+			for (const node of nodes.values()) {
+				const data = node && node.data;
+				const settled = data && data.finalNode;
+				if (!settled || settled.messageId !== messageId) continue;
+				return textOf(settled);
+			}
+		} catch {
+			return null;
+		}
+		return null;
 	}
 	/**
 	* The dropdown model for one provider slot — pure, so every edge is testable
@@ -669,8 +864,8 @@
 	*  - a panel pick missing from the catalogue is APPENDED, never dropped
 	*  - an unusable slot renders a REASON, never a bare empty dropdown (红线 3)
 	*/
-	function providerSelectModel(provider, slotName, fallbackLabel) {
-		const src = provider && typeof provider === "object" ? provider[slotName] : null;
+	function providerSelectModel(provider, fallbackLabel) {
+		const src = provider && typeof provider === "object" ? provider : null;
 		if (!src || typeof src !== "object") return {
 			value: "",
 			options: [{
@@ -694,9 +889,14 @@
 		const optionEntry = (v) => {
 			const value = optionValue(v);
 			if (value === "") return null;
+			const label = !!(v && typeof v === "object" && v.isDefault === true) ? `${value}（默认）` : value;
+			const effortLevels = v && typeof v === "object" && Array.isArray(v.effortLevels) && v.effortLevels.length > 0 ? v.effortLevels : void 0;
+			const currentEffort = v && typeof v === "object" && typeof v.currentEffort === "string" ? v.currentEffort : null;
 			return {
 				value,
-				label: !!(v && typeof v === "object" && v.isDefault === true) ? `${value}（默认）` : value
+				label,
+				...effortLevels ? { effortLevels } : {},
+				...currentEffort ? { currentEffort } : {}
 			};
 		};
 		const catalog = Array.isArray(src.catalog) ? src.catalog.map(optionEntry).filter((e) => e !== null) : null;
@@ -722,7 +922,7 @@
 			reason = name(src.catalogError) || name(branch.storeError) || "档位列表暂不可用（daemon 未在线？）";
 		} else if (list.length === 0) {
 			disabled = true;
-			reason = slotName === "ask" ? "daemon 未列出档位" : "config.toml 里没有直连条目";
+			reason = "daemon 未列出档位";
 		}
 		let note = "";
 		if (!disabled && effective !== "" && effective !== panel) {
@@ -731,11 +931,10 @@
 			else if (source === "atomcode") note = "当前生效 " + effective + "（AtomCode 默认）";
 			else if (source === "argument") note = "本次调用指定 " + effective;
 		}
-		let warning = "";
-		if (slotName === "review") {
-			const baseUrl = name((src.endpoints && typeof src.endpoints === "object" ? src.endpoints : {})[name(panel) || effective]);
-			if (baseUrl !== "" && isLoopbackBaseUrl(baseUrl)) warning = "本地端点 " + baseUrl + "：评审经本机进程转发计费，它一停 review 立刻断（探活会给出具名诊断）";
-		}
+		const warning = "";
+		const selectedOption = panel ? list.find((e) => e.value === panel) : null;
+		const effortLevels = selectedOption && Array.isArray(selectedOption.effortLevels) && selectedOption.effortLevels.length > 0 ? selectedOption.effortLevels : void 0;
+		const currentEffort = selectedOption && typeof selectedOption.currentEffort === "string" ? selectedOption.currentEffort : null;
 		return {
 			value: panel,
 			options,
@@ -744,7 +943,9 @@
 			effective,
 			source,
 			note,
-			warning
+			warning,
+			...effortLevels ? { effortLevels } : {},
+			...currentEffort ? { currentEffort } : {}
 		};
 	}
 
@@ -770,14 +971,13 @@
 	* @returns {(props: any) => ReactElement} the `StatusSection` component.
 	*/
 	function createStatusSection(deps) {
-		const { h, useStats, StatusPill, Row, CallStat, ProviderSelectRow } = deps;
+		const { h, useStats, useState, StatusPill, Row, CallStat, ProviderSelectRow, PanelSettingsControls } = deps;
 		/**
 		* The bundle card's one-liner (`view: 'summary'`).
 		*
 		* DEFINED HERE, not injected: it has exactly one caller — the `view: 'summary'`
 		* branch of `StatusSection` below — so it travels with the component that
-		* renders it. Injecting it would have made the panel's assembly point carry a
-		* dependency only one of its two branches ever touches.
+		* renders it.
 		*
 		* Reports LIVE state only. The card already prints the localized description
 		* from `locale/*.json` directly above this line, so any prose here would both
@@ -788,13 +988,83 @@
 			const { data, error } = useStats();
 			if (error || !data) return h("span", { style: S.provLabel }, "状态未知");
 			const d = data.daemon || {};
-			const cfg = data.config || {};
 			const parts = [daemonStatusLine(d, data.protocol && data.protocol.daemonVersion), "端口 " + (d.port == null ? "—" : d.port)];
-			if (cfg.reviewAvailable === false) parts.push("评审不可用");
 			return h("span", {
 				style: S.provLabel,
 				title: parts.join(" · ")
 			}, parts.join(" · "));
+		}
+		/**
+		* One collapsible section: a full-width toggle head (title + chevron) over the
+		* body, inside a single layer-1 card.
+		*
+		* A SEPARATE COMPONENT, on purpose — not a helper rendered inline by
+		* `StatusSection`. Each section owns its own collapse state, and React tracks
+		* hooks PER COMPONENT. If `StatusSection` called `useState` once up front and
+		* passed `open` down, it would add one hook to `StatusSection`'s sequence; the
+		* panel also renders `ProviderSelectRow` (the model dropdown), whose own
+		* `[note, pending]` pair is asserted by position in `test/client-render.test.mjs`
+		* — a comment there warns the script moves if a row gains state. Keeping the
+		* fold inside this component means `StatusSection`'s hook order is unchanged
+		* by the collapsible layout.
+		*
+		* The heading is the SAME string a test or a reader greps for, and it stays in
+		* the DOM whether the section is open or not (it lives in the toggle button),
+		* so nothing that names a section disappears with a click. Sections START
+		* open: a panel that greets the reader with six collapsed folds would hide the
+		* very facts it exists to show.
+		*/
+		function Section(props) {
+			const [open, setOpen] = useState(true);
+			return h("div", { style: S.section }, h("button", {
+				style: S.sectionHead,
+				onClick: () => setOpen((current) => !current),
+				"aria-expanded": open,
+				type: "button"
+			}, h("span", { style: S.sectionTitle }, props.title), props.titleRight || null, h("span", {
+				style: {
+					...S.chevron,
+					...open ? S.chevronOpen : {}
+				},
+				"aria-hidden": true
+			}, "▾")), open ? h("div", { style: S.sectionBody }, props.children) : null);
+		}
+		/**
+		* The theme tabs (运行 / 用量 / 会话). Same rule as `Section` above: it is a
+		* separate component so its `useState` never shifts the hook order that
+		* `test/client-render.test.mjs` asserts for `StatusSection`.
+		*
+		* Every pane STAYS RENDERED — the inactive ones are `display: none`, not
+		* unmounted. Two reasons: the headings a reader (and a test) greps for must
+		* not vanish with a click, and the `quotaTextDrift` / protocol notices live
+		* OUTSIDE these panes precisely because a silent degradation must never hide
+		* behind a tab. The cost is negligible — the whole panel is a handful of rows.
+		*
+		* @param {Array<{label: string, pane: any}>} props.tabs
+		*/
+		function Tabbed(props) {
+			const [active, setActive] = useState(0);
+			return h("div", { style: S.tabs }, h("div", {
+				style: S.tabBar,
+				role: "tablist"
+			}, props.tabs.map((tab, index) => h("button", {
+				key: tab.label,
+				style: index === active ? {
+					...S.tab,
+					...S.tabActive
+				} : S.tab,
+				onClick: () => setActive(index),
+				"aria-selected": index === active,
+				role: "tab",
+				type: "button"
+			}, tab.label))), props.tabs.map((tab, index) => h("div", {
+				key: tab.label,
+				style: {
+					...S.tabPane,
+					display: index === active ? "grid" : "none"
+				},
+				role: "tabpanel"
+			}, tab.pane)));
 		}
 		return function StatusSection(props) {
 			const view = props && props.view;
@@ -840,53 +1110,67 @@
 				const reviewAvg = review.calls > 0 ? Math.round(review.msTotal / review.calls) : 0;
 				const binPath = bin.configured || bin.env || "自动探测（PATH）";
 				const spawnNote = d.up ? d.spawnTried ? "已自动拉起" : "运行中" : d.starting ? "正在拉起…" : d.spawnTried ? "自动拉起失败" : "未触发自动拉起";
-				body = h("div", { style: S.wrap }, h("div", { style: S.titleRow }, h("h3", { style: S.title }, "运行统计"), h("span", { style: error ? {
-					...S.live,
-					...S.liveStale
-				} : S.live }, error ? "已断开" : "实时"), updatedAt ? h("span", {
-					style: S.updated,
-					title: error || ""
-				}, (error ? "最后更新 " : "更新于 ") + new Date(updatedAt).toLocaleTimeString("zh-CN")) : null, error ? h("span", {
-					style: {
-						...S.updated,
-						...S.staleReason
-					},
-					title: error
-				}, failureNote) : null), ask.inFlight ? h("div", { style: S.inFlight }, h("span", { style: S.inFlightDot }), h("span", {
-					style: S.inFlightLabel,
-					title: "有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失。模型并行发多条 ask 时这里只报「最近开始且仍在跑」的那一条（面板装不下第二条）；更早的那条跑完或最新那条先跑完，本行都会改报还活着的那条"
-				}, "ask 回合进行中"), h("span", { style: S.inFlightText }, inFlightText(ask.inFlight))) : null, proto.quotaTextDrift ? h("div", { style: S.notice }, "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。") : null, protoNotice ? h("div", { style: S.notice }, protoNotice) : null, cfg.reviewAvailable ? null : h("div", { style: S.notice }, "代码评审（atomcode_review）当前不可用：" + (cfg.reviewReason || "本机 AtomCode 配置没有可用的直连 provider") + "。侧边咨询（atomcode_ask）不受影响。"), h("div", { style: S.grid }, h("div", { style: S.card }, h("p", { style: S.cardTitle }, "CodingPlan 额度"), !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", null, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", null, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
+				const quotaCard = h("div", { style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: 8
+				} }, !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", { style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: 6
+				} }, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", { style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: 8
+				} }, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
 					...S.metricNum,
 					color: quotaColor(quotaPct, quota.limited)
-				} }, pctLabel(quotaPct)), h("span", { style: S.metricLabel }, "当前时间窗口用量" + (liveResetSecs == null ? "" : " · " + fmtCountdown(liveResetSecs) + " 后重置"))), quotaPct == null ? null : h("div", { style: {
-					height: "6px",
-					borderRadius: "3px",
-					border: "1px solid var(--dsw-alias-border-l1)",
-					overflow: "hidden"
-				} }, h("div", { style: {
-					height: "100%",
+				} }, pctLabel(quotaPct)), h("span", { style: S.metricLabel }, "当前时间窗口用量" + (liveResetSecs == null ? "" : " · " + fmtCountdown(liveResetSecs) + " 后重置")), h("div", { style: S.bar }, h("div", { style: {
 					width: barWidth(quotaPct) + "%",
 					background: quotaColor(quotaPct, quota.limited)
-				} })), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 " + windowLabel(quota.planWindow) + " 窗口已用尽，回合会被限流") : null)), h("div", { style: S.card }, h("p", { style: {
-					...S.cardTitle,
+				} }))), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 " + windowLabel(quota.planWindow) + " 窗口已用尽，回合会被限流") : null));
+				const startupCard = h("div", { style: {
 					display: "flex",
-					alignItems: "center",
-					gap: "8px"
-				} }, "启动情况", h(StatusPill, { up: !!d.up })), h(Row, { label: "监听端口" }, d.port == null ? "—" : String(d.port)), h(Row, { label: "自动启动" }, d.autoStart ? "开启" : "关闭"), h(Row, { label: "拉起状态" }, spawnNote), !d.up && !d.starting ? h(Row, { label: "未就绪原因" }, d.downMessage || "未上报（宿主较旧）") : null, h(Row, { label: "daemon 版本" }, proto.daemonVersion || (d.up ? "未知" : "—")), !d.up && d.spawnFailures > 1 ? h(Row, { label: "拉起重试" }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "运行环境"), h(Row, { label: "AtomCode" }, binPath), h("div", { style: S.provGrid }, providerRows(cfg).map((row) => h(ProviderSelectRow, {
-					key: "provider-" + row.slotName,
+					flexDirection: "column",
+					gap: 6
+				} }, h(Row, { label: "监听端口" }, d.port == null ? "—" : String(d.port)), h(Row, { label: "自动启动" }, d.autoStart ? "开启" : "关闭"), h(Row, { label: "拉起状态" }, spawnNote), !d.up && !d.starting ? h(Row, { label: "未就绪原因" }, d.downMessage || "未上报（宿主较旧）") : null, h(Row, { label: "daemon 版本" }, proto.daemonVersion || (d.up ? "未知" : "—")), !d.up && d.spawnFailures > 1 ? h(Row, { label: "拉起重试" }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`) : null);
+				const envCard = h("div", { style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: 8
+				} }, h(Row, { label: "AtomCode" }, binPath), h("div", { style: S.provGrid }, providerRows(cfg).map((row) => h(ProviderSelectRow, {
+					key: "provider-" + row.label,
 					label: row.label,
-					slotName: row.slotName,
 					provider: prov,
 					fallbackLabel: row.fallback,
 					title: row.title,
 					reload
-				}))), cfg.reviewAvailable ? null : h(Row, { label: "评审可用性" }, h("span", { style: S.error }, "不可用 — 改用 atomcode_ask"))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "回合边界"), turnBoundaryRows(cfg).map((row) => h(Row, {
+				}))));
+				const allBoundaryRows = turnBoundaryRows(cfg);
+				const boundaryCard = h("div", { style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: 6
+				} }, PanelSettingsControls ? null : allBoundaryRows.map((row) => h(Row, {
 					key: "bound-" + row.label,
 					label: row.label
-				}, h("span", { title: row.title }, row.text)))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "侧边会话"), h(CallStat, {
+				}, h("span", { title: row.title }, row.text))), PanelSettingsControls ? h(PanelSettingsControls, {
+					cfg,
+					reload
+				}) : null);
+				const sessionCard = h("div", { style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: 6
+				} }, h(CallStat, {
 					num: count(data.sessions && data.sessions.tracked),
 					label: "已跟踪会话"
-				}), data.sessions && typeof data.sessions.oldestAgeMs === "number" ? h(Row, { label: "最旧一条" }, h("span", { title: "这些会话键里最老一条的存活时长。超过插件设定的存活期的键会被丢弃，之后的 continue 会开一条新线（不会静默复用一条死会话）" }, fmtDuration(data.sessions.oldestAgeMs))) : null, h(Row, { label: "运行时长" }, fmtDuration(data.uptimeMs)), data.sessions && data.sessions.error ? h("p", { style: S.error }, "会话续接已降级（回复不受影响）：" + data.sessions.error) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "工具调用统计"), h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
+				}), data.sessions && typeof data.sessions.oldestAgeMs === "number" ? h(Row, { label: "最旧一条" }, h("span", { title: "这些会话键里最老一条的存活时长。超过插件设定的存活期的键会被丢弃，之后的 continue 会开一条新线（不会静默复用一条死会话）" }, fmtDuration(data.sessions.oldestAgeMs))) : null, h(Row, { label: "运行时长" }, fmtDuration(data.uptimeMs)), data.sessions && data.sessions.error ? h("p", { style: S.error }, "会话续接已降级（回复不受影响）：" + data.sessions.error) : null);
+				const toolCard = h("div", { style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: 6
+				} }, h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
 					num: ask.calls,
 					label: "调用"
 				}), h(CallStat, {
@@ -904,7 +1188,46 @@
 				} }, h("span", { style: S.callGroupLabel }, "atomcode_review"), h(CallStat, {
 					num: review.calls,
 					label: "调用"
-				}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)), h(Row, { label: "review 平均耗时" }, fmtDuration(reviewAvg)))));
+				}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)), h(Row, { label: "review 平均耗时" }, fmtDuration(reviewAvg)));
+				const headerBar = h("div", { style: S.headerBar }, h("div", { style: S.header }, h("h3", { style: S.title }, "运行统计"), h("div", { style: S.cluster }, h("span", { style: error ? {
+					...S.live,
+					...S.liveStale
+				} : S.live }, error ? "已断开" : "实时"), updatedAt ? h("span", {
+					style: S.updated,
+					title: error || ""
+				}, (error ? "最后更新 " : "更新于 ") + new Date(updatedAt).toLocaleTimeString("zh-CN")) : null, error ? h("span", {
+					style: S.staleReason,
+					title: error
+				}, failureNote) : null, h("button", {
+					style: S.refresh,
+					onClick: reload,
+					type: "button"
+				}, "刷新"))));
+				const content = h("div", { style: S.content }, ask.inFlight ? h("div", { style: S.inFlight }, h("span", { style: S.inFlightDot }), h("span", {
+					style: S.inFlightLabel,
+					title: "有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失。模型并行发多条 ask 时这里只报「最近开始且仍在跑」的那一条（面板装不下第二条）；更早的那条跑完或最新那条先跑完，本行都会改报还活着的那条"
+				}, "ask 回合进行中"), h("span", { style: S.inFlightText }, inFlightText(ask.inFlight))) : null, proto.quotaTextDrift ? h("div", { style: S.notice }, "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。") : null, protoNotice ? h("div", { style: S.notice }, protoNotice) : null, h(Tabbed, { tabs: [
+					{
+						label: "运行",
+						pane: [
+							h(Section, {
+								title: "启动情况",
+								titleRight: h(StatusPill, { up: !!d.up })
+							}, startupCard),
+							h(Section, { title: "运行环境" }, envCard),
+							h(Section, { title: "回合边界" }, boundaryCard)
+						]
+					},
+					{
+						label: "用量",
+						pane: [h(Section, { title: "CodingPlan 额度" }, quotaCard), h(Section, { title: "工具调用统计" }, toolCard)]
+					},
+					{
+						label: "会话",
+						pane: [h(Section, { title: "侧边会话" }, sessionCard)]
+					}
+				] }));
+				body = h("div", { style: S.page }, headerBar, h("div", { style: S.scroll }, content));
 			}
 			return body;
 		};
@@ -950,12 +1273,13 @@
 			});
 			primitives.useDismissOnOutsidePointer(rootRef, open && view.known, setOpen, panelRef);
 			if (!view.known) return null;
+			const inFlight = data && data.ask ? data.ask.inFlight : null;
 			return h("span", {
 				ref: rootRef,
 				"data-quota-percent": view.pct,
 				style: CHIP_STYLE(view.color)
 			}, h(primitives.Tooltip, {
-				label: view.facts.join(" · "),
+				label: inFlight ? view.facts.join(" · ") + " · " + inFlightText(inFlight) : view.facts.join(" · "),
 				side: "top",
 				delayMs: 200,
 				disabled: open
@@ -965,7 +1289,24 @@
 				"aria-haspopup": "dialog",
 				"aria-expanded": open,
 				onClick: () => setOpen(!open)
-			}, view.label)), open && reactDom.createPortal(h("div", {
+			}, view.label)), inFlight && h("span", {
+				style: {
+					display: "inline-flex",
+					alignItems: "center",
+					gap: 4,
+					marginLeft: 6,
+					fontSize: 11,
+					color: "var(--dsw-alias-label-secondary)",
+					whiteSpace: "nowrap"
+				},
+				title: inFlightText(inFlight)
+			}, h("span", { style: {
+				width: 5,
+				height: 5,
+				borderRadius: "50%",
+				background: "var(--dsw-alias-state-success-primary)",
+				flexShrink: 0
+			} }), inFlightText(inFlight)), open && reactDom.createPortal(h("div", {
 				ref: panelRef,
 				role: "dialog",
 				"aria-label": "CodingPlan 额度",
@@ -992,16 +1333,245 @@
 			const { data } = useStats();
 			const view = quotaView(data && data.quota, Date.now());
 			if (!view.known) return null;
+			const inFlight = data && data.ask ? data.ask.inFlight : null;
 			return h("span", {
-				title: view.facts.join(" · "),
+				title: inFlight ? view.facts.join(" · ") + " · " + inFlightText(inFlight) : view.facts.join(" · "),
 				"data-quota-percent": view.pct,
 				style: CHIP_STYLE(view.color)
-			}, view.label);
+			}, view.label, inFlight && h("span", { style: {
+				display: "inline-flex",
+				alignItems: "center",
+				gap: 4,
+				marginLeft: 6,
+				fontSize: 11,
+				color: "var(--dsw-alias-label-secondary)",
+				whiteSpace: "nowrap"
+			} }, h("span", { style: {
+				width: 5,
+				height: 5,
+				borderRadius: "50%",
+				background: "var(--dsw-alias-state-success-primary)",
+				flexShrink: 0
+			} }), inFlightText(inFlight)));
 		}
 		return {
 			QuotaChip,
 			QuotaChipDegraded
 		};
+	}
+
+//#endregion
+//#region src/client/review-handoff.ts
+/**
+	* review-handoff.ts — how the transcript's 锐评 row reaches the official
+	* `/atomcode-review` command.
+	*
+	* WHAT THIS FILE USED TO BE, and why it is not that any more (2026-10-18,
+	* 方针 A). It was the 问 Atom chip: a button in the composer tool row that
+	* opened a plugin-owned popover with its own free-form box, fired the plugin's
+	* own `/api/atomcode-bridge/ask` route, rendered the answer inside the popover,
+	* and offered 「送到会话」 to hand it to the session model. The user's verdict
+	* was 「非常失败锐评面板，输入透明，但运行过程全程黑箱」 — a second, private
+	* channel beside the host's own surfaces, whose run nobody could watch.
+	*
+	* The decision (recorded in `docs/DECISIONS.md`) is that the plugin does not own
+	* a channel:
+	*
+	*   · a one-click review is the `/atomcode-review` slash command — executed by
+	*     the Host, zero DSH model turns, its result written into the transcript
+	*     exactly like any other command's;
+	*   · a review the model asks for is the `atomcode_review` tool;
+	*   · a free-form question is the model's own `atomcode_ask` tool.
+	*
+	* The popover, the ask POST, the delivery POST and their styling are GONE with
+	* the `/ask` route they called. What is left is the ONE thing the 锐评 row in a
+	* different seat genuinely needs, and the reason this module still exists.
+	*
+	* WHY A SEAT EARNS TWO LINES OF CODE. `conversation.chat.assistant-actions` —
+	* where the 锐评 button lives (`./message-ask.ts`) — is handed `{ messageId }` as
+	* owner props and `useChat` as a standard prop. It is NOT handed the composer's
+	* `inputActions`. Only a seat inside the composer carries that rail, so the row
+	* cannot fill the composer by itself. `ReviewRail` below is registered on
+	* `conversation.input.left` and does exactly one thing: capture
+	* `props.inputActions` into this module's closure on every render. It renders
+	* `null` — deliberately, and the empty render is the honest shape: this is a
+	* plumbing connection, not a control the user should ever see.
+	*
+	* THE HAND-OFF IS A PREFILL, NOT A SEND. Clicking 锐评 inserts
+	* `/atomcode-review <quoted reply>` at the caret and stops. The human presses
+	* Enter, and the HOST runs the review. Nothing here talks to the network, and
+	* nothing here spends a model turn (红线: the plugin's only ways to touch the
+	* session model are `followup`/`steer`/`inject`, and none of them appears in this
+	* file).
+	*
+	* WHEN THE PREFILL FAILS it says so in the console and returns false. It used to
+	* paint a note into the popover; the popover is gone, and the composer is now the
+	* only honest surface — if the command did not appear, the click visibly did
+	* nothing. A silent `return` would be the one thing 红线 3 forbids, so the
+	* failure is named on the diagnostic channel `./message-ask.ts` already uses.
+	*
+	* @module dsh-connect-atomcode/client/review-handoff
+	*/
+	/** The diagnostic channel, prefixed like every other client-side message. */
+	function warn(message) {
+		try {
+			if (typeof console !== "undefined" && console && typeof console.warn === "function") console.warn("[atomcode-bridge] " + message);
+		} catch {}
+	}
+	/**
+	* Put `text` at the composer's caret using the seat's own insertion rail.
+	*
+	* NEVER `setDraft`: replacing the user's draft is destructive. `captureInsertion`
+	* + `insertText` appends at the caret and reports whether the draft MOVED between
+	* capture and insert — that `false` is the signal that the text did not land.
+	*
+	* @param {any} actions the composer's `inputActions` (from the seat's props)
+	* @param {string} text what to insert
+	* @param {string} what the human-facing name of the text, for the failure note
+	* @returns {boolean} true when the insertion landed
+	*/
+	function insertIntoDraft(actions, text, what) {
+		if (!actions || typeof actions.captureInsertion !== "function" || typeof actions.insertText !== "function") {
+			warn("这个宿主没有暴露输入框操作，" + what + "没插入，请手动输入 /atomcode-review");
+			return false;
+		}
+		let span = void 0;
+		try {
+			span = actions.captureInsertion();
+		} catch {
+			warn("输入框当前不可写，" + what + "没插入，请手动输入 /atomcode-review");
+			return false;
+		}
+		const moved = actions.insertText(text, span) !== true;
+		if (moved) warn("输入框内容变了，" + what + "没落地，请手动输入 /atomcode-review");
+		return !moved;
+	}
+	/**
+	* Build the hand-off pair: the null-rendering rail and the prefill function.
+	*
+	* @returns {{
+	*   ReviewRail: (props: any) => null,
+	*   requestReview: (input: { text: string | null }) => boolean,
+	*   __setInsertForTest: (fn: ((text: string, what: string) => boolean) | null) => void,
+	* }}
+	*/
+	function createReviewHandoff() {
+		/**
+		* Set by `ReviewRail` on every render (it owns `inputActions`); null before the
+		* composer has rendered. Module-closure state, not a hook: `requestReview` is
+		* called from a DIFFERENT seat's component, outside this tree.
+		*/
+		let insertDraftFor = null;
+		/**
+		* Hand one assistant message over by pre-filling the official
+		* `/atomcode-review` slash command.
+		*
+		* WHY THE SLASH COMMAND: it is the canonical path. It runs in the Host (zero
+		* DSH model turns), its result is written to the transcript, and it is
+		* session-scoped. The button's only job is to save the user from typing the
+		* command and quoting the reply by hand.
+		*
+		* @param {{ text?: string | null }} input the quoted reply; `null`/`''` is
+		* legal and degrades to a directory-scoped review.
+		* @returns {boolean} true when the command reached the composer.
+		*/
+		function requestReview(input) {
+			const reply = input && input.text !== null && input.text !== void 0 ? String(input.text) : "";
+			const command = "/atomcode-review" + (reply !== "" ? " " + reply : "");
+			if (insertDraftFor === null) {
+				warn("输入框还没挂载，锐评指令没插入，请手动输入 /atomcode-review");
+				return false;
+			}
+			return insertDraftFor(command, "锐评指令");
+		}
+		/**
+		* The `conversation.input.left` occupant: `null`, and that is the whole point.
+		*
+		* It exists so the composer's `inputActions` has an owner inside a seat that
+		* carries it. Registration costs nothing visually — the seat renders an empty
+		* child — and it is what makes the 锐评 row able to fill the composer at all.
+		*/
+		function ReviewRail(props) {
+			const actions = props && props.inputActions;
+			insertDraftFor = (text, what) => insertIntoDraft(actions, text, what);
+			return null;
+		}
+		return {
+			ReviewRail,
+			requestReview,
+			/**
+			* TEST SEAM, not an API: installs the insertion rail before any rail has
+			* rendered, which is the only way to exercise `requestReview` without a
+			* component tree. Production sets it from `ReviewRail`; nothing in the
+			* plugin calls this.
+			*/
+			__setInsertForTest(fn) {
+				insertDraftFor = fn;
+			}
+		};
+	}
+
+//#endregion
+//#region src/client/message-ask.ts
+/**
+	* Build the row button.
+	*
+	* @param {MessageAskDeps} deps
+	* @returns {(props: any) => ReactElement | null} the component; null when the
+	* row's ownerProps carry no `messageId` (the host skips the whole row in that
+	* case, so this is a belt-and-braces guard, not a normal path).
+	*/
+	function createMessageAsk(deps) {
+		const { h, requestReview } = deps;
+		function MessageAsk(props) {
+			const messageId = props && props.messageId;
+			let snapshot = null;
+			try {
+				snapshot = typeof props.useChat === "function" ? props.useChat((state) => state) : null;
+			} catch {
+				snapshot = null;
+			}
+			const onClick = () => {
+				let text = null;
+				try {
+					text = messageTextOf(snapshot, messageId);
+				} catch {
+					text = null;
+				}
+				if (text === null) consoleWarning(messageId, snapshot);
+				requestReview({ text });
+			};
+			if (typeof messageId !== "string" || messageId === "") return null;
+			return h("button", {
+				type: "button",
+				style: MESSAGE_ACTION_STYLE,
+				onClick,
+				title: "把这条回复一起填入 /atomcode-review，按回车让 AtomCode 核对改动是否合理"
+			}, "锐评");
+		}
+		return MessageAsk;
+	}
+	/**
+	* Say WHY the reply could not be read. This is a diagnostic, not a fallback: the
+	* click still inserts the command, and the human still gets a directory-scoped
+	* review. The line exists because "quoted nothing" and "could not find the
+	* message" look identical from the composer, and the second one means the chat
+	* projection changed shape.
+	*/
+	function consoleWarning(messageId, snapshot) {
+		try {
+			if (typeof console === "undefined" || !console || typeof console.warn !== "function") return;
+			let report = "snapshot unavailable";
+			try {
+				const values = snapshot && snapshot.nodes && typeof snapshot.nodes.values === "function" ? snapshot.nodes.values() : [];
+				const kinds = [];
+				for (const node of values) if (node && typeof node.kind === "string" && !kinds.includes(node.kind)) kinds.push(node.kind);
+				report = "nodes=" + values.length + " kinds=" + (kinds.length === 0 ? "none" : kinds.join(","));
+			} catch (error) {
+				report = "store unreadable: " + String(error && error.message ? error.message : error);
+			}
+			console.warn("[atomcode-bridge] 锐评: message " + messageId + " not found in the chat snapshot; " + report);
+		} catch {}
 	}
 
 //#endregion
@@ -1061,8 +1631,11 @@
 				isLoopbackEndpoint: isLoopbackBaseUrl,
 				daemonStatusLine,
 				protocolDriftNotice,
-				providerSlotsOf,
-				snapshotWithSlots
+				providerBranchOf,
+				snapshotWithBranch,
+				messageTextOf,
+				createReviewHandoff,
+				createMessageAsk
 			};
 			/**
 			* Fold a successful write's OWN answer into the shared snapshot, before the
@@ -1088,22 +1661,32 @@
 			* @returns {boolean} whether the snapshot actually changed.
 			*/
 			/**
-			* The two provider branches a write's response carries, or null when it
-			* carries none.
+			* The provider branch a write's response carries, or null when it carries
+			* none.
 			*
-			* Both are taken, not just the one that was written: the server recomputes
-			* `effective`/`source` for the whole branch, and a pick in one namespace
-			* never changes the other — adopting both keeps the two dropdowns reading
-			* from one freshly-answered snapshot.
+			* It is taken whole rather than pieced together: the server recomputes
+			* `effective`/`source`/`catalog` for the entire ladder, so adopting its
+			* answer keeps the one dropdown reading from the snapshot the server just
+			* justified.
+			*
+			* There used to be TWO branches here (`ask` and `review`, one per provider
+			* namespace). The review namespace died with its CLI, and the host now
+			* answers with one flat branch, so this reads that branch directly — a
+			* leftover loop over slot names would have found nothing in the new shape
+			* and silently adopted no update at all.
 			*/
-			function providerSlotsOf(provider) {
+			function providerBranchOf(provider) {
 				if (!provider || typeof provider !== "object") return null;
-				const slots = {};
-				for (const slot of ["ask", "review"]) if (provider[slot] && typeof provider[slot] === "object") slots[slot] = provider[slot];
-				return Object.keys(slots).length > 0 ? slots : null;
+				const branch = provider.provider && typeof provider.provider === "object" ? provider.provider : provider;
+				return [
+					"panel",
+					"effective",
+					"config"
+				].some((key) => key in branch) || "catalog" in branch || "storePath" in branch ? branch : null;
 			}
 			/**
-			* One snapshot plus adopted slots in, the NEXT snapshot out — a NEW object.
+			* One snapshot plus an adopted branch in, the NEXT snapshot out — a NEW
+			* object.
 			*
 			* "New object" is the whole point: `commit()` calls `setData(statsCache.data)`
 			* and React bails out of a state update whose value is identical by
@@ -1114,22 +1697,22 @@
 			* offline: this bug lived between a network round-trip and a React commit,
 			* which is exactly the seam no DOM-free suite could reach before.
 			*/
-			function snapshotWithSlots(current, slots) {
+			function snapshotWithBranch(current, branch) {
 				if (!current) return null;
 				return {
 					...current,
 					provider: {
 						...current.provider || {},
-						...slots
+						...branch
 					}
 				};
 			}
 			function adoptProviderSnapshot(provider) {
-				const slots = providerSlotsOf(provider);
-				const next = slots ? snapshotWithSlots(statsCache.data, slots) : null;
-				if (!next || !slots) return false;
+				const branch = providerBranchOf(provider);
+				const next = branch ? snapshotWithBranch(statsCache.data, branch) : null;
+				if (!next || !branch) return false;
 				adoptedProvider = {
-					slots,
+					branch,
 					at: Date.now()
 				};
 				statsCache.data = next;
@@ -1138,16 +1721,16 @@
 			/** Re-apply the adopted branch over an answer a pre-click poll just delivered. */
 			function reapplyAdoptedProvider(startedAt) {
 				if (!adoptedProvider || adoptedProvider.at <= startedAt) return;
-				const next = snapshotWithSlots(statsCache.data, adoptedProvider.slots);
+				const next = snapshotWithBranch(statsCache.data, adoptedProvider.branch);
 				if (next) statsCache.data = next;
 			}
-			async function postProvider(slotName, value) {
+			async function postProvider(value) {
 				try {
 					const response = await fetch(PROVIDER_PATH, {
 						method: "POST",
 						headers: { "content-type": "application/json" },
 						body: JSON.stringify({
-							slot: slotName,
+							slot: "ask",
 							provider: value === "" ? null : value
 						})
 					});
@@ -1172,27 +1755,54 @@
 					};
 				}
 			}
+			const PANEL_SETTINGS_PATH = "/api/atomcode-bridge/panel-settings";
+			/** Write the panel's briefMode / workingDir override. One field at a time. */
+			async function postPanelSettings(fields) {
+				try {
+					const response = await fetch(PANEL_SETTINGS_PATH, {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify(fields)
+					});
+					let parsed = null;
+					try {
+						parsed = await response.json();
+					} catch {
+						parsed = null;
+					}
+					if (parsed && parsed.ok === true) return { ok: true };
+					return {
+						ok: false,
+						error: parsed && parsed.error || "HTTP " + response.status
+					};
+				} catch (reason) {
+					return {
+						ok: false,
+						error: reason && reason.message ? reason.message : String(reason)
+					};
+				}
+			}
 			/**
-			* One interactive provider control: a dropdown scoped to ONE namespace.
+			* The interactive provider control: a dropdown over the ONE model ladder.
 			*
-			* Two per snapshot, never merged: ask lists daemon model profiles, review lists
-			* config.toml direct entries (红线 8). Laid out as one line with two cells —
-			* the label sits above its dropdown, and the provenance that used to sit in
-			* the card body now lives in the `title` (see providerRows()).
+			* There used to be two of these — ask listed daemon model profiles, review
+			* listed config.toml direct entries, and 红线 8 existed to keep them from
+			* being read as one knob. The review namespace died with its CLI, so the
+			* panel shows one control for the one ladder both entry points climb.
 			*
 			* Pending/error state is local, and the control is never swapped back to static
 			* text — a failed write must stay visible with its reason, or the user cannot
 			* tell "the plugin refused" from "my click did nothing".
 			*/
-			function ProviderSelectRow({ label, slotName, provider, fallbackLabel, title, reload }) {
-				const model = providerSelectModel(provider, slotName, fallbackLabel);
+			function ProviderSelectRow({ label, provider, fallbackLabel, title, reload }) {
+				const model = providerSelectModel(provider, fallbackLabel);
 				const [note, setNote] = useState("");
 				const [pending, setPending] = useState(false);
 				const onChange = async (event) => {
 					const value = event && event.target ? event.target.value : "";
 					setPending(true);
 					setNote("");
-					const result = await postProvider(slotName, value);
+					const result = await postProvider(value);
 					setPending(false);
 					if (!result.ok) {
 						setNote("保存失败：" + result.error);
@@ -1219,7 +1829,7 @@
 					title: trouble || override || warning || title,
 					"aria-label": label
 				}, model.options.map((option, index) => h("option", {
-					key: slotName + "-" + index,
+					key: "prov-" + index,
 					value: option.value
 				}, option.label))), trouble ? h("span", {
 					style: S.valWarn,
@@ -1227,7 +1837,208 @@
 				}, trouble) : null, advisory ? h("span", {
 					style: S.valWarn,
 					title: advisory
-				}, advisory) : null, note ? h("span", { style: S.valIdle }, note) : null);
+				}, advisory) : null, note ? h("span", { style: S.valIdle }, note) : null, model.effortLevels && model.effortLevels.length > 0 ? h("span", {
+					style: S.valIdle,
+					title: "本模型支持的推理力度（per-turn 传参 reasoning_effort 取这些值；留空 = 用当前持久值）"
+				}, "力度: " + model.effortLevels.join(" / ") + (model.currentEffort ? "（当前 " + model.currentEffort + "）" : "")) : null);
+			}
+			/**
+			* The panel-settings controls: a brief-mode dropdown and a working-dir input.
+			*
+			* These override the patch fields at execution time (panel-settings.json),
+			* so a click takes effect on the very next turn — no reload needed. The
+			* current values come from the stats snapshot (`config.panelBriefMode`,
+			* `config.panelWorkingDir`); `null` means "no override, patch value applies".
+			*
+			* P1 fix: the working-dir input is LOCAL-STATE driven (seeded from the
+			* server value when it changes), so focus+blur without typing does NOT
+			* POST null. A save only fires when the value differs from the current
+			* server value. An explicit clear (empty string + save button click) is
+			* the only way to remove the override.
+			*/
+			function PanelSettingsControls({ cfg, reload }) {
+				const [briefPending, setBriefPending] = useState(false);
+				const [briefError, setBriefError] = useState("");
+				const [dirPending, setDirPending] = useState(false);
+				const [dirError, setDirError] = useState("");
+				const briefModes = [
+					"always",
+					"when-empty",
+					"never"
+				];
+				const currentBrief = cfg && typeof cfg.panelBriefMode === "string" ? cfg.panelBriefMode : "";
+				const currentDir = cfg && typeof cfg.panelWorkingDir === "string" ? cfg.panelWorkingDir : "";
+				const [dirValue, setDirValue] = useState(currentDir);
+				const lastServerDir = useRef(currentDir);
+				if (currentDir !== lastServerDir.current) {
+					lastServerDir.current = currentDir;
+					setDirValue(currentDir);
+				}
+				const onBriefChange = async (event) => {
+					const value = event && event.target ? event.target.value : "";
+					if (value === currentBrief) return;
+					setBriefPending(true);
+					setBriefError("");
+					const result = await postPanelSettings({ briefMode: value === "" ? null : value });
+					setBriefPending(false);
+					if (!result.ok) {
+						setBriefError("保存失败：" + result.error);
+						return;
+					}
+					if (typeof reload === "function") reload();
+				};
+				/** Only saves when the value differs from the current server state. */
+				const saveDir = async () => {
+					const trimmed = dirValue.trim();
+					if (trimmed === currentDir) return;
+					setDirPending(true);
+					setDirError("");
+					const result = await postPanelSettings({ workingDir: trimmed === "" ? null : trimmed });
+					setDirPending(false);
+					if (!result.ok) {
+						setDirError("保存失败：" + result.error);
+						return;
+					}
+					if (typeof reload === "function") reload();
+				};
+				return h("div", { style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: 6
+				} }, h("div", { style: S.provCell }, h("span", {
+					style: S.provLabel,
+					title: "面板选择优先于插件配置（cordis.patch.yml）的 review_brief_mode；选「不覆盖」则回到配置值"
+				}, "brief 注入"), h("select", {
+					style: briefPending ? {
+						...S.select,
+						...S.selectOff
+					} : S.select,
+					value: currentBrief,
+					disabled: briefPending,
+					onChange: onBriefChange,
+					"aria-label": "brief 注入模式"
+				}, h("option", { value: "" }, "不覆盖（用配置 " + (cfg && typeof cfg.reviewBriefMode === "string" ? cfg.reviewBriefMode : "默认") + "）"), briefModes.map((m) => h("option", {
+					key: m,
+					value: m
+				}, m)))), briefError ? h("span", { style: S.valWarn }, briefError) : null, h("div", { style: S.provCell }, h("span", {
+					style: S.provLabel,
+					title: "面板选择优先于插件配置（cordis.patch.yml）的 working_dir；清空并保存 = 不覆盖，用配置值或会话目录"
+				}, "工作目录"), h("div", { style: {
+					display: "flex",
+					gap: 4,
+					flex: 1,
+					minWidth: 0
+				} }, h("input", {
+					style: {
+						...S.select,
+						flex: 1,
+						minWidth: 0,
+						padding: "2px 6px",
+						fontSize: 12
+					},
+					value: dirValue,
+					placeholder: currentDir || "不覆盖（用配置/会话目录）",
+					disabled: dirPending,
+					onChange: (e) => setDirValue(e.target ? e.target.value : ""),
+					onKeyDown: (e) => {
+						if (e.key === "Enter") saveDir();
+					},
+					"aria-label": "工作目录（面板覆盖）"
+				}), h("button", {
+					style: {
+						...S.select,
+						fontSize: 11,
+						cursor: dirPending ? "wait" : "pointer",
+						whiteSpace: "nowrap"
+					},
+					disabled: dirPending || dirValue.trim() === currentDir,
+					onClick: saveDir
+				}, dirPending ? "…" : "保存"))), dirError ? h("span", { style: S.valWarn }, dirError) : null, (() => {
+					const approvalModes = [
+						"build",
+						"accept_edits",
+						"bypass",
+						"plan"
+					];
+					const currentApproval = cfg && typeof cfg.panelApprovalMode === "string" ? cfg.panelApprovalMode : "";
+					const onApprovalChange = async (event) => {
+						const value = event && event.target ? event.target.value : "";
+						if (value === currentApproval) return;
+						setBriefPending(true);
+						const result = await postPanelSettings({ approvalMode: value === "" ? null : value });
+						setBriefPending(false);
+						if (!result.ok) {
+							setBriefError("保存失败：" + result.error);
+							return;
+						}
+						if (typeof reload === "function") reload();
+					};
+					return h("div", { style: S.provCell }, h("span", {
+						style: S.provLabel,
+						title: "面板选择优先于插件配置（cordis.patch.yml）的 approval_mode；选「不覆盖」则回到配置值。注意：当前 daemon 对 headless 模式自动放行所有工具，切换模式实际不改变行为"
+					}, "审批模式"), h("select", {
+						style: S.select,
+						value: currentApproval,
+						disabled: briefPending,
+						onChange: onApprovalChange,
+						"aria-label": "审批模式"
+					}, h("option", { value: "" }, "不覆盖（用配置 " + (cfg && typeof cfg.approvalMode === "string" ? cfg.approvalMode : "bypass") + "）"), approvalModes.map((m) => h("option", {
+						key: m,
+						value: m
+					}, m))));
+				})(), (() => {
+					const currentRounds = cfg && typeof cfg.panelAskMaxRounds === "number" ? cfg.panelAskMaxRounds : "";
+					const [roundsValue, setRoundsValue] = useState(currentRounds === "" ? "" : String(currentRounds));
+					const saveRounds = async () => {
+						const num = roundsValue === "" ? null : parseInt(roundsValue, 10);
+						if (num === currentRounds) return;
+						setBriefPending(true);
+						setBriefError("");
+						const result = await postPanelSettings({ askMaxRounds: num === null || Number.isNaN(num) ? null : num });
+						setBriefPending(false);
+						if (!result.ok) {
+							setBriefError("保存失败：" + result.error);
+							return;
+						}
+						if (typeof reload === "function") reload();
+					};
+					return h("div", { style: S.provCell }, h("span", {
+						style: S.provLabel,
+						title: "面板选择优先于插件配置（cordis.patch.yml）的 ask_max_rounds；0 = 不设熔断（交回 daemon 治理）；留空 = 不覆盖"
+					}, "ask 轮数上限"), h("div", { style: {
+						display: "flex",
+						gap: 4,
+						maxWidth: 120
+					} }, h("input", {
+						style: {
+							...S.select,
+							flex: 1,
+							minWidth: 0,
+							padding: "2px 6px",
+							fontSize: 12,
+							width: 60
+						},
+						value: roundsValue,
+						placeholder: "不覆盖（" + (cfg && typeof cfg.askMaxRounds === "number" ? cfg.askMaxRounds : "25") + "）",
+						disabled: briefPending,
+						type: "number",
+						min: 0,
+						max: 1e3,
+						onChange: (e) => setRoundsValue(e.target ? e.target.value : ""),
+						onKeyDown: (e) => {
+							if (e.key === "Enter") saveRounds();
+						},
+						"aria-label": "ask 轮数上限"
+					}), h("button", {
+						style: {
+							...S.select,
+							fontSize: 11,
+							cursor: briefPending ? "wait" : "pointer"
+						},
+						disabled: briefPending || roundsValue === (currentRounds === "" ? "" : String(currentRounds)),
+						onClick: saveRounds
+					}, "保存")));
+				})());
 			}
 			function useStats() {
 				const [data, setData] = useState(null);
@@ -1368,10 +2179,17 @@
 			const StatusSection = createStatusSection({
 				h,
 				useStats,
+				useState,
 				StatusPill,
 				Row,
 				CallStat,
-				ProviderSelectRow
+				ProviderSelectRow,
+				PanelSettingsControls
+			});
+			const { ReviewRail, requestReview } = createReviewHandoff();
+			const MessageAsk = createMessageAsk({
+				h,
+				requestReview
 			});
 			function apply(ctx) {
 				let mounted = false;
@@ -1407,6 +2225,32 @@
 								id: "atomcode-bridge-quota",
 								order: 1
 							}, QUOTA_READOUT);
+						} catch (e) {
+							return function() {};
+						}
+					});
+				} catch (e) {}
+				try {
+					ctx.slots.inject("conversation.input.left", function() {
+						try {
+							return ctx.slots.register({
+								name: "conversation.input.left",
+								id: "atomcode-bridge-rail",
+								order: 100
+							}, ReviewRail);
+						} catch (e) {
+							return function() {};
+						}
+					});
+				} catch (e) {}
+				try {
+					ctx.slots.inject("conversation.chat.assistant-actions", function() {
+						try {
+							return ctx.slots.register({
+								name: "conversation.chat.assistant-actions",
+								id: "atomcode-bridge-review",
+								order: 10
+							}, MessageAsk);
 						} catch (e) {
 							return function() {};
 						}
