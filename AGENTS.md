@@ -259,6 +259,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 | 协议漂移（daemon 换版本后行为变了） | `test/protocol.test.mjs`（故意说错的假 daemon 载荷）+ `protocol` 分支（面板显示 `daemonVersion` / `quotaTextDrift`） |
 | 改测试前 | `test/` 各套件头注——**头注就是契约**，不是附件 |
 | 想知道某版本改了什么 | `CHANGELOG.md`（行为史；版本↔提交回查看 `git tag`） |
+| **发版到哪一步了 / 还缺什么** | `node scripts/release-status.mjs`（一条命令打印 `docs/RELEASING.md` §1 判定表的格子与最终闭环清单的 ✓/✗；`?` = 查不动，与 `✗` 不同） |
 | 分不清某件事是「忘了做」还是「决定不做」 | `docs/DECISIONS.md` |
 | 复现 docs/ 里的实测 | `scripts/probes/`（每个脚本头注都写了成本） |
 | 来源与许可 | `THIRD_PARTY_NOTICES.md` |
@@ -288,6 +289,12 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
   （会拒绝 publish），靠 `publishConfig.registry` + 仓库根 `.npmrc` 双保险拉回；
   市场投稿见 `docs/submission/eghrhegpe__dsh-connect-atomcode.yml`——复制到 awesome-dsh-plugin 的
   `data/plugins/` 后开 PR，别加 `npm:` 字段、别在 yml 里放截图（市场读仓库根 `screenshots.json`）。
+  **发版状态别靠记忆**：`node scripts/release-status.mjs` 一条命令打印 §1 判定表的格子与最终闭环清单的 ✓/✗
+  （需要网络的那几条查不动时打 `?`，不冒充成立）；离线的两条不变量——CHANGELOG 最新节必须是当前版本、
+  tag 若存在则它那个提交上的 `package.json` 必须同号——钉在 `test/release-consistency.test.mjs`。
+  **这一域的最大教训**：发版链曾是全仓库唯一「读过了也不会报错」的地方（其它纪律都有测试钉着），
+  2026-10-17 就漏了 GitHub Release、且发布提交上连着红了几条 CI 也没人拦
+  （清单把 CI 绿写成了「推荐」）——**凡是只能靠人记得的步骤，就会漏第二次**。
 - **`upstream/atomcode-open-api`** 是参照件（第三方 AtomCode OpenAPI 实现，自带 `.git`），
   已被 `.gitignore` 的 `/upstream/` 排除、**故意不在仓库历史里**（见「工作目录与装载方式」那条）。
   它不是构建输入、不参与测试，只作接口形态的对照。

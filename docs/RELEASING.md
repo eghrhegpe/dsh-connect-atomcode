@@ -25,7 +25,11 @@
 
 ## 1. 发版状态判定表（先判断，再动手）
 
-先跑一遍下面的命令组，把当前状态定位到某一个格子。定位错了，后面的顺序会全错：
+先跑一遍下面的命令组，把当前状态定位到某一个格子。定位错了，后面的顺序会全错。
+
+**这组命令已经脚本化**：`node scripts/release-status.mjs [X.Y.Z]` 一次打印上面 A–E 的实测值、下面的判定格子，
+以及见「最终闭环清单」的逐条 ✓/✗（`?` = 查不动，与 `✗` 不同）。人机交接时**贴它的输出**，不要口头复述、
+更不要靠记忆勾选。脚本只**填格子**（照抄本表），判定规则仍以本表为准；它只读，不 fetch / 不 push / 不动 tag。
 
 ```bash
 # A. 仓库侧：tag 是否存在、指向哪里
@@ -248,14 +252,19 @@ gh release create vX.Y.Z \
 
 ## 最终闭环清单（完成判定，不再凭感觉）
 
-发版是否完成，只看下面 5 个事实是否全部成立：
+发版是否完成，只看下面 5 个事实是否全部成立。**第 6 条是「发布前置」事实**：它不进 5 条的完整性判定，
+但进 §7 的交接判定（见下）。这 6 条的机器可读版就是 `node scripts/release-status.mjs` 的最后几行——
+交接时贴它的输出，别口头复述。
 
 - [ ] **仓库可查**：`vX.Y.Z` tag 存在，且 `git rev-list -n1 vX.Y.Z` 指向本次要发布的 commit。
 - [ ] **master 可查**：该 commit 已在 `origin/master`，`git log --oneline -5` 能追到版本提交。
 - [ ] **版本文件可查**：`package.json` 与 `src/host/index.ts` 两处版本一致（`npm test` 的 version-truth 断言绿）；`CHANGELOG.md` 顶部已有该版本节。
 - [ ] **npm 可查**：`npm view dsh-connect-atomcode version` 返回目标版本。
 - [ ] **GitHub Release 可查**：`gh release view vX.Y.Z --json tagName` 能查到，且 `isDraft=false`、`isPrerelease=false`、`assets=[]`。
-- [ ] （推荐，不参与"完整"判定）**发布提交上 CI 绿**：`gh run list` 里该 commit 的 run 结论是 `success`。它是质量事实而非完整性事实。
+- [ ] **发布提交上 CI 绿**：`gh run list` 里该 commit 的 run 结论是 `success`。它**不进上面 5 条的「完整发布」判定**
+      （npm 与 Release 都在时，包本身是完整的），但**进「能不能请人 publish」的判定**——§7 要求 AI 在开口请人发布前
+      逐条报出的五项证据里，第 ④ 项就是它。两处口径必须一致：**CI 红时不许开口请人发布**，先在本地把红修掉。
+      （2026-10-17 的 0.4.3 就是从这里漏的：tag 指的那次提交上连着四条红 run 没人拦，因为这一条当时被写成「推荐」。）
 
 只要有一个缺，就是"未完整发布"。回 §1 判定表定位缺的是哪一环，只补缺口；**任何一步都不得假设"前面那一步已经做完了"**。
 
