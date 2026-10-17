@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { describe, it, before, after, beforeEach } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -212,6 +212,19 @@ function execOk(r, ask) {
 
 const tempState = () => join(mkdtempSync(join(tmpdir(), 'atomcode-glue-')), 'sessions.json');
 const WORKDIR = 'C:\\repo';
+const OTHERDIR = 'C:\\other';
+
+// The state KEY is not the argument string: the glue stores under
+// `resolve(working_dir)` (`src/host/tools.ts`), and `resolve` is
+// platform-dependent. On Windows the fixture above is already absolute, so
+// `resolve(WORKDIR) === WORKDIR` and the difference is invisible; on POSIX the
+// same fixture is RELATIVE, so `resolve` prefixes the cwd — and every
+// `state[WORKDIR]` lookup then reads a key nobody ever wrote. That is exactly
+// how this suite passed here and failed on every CI run (eight cases, ubuntu):
+// a Windows-shaped fixture asserted against a platform-dependent resolver.
+// Index the state file through these, never through the literal.
+const WORKDIR_KEY = resolve(WORKDIR);
+const OTHERDIR_KEY = resolve(OTHERDIR);
 
 describe('atomcode_ask — session continuity glue', () => {
   const state = { requests: [], counter: 0, mode: 'ok' };
@@ -244,7 +257,7 @@ describe('atomcode_ask — session continuity glue', () => {
     // the model never has to carry it. Asserted against the wire value rather
     // than a hardcoded id, so the test does not depend on daemon call order.
     assert.equal(
-      readState(statePath, ask)[WORKDIR].sessionId,
+      readState(statePath, ask)[WORKDIR_KEY].sessionId,
       r.session_id,
       'the assigned id must be persisted under the working_dir key',
     );
@@ -254,7 +267,7 @@ describe('atomcode_ask — session continuity glue', () => {
     const statePath = tempState();
     const ask = await mountAsk(mod, { statePath, port: fake.port });
     await ask.execute({ message: 'first', working_dir: WORKDIR }, {});
-    const recorded = readState(statePath, ask)[WORKDIR].sessionId;
+    const recorded = readState(statePath, ask)[WORKDIR_KEY].sessionId;
     const second = await ask.execute({ message: 'second', continue: true, working_dir: WORKDIR }, {});
     assert.equal(second.continued, true);
     assert.equal(
@@ -290,7 +303,7 @@ describe('atomcode_ask — session continuity glue', () => {
     const statePath = tempState();
     const ask = await mountAsk(mod, { statePath, port: fake.port });
     await ask.execute({ message: 'first', working_dir: WORKDIR }, {});
-    const recorded = readState(statePath, ask)[WORKDIR].sessionId;
+    const recorded = readState(statePath, ask)[WORKDIR_KEY].sessionId;
     assert.ok(recorded, 'the successful turn must have recorded a session');
 
     state.mode = 'error';
@@ -312,7 +325,7 @@ describe('atomcode_ask — session continuity glue', () => {
     // The daemon still announced a session; persisting it on a failed turn would
     // silently re-point the line at a turn that never completed.
     assert.equal(
-      readState(statePath, ask)[WORKDIR].sessionId,
+      readState(statePath, ask)[WORKDIR_KEY].sessionId,
       recorded,
       'a failed turn must leave the previously recorded session intact',
     );
@@ -322,12 +335,12 @@ describe('atomcode_ask — session continuity glue', () => {
     const statePath = tempState();
     const ask = await mountAsk(mod, { statePath, port: fake.port });
     await ask.execute({ message: 'repo a', working_dir: WORKDIR }, {});
-    const firstId = readState(statePath, ask)[WORKDIR].sessionId;
-    await ask.execute({ message: 'repo b', working_dir: 'C:\\other' }, {});
+    const firstId = readState(statePath, ask)[WORKDIR_KEY].sessionId;
+    await ask.execute({ message: 'repo b', working_dir: OTHERDIR }, {});
     const saved = readState(statePath, ask);
-    assert.ok(saved['C:\\other'], 'the second working_dir must get its own key');
-    assert.equal(saved[WORKDIR].sessionId, firstId, 'the first key is untouched');
-    assert.notEqual(saved['C:\\other'].sessionId, firstId);
+    assert.ok(saved[OTHERDIR_KEY], 'the second working_dir must get its own key');
+    assert.equal(saved[WORKDIR_KEY].sessionId, firstId, 'the first key is untouched');
+    assert.notEqual(saved[OTHERDIR_KEY].sessionId, firstId);
   });
 
   it('trailing slashes on working_dir fold onto the same key', async () => {
@@ -345,7 +358,7 @@ describe('atomcode_ask — session continuity glue', () => {
     const statePath = tempState();
     const ask = await mountAsk(mod, { statePath, port: fake.port });
     await ask.execute({ message: 'first', working_dir: WORKDIR }, {});
-    const stale = readState(statePath, ask)[WORKDIR].sessionId;
+    const stale = readState(statePath, ask)[WORKDIR_KEY].sessionId;
     assert.ok(stale);
 
     const r = await ask.execute({ message: 'start over', continue: true, reset_session: true, working_dir: WORKDIR }, {});
@@ -356,7 +369,7 @@ describe('atomcode_ask — session continuity glue', () => {
       'the stale session id must NOT be replayed to the daemon',
     );
     // …and the new turn's own session takes its place.
-    const saved = readState(statePath, ask)[WORKDIR];
+    const saved = readState(statePath, ask)[WORKDIR_KEY];
     assert.equal(saved.sessionId, r.session_id);
     assert.notEqual(saved.sessionId, stale);
   });
@@ -371,7 +384,7 @@ describe('atomcode_ask — session continuity glue', () => {
     );
     assert.equal(r.continued, true);
     assert.equal(state.requests.at(-1).session_id, 'fresh-9');
-    assert.equal(readState(statePath, ask)[WORKDIR].sessionId, 'fresh-9');
+    assert.equal(readState(statePath, ask)[WORKDIR_KEY].sessionId, 'fresh-9');
   });
 
   it('reset_session on a key that was never recorded is a no-op, not an error', async () => {
@@ -543,7 +556,7 @@ describe('session_key_prefix — profile detection', () => {
       const ask = await mountAsk(mod, { statePath, port: fake.port, keyPrefix: '' });
       execOk(await ask.execute({ message: 'hi', working_dir: WORKDIR }, {}), ask);
       const keys = Object.keys(readState(statePath, ask));
-      assert.deepEqual(keys, [WORKDIR], `expected the bare working_dir key; got ${JSON.stringify(keys)}`);
+      assert.deepEqual(keys, [WORKDIR_KEY], `expected the bare working_dir key; got ${JSON.stringify(keys)}`);
     } finally {
       if (saved !== undefined) process.env.DSH_PROFILE = saved;
       rmSync(dirname(statePath), { recursive: true, force: true });
