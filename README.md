@@ -225,8 +225,13 @@ npm run coverage   # 同一批套件 + node 内置覆盖率报告（单进程**�
                    # spawner 单例会跨套件串味，覆盖率数字会随调度变（同一棵树两次跑出过 12.82% 与 30.19%）
                    # ⚠️ client.js 那一行是**产物不是总和**：渲染套件每次挂载都用 cache-busting URL
                    # 重新 import 整包，V8 里是 N 个同路径脚本，node 按路径折叠后只剩"赢的那个"。
-                   # 要一个能跨时间比的渲染端数字（host 的 lib/*.js 行本来就稳）：
-                   #   node --test --test-concurrency=1 --experimental-test-coverage test/client-render.test.mjs
+                   # 「只剩赢的那个」还说轻了：幸存实例的数字会当场说谎。渲染套件的 chip 用例
+                   # （打开 / 关闭 / Escape / 降级，断言过 portal 的 role、进度条宽度、事实条数）全部通过，
+                   # 那一行却把 client.js:924-981 与 992-1000（QuotaChip 与 QuotaChipDegraded 的函数体）列为
+                   # uncovered（2026-10-17 实测：幸存者是一次只挂面板的挂载，跑过工厂但没渲染过 dock）。
+                   # 所以行 / 分支 / 函数三个数字都别拿来定位渲染端缺口——去读 test/client-render.test.mjs
+                   # 里的断言清单；host 的 lib/*.js 行是稳的（静态 import 一次）。想要一个诚实的渲染端数字，
+                   # 得先让挂载台每进程只 import 一次整包，而现在故意不这样：生命周期用例要一份干净的模块级 statsCache。
 ```
 
 各套件用本机 `node:http` 起**假 daemon**（或纯函数），所以把过去只有 live 套件覆盖（而没有 daemon 就直接跳过）的路径全部变成离线可测：

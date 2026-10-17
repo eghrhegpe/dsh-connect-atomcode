@@ -128,15 +128,23 @@ if (withCoverage) {
   // below (serial in one process, not one process per suite): a failure HERE is not
   // evidence the gate would fail, and a green gate says nothing about coverage.
   //
-  // The `client.js` row is an artifact, not a sum. The client suites load the bundle
-  // under a cache-busting URL per mount (that is how they get a fresh module
-  // instance), so V8 sees many scripts sharing one path and node collapses them by
-  // path: the row reflects whichever instance won, not everything the tests ran.
-  // Measured 2026-10-17 on one tree — aggregate 15.91 % funcs on one run and 30.19 %
-  // on the next, render suite alone 30.19 %, `client-fns` alone 15.91 %. The host
-  // `lib/*.js` rows are stable (loaded once, by static import). For a client number
-  // you can compare over time, run the client suites on their own:
-  //   node --test --test-concurrency=1 --experimental-test-coverage test/client-render.test.mjs
+  // The `client.js` row is not a number about this codebase at all. The client
+  // suites load the bundle under a cache-busting URL per mount (that is how they get
+  // a fresh module instance), so V8 sees many scripts sharing one path and node
+  // collapses them by path: the row reflects ONE surviving instance, not the tests.
+  // It is worse than "understated" — it can be actively false. Counter-example
+  // measured 2026-10-17: the render suite's own chip cases render `QuotaChip`
+  // (open / closed / Escape / degraded, with assertions on the portal's `role`,
+  // bar width and fact count) and pass, yet the row lists `client.js:924-981` and
+  // `992-1000` — the bodies of `QuotaChip` and `QuotaChipDegraded` — as UNCOVERED.
+  // The surviving instance was a panel-only mount, which executes the factory but
+  // never renders the dock component. So line %, branch % and funcs % are all the
+  // survivor's numbers; 15.91 % vs 30.19 % on one tree was the same cause.
+  // The host `lib/*.js` rows are stable (loaded once, by static import).
+  // Do NOT triage render-side gaps with this row: read the assertions in
+  // test/client-render.test.mjs instead. A truthful client number needs the
+  // harness to import the bundle once per process, which the lifecycle cases
+  // deliberately do not (they want a pristine module-level `statsCache`).
   console.log(`▶ ${files.length} suites, one process, serial (coverage must aggregate)\n`);
   const result = spawnSync(
     process.execPath,
