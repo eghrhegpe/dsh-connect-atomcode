@@ -48,6 +48,26 @@ export const DEFAULT_APPROVAL_MODE = 'bypass';
 export const DEFAULT_ASK_MAX_ROUNDS = 25;
 
 /**
+ * The `approval_mode` values the daemon ACCEPTS — a closed enum measured, not
+ * assumed (`docs/AtomCode-CLI与daemon接口参考.md` §approval_mode; probe
+ * `scripts/probes/approval-mode.mjs`, 2026-10-17 against daemon 5.2.3, which
+ * enumerated it through the 422 parameter gate at zero quota).
+ *
+ * It is copied here because the daemon answers an unknown value with a 422 on
+ * EVERY `/chat` — a typo in the patch file used to survive untouched from
+ * `readConfig()` to the wire, so the first symptom was every ask turn failing
+ * with a daemon error instead of "this value is not one of the four". The copy
+ * is safe in the direction that matters: an enum that GROWS upstream is refused
+ * here and reported on the panel as a rejection (fail-visible, one boot), while
+ * a value the daemon would have 422'd is caught before it ever reaches a turn.
+ * When this list is ever widened, widen `test/stats-route.test.mjs` with it.
+ */
+export const APPROVAL_MODES = ['build', 'accept_edits', 'bypass', 'plan'] as const;
+
+/** Human-readable list for the panel/log, derived so it can never drift from the enum above. */
+export const APPROVAL_MODES_TEXT = APPROVAL_MODES.join(' / ');
+
+/**
  * The tool timeout both `register()` calls declare to the DSH host, and the
  * ceiling every wall-clock knob in this plugin answers to.
  *
@@ -255,10 +275,20 @@ export function readConfig(rawConfig: Record<string, any>) {
       : DEFAULT_PORT;
   const autoStart = config.auto_start !== false;
   const binary = typeof config.binary === 'string' && config.binary !== '' ? config.binary : undefined;
-  const approvalMode =
-    typeof config.approval_mode === 'string' && config.approval_mode !== ''
-      ? config.approval_mode
-      : DEFAULT_APPROVAL_MODE;
+  // `approval_mode` is a CLOSED enum upstream (APPROVAL_MODES) and the daemon
+  // 422s anything else on every turn, so an off-enum value falls back to the
+  // default HERE — and the rejected spelling is carried up (`approvalModeRejected`)
+  // so the panel can name it instead of showing a legal-looking value the user
+  // never chose. Rejecting silently would be the same fail-late bug one layer down.
+  const requestedApprovalMode =
+    typeof config.approval_mode === 'string' ? config.approval_mode.trim() : '';
+  const approvalModeRejected =
+    requestedApprovalMode !== '' && !(APPROVAL_MODES as readonly string[]).includes(requestedApprovalMode)
+      ? requestedApprovalMode
+      : null;
+  const approvalMode = approvalModeRejected === null && requestedApprovalMode !== ''
+    ? requestedApprovalMode
+    : DEFAULT_APPROVAL_MODE;
   const defaultWorkingDir =
     typeof config.working_dir === 'string' && config.working_dir !== '' ? config.working_dir : undefined;
   // Whether each knob DEPARTS FROM the value this plugin ships in its own
@@ -363,6 +393,7 @@ export function readConfig(rawConfig: Record<string, any>) {
     autoStart,
     binary,
     approvalMode,
+    approvalModeRejected,
     defaultWorkingDir,
     defaultProvider,
     reviewDefaultProvider,

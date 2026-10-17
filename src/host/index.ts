@@ -1,7 +1,7 @@
 /**
  * `dsh-connect-atomcode` host entry point.
  *
- * v0.4.3 refactor: this file used to be a 1,879-line God module holding every
+ * apply()-split: this file used to be a 1,879-line God module holding every
  * host-side concern — config parsing, the stats snapshot, the runtime, both
  * routes, both tools — in one scope. It is now the assembly point only, and the
  * work has moved to purpose-named modules:

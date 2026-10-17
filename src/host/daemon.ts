@@ -420,7 +420,7 @@ export async function* streamChat(opts: StreamChatOptions) {
   // Every abort this function can raise stops OUR side of the wire:
   // `ctrl.abort()` closes the fetch. What happens to the daemon's turn is then
   // `askChat`'s job — it posts `/chat/stop` with the session id once the stream
-  // dies early (see `stopChat`). Before v0.4.3 no such request existed and the
+  // dies early (see `stopChat`). Before that stop request existed, the
   // sentence below was the whole story: the daemon kept running the turn it had
   // accepted — tool calls, tokens and CodingPlan quota that nobody was waiting
   // for any more. The caveat is still needed, because a stop request can fail,
@@ -725,7 +725,7 @@ export async function askChat(opts: StreamChatOptions) {
   }
   let error = streamError || eventError;
   let ok = done !== null;
-  // Protocol-drift diagnostics — drift comes in two shapes and the v0.4.0 gate
+  // Protocol-drift diagnostics — drift comes in two shapes and the earlier gate
   // only caught one of them (red line 3: a silent failure must become a NAMED
   // diagnostic). TOTAL drift: the stream spoke none of the vocabulary, `done`
   // never arrived, streamChat throws and the bare "ended before done" would
@@ -804,7 +804,7 @@ export async function askChat(opts: StreamChatOptions) {
      * worse than no fuse at all, because the caller believes it is armed.
      */
     unknownTypes: [...unknownTypes].sort(),
-    // `done` does NOT erase a mid-turn error event (v0.4.0's `ok ? '' : error`
+    // `done` does NOT erase a mid-turn error event (the earlier `ok ? '' : error`
     // did, which turned a partially failed but completed turn into a silent
     // "full success"). A completed turn may therefore carry a non-empty error;
     // the render side shows it as a caveat instead of swallowing it.

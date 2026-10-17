@@ -45,7 +45,7 @@ export default defineConfig([
       quota: "src/host/quota.ts",
       sessions: "src/host/sessions.ts",
       "provider-store": "src/host/provider-store.ts",
-      // v0.4.3 split of the former God module: each concern is its own entry so
+      // apply()-split of the former God module: each concern is its own entry so
       // `lib/` stays "one artifact per source module" and a reader can find a
       // concern by its file name. These are NEW entries — nothing that already
       // existed moves, so the suites that reach into a specific `lib/*.js`

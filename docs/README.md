@@ -80,7 +80,7 @@
 改完必须 `npm run build` 再提交源码 + 产物（`test/build-gate.test.mjs` 逐字节守着这件事）。
 
 ```
-# host —— 一个源码文件对应一个 lib/*.js（v0.4.3 拆分 God module 后的完整清单）
+# host —— 一个源码文件对应一个 lib/*.js（apply() 拆分 God module 后的完整清单）
 src/host/index.ts           → lib/index.js           apply() 装配点：注册两个工具 + /stats + /provider 路由 +
                                                        额度缓存 + daemon 拉起策略；stats body 的 version 是版本号真源之一
 src/host/config.ts          → lib/config.js          readConfig：30 个配置字段的类型兜底 + detectProfileKey（多 profile 隔离）
@@ -102,15 +102,22 @@ src/host/stats.ts           → lib/stats.js           buildStatsBody：把 daem
 src/shared/loopback.ts      → lib/loopback.js        isLoopbackBaseUrl：host 决定要不要探活，client 写那句"代理一停 review 立刻断"
 src/shared/stats.ts         (inlined both sides)     StatsSnapshot 及其分支的共享类型契约（只有类型，无运行时产物）
 
-# client —— 渲染端半身，多个源文件被 bundle 成一个 IIFE
-src/client/*.ts             → client.js              index.ts 是 entry，quota.ts / rows.ts / styles.ts / types.ts 打包进同一个
-                                                       IIFE：详情页统计卡片 + 模型下拉 + 输入框下方 dock 行的紧凑额度读数
+# client —— 渲染端半身，下面每个源文件都被 bundle 进同一个 client.js（IIFE）
+src/client/index.ts          → client.js              entry：座位注册与控件装配（详情页两个 seat 的取舍 + dock 行）
+src/client/status-section.ts → client.js              详情页那张卡的分区渲染（环境 / 模型 / 协议 / 额度 / 用量）
+src/client/rows.ts           → client.js              每行的文字与 tooltip（turnBoundaryRows / providerRows / inFlightText）
+src/client/quota.ts          → client.js              quotaView()：把额度分支折成可渲染的读数（含解析失败的原样回落）
+src/client/quota-chip.ts     → client.js              输入框额度 chip 的弹窗（portal + Tooltip + 打开时的 1s tick）
+src/client/styles.ts         → client.js              行内样式表（行高 / 网格 / 三级色）
+src/client/types.ts          → client.js              客户端类型别名，re-export ../shared/stats.ts 的契约
 ```
 
-> 每个 `src/host/*.ts` 都在图上，且每条 `src/host/*.ts → lib/*.js` 都对应一个实际存在的产物——由
-> [`../test/docs-code-map.test.mjs`](../test/docs-code-map.test.mjs) 守着。改图前先看
-> [`../tsdown.config.mjs`](../tsdown.config.mjs) 的 entry 表，那是产物命名的真源；这份图是给读者的
-> 第二眼，不是构建配置本身。
+> 每个 `src/host/*.ts` 和每个 `src/client/*.ts` 都在图上，且每条 `src/host/*.ts → lib/*.js` 都对应一个
+> 实际存在的产物——由 [`../test/docs-code-map.test.mjs`](../test/docs-code-map.test.mjs) 守着。这份图是给读者的
+> 第二眼，不是构建配置本身：产物命名的真源是 [`../tsdown.config.mjs`](../tsdown.config.mjs) 的 entry 表。
+> 加一个 `src/client/*.ts` 而不更新这张图，测试会红——之前这里只断言了「`index.ts` 存在」和
+> 「`src/client/*.ts → client.js` 的形状」，于是 `status-section.ts` / `quota-chip.ts` 落盘后这张图
+> 悄悄漏了它们（地图掉了队，门却是开的）。
 
 ## 许可
 

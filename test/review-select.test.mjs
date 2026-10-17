@@ -1,7 +1,7 @@
 /**
  * review-select.test.mjs — execute-time provider selection + local endpoint probe.
  *
- * These are the v0.4.1 additions that close two measured gaps:
+ * These are the review-select additions that close two measured gaps:
  *   1. On an AtomGit login host the CLI's default_provider has no base_url, so
  *      `atomcode review` died with "missing base URL" even when a perfectly
  *      usable direct provider existed. Selection auto-picks the single usable

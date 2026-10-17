@@ -1,7 +1,7 @@
 /**
  * Host runtime — everything the plugin accumulates while it is mounted.
  *
- * Extracted from `src/host/index.ts` (v0.4.3 split). One object holds the live
+ * Extracted from `src/host/index.ts` (apply() split). One object holds the live
  * stats bag, the two state stores, daemon liveness + spawning, the quota cache
  * and the panel-facing provider state; `apply()` hands this object to the two
  * tool mounters and the route mounter so none of them re-declare closures.
@@ -43,6 +43,7 @@ import { createProviderStore } from './provider-store.ts';
 import { checkReviewProvision } from './review.ts';
 import { buildQuotaReport } from './quota.ts';
 import {
+  APPROVAL_MODES_TEXT,
   DAEMON_COMMAND_TIMEOUT_MS,
   DAEMON_PROBE_TIMEOUT_MS,
   DEFAULT_APPROVAL_MODE,
@@ -78,6 +79,7 @@ export function createRuntime({
     autoStart,
     binary,
     approvalMode,
+    approvalModeRejected,
     defaultWorkingDir,
     defaultProvider,
     reviewDefaultProvider,
@@ -177,6 +179,7 @@ export function createRuntime({
     binaryPath: binary ?? null,
     binaryEnv,
     approvalMode,
+    approvalModeRejected,
     defaultWorkingDir: defaultWorkingDir ?? null,
     reviewWorkingDir: reviewWorkingDir ?? null,
     defaultProvider: defaultProvider ?? null,
@@ -199,6 +202,18 @@ export function createRuntime({
     },
     defaults: { approvalMode: DEFAULT_APPROVAL_MODE, askMaxRounds: DEFAULT_ASK_MAX_ROUNDS },
   });
+
+  // `approval_mode` is a closed enum the daemon 422s on, so `readConfig` refuses
+  // an unknown spelling and hands the value it refused up here. Say so ONCE, at
+  // mount, in the host log as well as on the panel: silently running a different
+  // approval mode than the file asked for is the kind of divergence that only
+  // surfaces as "why did this turn behave differently".
+  if (approvalModeRejected !== null) {
+    log(
+      `config.approval_mode「${approvalModeRejected}」不是 AtomCode 接受的取值（${APPROVAL_MODES_TEXT}）；` +
+        `已回落到 ${DEFAULT_APPROVAL_MODE}，面板的文件行会标明被拒的值`,
+    );
+  }
 
   // Session glue degrades rather than throws (sessions.ts), and every
   // degradation is NAMED here instead of swallowed (红线 3): a state file this

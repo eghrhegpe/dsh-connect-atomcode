@@ -2,7 +2,7 @@
  * docs-code-map.test.mjs — the docs/README.md code map must stay in sync with `src/` + `lib/`.
  *
  * The map at `docs/README.md` §代码地图 is the second-eye orientation a new
- * reader gets. It has already drifted once: after the v0.4.3 split of the
+ * reader gets. It has already drifted once: after the apply() split of the
  * God module `apply()` into `config` / `runtime` / `routes` / `stats` / `tools`,
  * seven new `src/host/*.ts` files were never added to the map, and the whole
  * `src/shared/` directory (both `loopback.ts` and `stats.ts`) was still

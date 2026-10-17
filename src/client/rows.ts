@@ -137,6 +137,15 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
   const askDefault = Number.isInteger(defaults.askMaxRounds) ? (defaults.askMaxRounds as number) : null;
   const approvalDefault = typeof defaults.approvalMode === 'string' ? defaults.approvalMode : '';
   const mode = typeof src.approvalMode === 'string' ? src.approvalMode : '';
+  // A rejected spelling is NOT the plugin default, even though the value the
+  // host resolved happens to equal it: the user authored something, it was
+  // refused, and the panel must not answer "you never touched this knob".
+  // `authored` cannot carry that fact — the host derives it from the RESOLVED
+  // value, so by the time it reaches here the rejection is invisible.
+  const modeRejected =
+    typeof src.approvalModeRejected === 'string' && src.approvalModeRejected !== ''
+      ? src.approvalModeRejected
+      : '';
   const dir = typeof src.defaultWorkingDir === 'string' ? src.defaultWorkingDir : '';
   const rounds = Number.isInteger(src.askMaxRounds) ? (src.askMaxRounds as number) : null;
   // Verdict: 'changed' | 'default' | 'unknown'.
@@ -163,10 +172,19 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
   return [
     {
       label: '审批模式',
-      text: mode === '' ? '—' : mode + tag(verdict('approvalMode', mode, approvalDefault)),
+      text:
+        mode === ''
+          ? '—'
+          : modeRejected !== ''
+            ? `${mode}（已回落：你写的是 ${modeRejected}）`
+            : mode + tag(verdict('approvalMode', mode, approvalDefault)),
       title:
         'patch 字段 approval_mode；面板上没有输入框，改它要动 cordis.patch.yml。' +
-        'bypass = AtomCode 自己的工具在回合内无人值守执行（AtomCode 侧自主，与 DSH 的权限预设无关）。',
+        'bypass = AtomCode 自己的工具在回合内无人值守执行（AtomCode 侧自主，与 DSH 的权限预设无关）。' +
+        (modeRejected !== ''
+          ? `你写的「${modeRejected}」不在 daemon 接受的取值里（build / accept_edits / bypass / plan），` +
+            `已回落到 ${mode}——照原样透传的话每个回合都会被 daemon 以 422 拒掉。`
+          : ''),
     },
     {
       label: '工作目录',

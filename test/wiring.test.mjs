@@ -30,7 +30,7 @@ const BRIDGE = join(__dirname, '..', 'lib', 'index.js');
 const REVIEW = join(__dirname, '..', 'lib', 'review.js');
 const SESSIONS = join(__dirname, '..', 'lib', 'sessions.js');
 const PROVIDER_STORE = join(__dirname, '..', 'lib', 'provider-store.js');
-// v0.4.3 split: `detectProfileKey` lives in config.ts now (lib/config.js), not
+// apply() split: `detectProfileKey` lives in config.ts now (lib/config.js), not
 // in the God module — it is a pure config helper, not part of the assembly.
 const CONFIG = join(__dirname, '..', 'lib', 'config.js');
 

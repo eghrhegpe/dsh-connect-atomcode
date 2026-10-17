@@ -98,7 +98,7 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
   });
 
   it('a renamed BODY with done still intact is NOT a silent success (half drift)', async () => {
-    // The shape the v0.4.0 gate missed (2026-10 code review): `done` keeps its
+    // The shape the earlier payload gate missed (2026-10 code review): `done` keeps its
     // name, only the payload events were renamed. The old aggregation produced
     // ok:true with an EMPTY reply — "successful nothing", which red line 3
     // exists to ban, and it passed every existing drift test green because
@@ -121,7 +121,7 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
   });
 
   it('a mid-turn error event SURVIVES a later done instead of being erased', async () => {
-    // v0.4.0 returned `error: ok ? '' : error` — once done arrived, any error
+    // The earlier aggregation returned `error: ok ? '' : error` — once done arrived, any error
     // event was cleared unconditionally and a partially failed turn read as a
     // full success (ask.ok++ in the panel, no caveat for the model). The turn
     // stays ok — it DID complete with deliverable content — but carries the
@@ -280,7 +280,7 @@ describe('ask render — a completed turn must show its caveat, a clean one must
 
   it('surfaces value.error on ok:true, and stays silent when error is empty', () => {
     // The carry-out fix in `askChat` is worthless if render's ok-branch hides
-    // `error` (v0.4.0's ok-branch only printed reply + meta). Pinned here: the
+    // `error` (the earlier ok-branch only printed reply + meta). Pinned here: the
     // model MUST see the caveat, and a healthy turn must NOT be smeared with
     // one — both halves, or the next "cleanup" deletes it again.
     const warned = render({}, { ...base, ok: true, error: 'upstream hiccup' })[0].text;

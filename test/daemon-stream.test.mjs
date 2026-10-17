@@ -236,7 +236,7 @@ describe('daemon /chat SSE client — hermetic', () => {
     // each existing test) so a fourth abort path has to answer this question
     // here instead of quietly shipping its own wording.
     //
-    // v0.4.3: an abort now ALSO asks the daemon to stop the turn (`stopChat`),
+    // The abort path: an abort now ALSO asks the daemon to stop the turn (`stopChat`),
     // so the sentence grew a second half describing what that achieved. What
     // this test still guards is the shared FIRST half: every abort path starts
     // from "本端已停止等待" plus its stop outcome, none ships its own wording.

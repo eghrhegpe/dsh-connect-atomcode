@@ -3,7 +3,7 @@
  * daemon turn with side-conversation continuity) and `atomcode_review` (a
  * one-shot code review through the CLI subcommand).
  *
- * Extracted from `src/host/index.ts` (v0.4.3 split). They live together because
+ * Extracted from `src/host/index.ts` (apply() split). They live together because
  * they share the one `tools.register` surface and the one `runtime`; each tool
  * still owns its description string end to end, which is why the two
  * `providerHint` strings are built HERE next to the `register()` calls that
@@ -22,7 +22,7 @@ import {
   selectReviewProvider,
 } from './review.ts';
 import { isLoopbackBaseUrl } from '../shared/loopback.ts';
-import { describeDaemonDown } from './stats.ts';
+import { beginInFlight, describeDaemonDown, endInFlight } from './stats.ts';
 import type { LiveTurn } from './stats.ts';
 import {
   HOST_TOOL_TIMEOUT_MS,
@@ -556,7 +556,7 @@ export function mountAskTool({
         lastTool: '',
         tokens: 0,
       };
-      stats.ask.inFlight = live;
+      beginInFlight(stats, live);
       let result: Awaited<ReturnType<typeof askChat>>;
       try {
         result = await askChat({
@@ -574,11 +574,11 @@ export function mountAskTool({
           onProgress: (progress) => Object.assign(live, progress),
         });
       } finally {
-        // Identity-checked, not a blind clear: the bag holds ONE in-flight slot
-        // (see `LiveTurn`), and the model can have two ask calls running at
-        // once — a blind `= null` from the first one to finish would blank the
-        // row of the turn that is still running.
-        if (stats.ask.inFlight === live) stats.ask.inFlight = null;
+        // Retire THIS turn and hand the slot to whatever is still running —
+        // see `endInFlight`. Neither ordering of two overlapping asks may leave
+        // the panel claiming nothing is in flight while a turn executes; the
+        // row describes the newest turn that is still alive.
+        endInFlight(stats, live);
       }
       stats.ask.msTotal += Date.now() - t0;
       if (result.ok) {

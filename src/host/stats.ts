@@ -1,7 +1,7 @@
 /**
  * Host-side status snapshot helpers (read-only, same-origin).
  *
- * Extracted from `src/host/index.ts` (v0.4.3 split). Mirrors the
+ * Extracted from `src/host/index.ts` (apply() split). Mirrors the
  * dsh-connect-sensenova-token-plan snapshot route contract so the plugin
  * detail-page client can poll live startup/usage stats. Every function here is
  * pure: they take plain values and return plain values, so a caller can build a
@@ -154,6 +154,12 @@ export interface StatsBag {
   binaryPath: string | null;
   binaryEnv: string | undefined;
   approvalMode: string;
+  /**
+   * The off-enum `approval_mode` spelling the patch supplied, or null when the
+   * resolved value is legal. A configuration FACT, so it travels in the `config`
+   * branch beside `approvalMode` — which is the value the code actually honours.
+   */
+  approvalModeRejected: string | null;
   defaultWorkingDir: string | null;
   reviewWorkingDir: string | null;
   defaultProvider: string | null;
@@ -224,13 +230,25 @@ export interface StatsBag {
      * every exit path — success, daemon error, timeout, fuse, cancel — ends the
      * row; a "running" row that outlives its turn is worse than no row.
      *
-     * ONE slot, so two overlapping asks show the newer one; the older turn's
-     * `finally` leaves it alone (identity check) and the row keeps describing
-     * whichever turn is actually running. A per-turn list would say "2 in
-     * flight" for a panel that can only usefully show one.
+     * ONE slot on the wire, so two overlapping asks show the NEWEST one — but
+     * "newest" is recomputed on every exit rather than left as whatever was
+     * written last (see `endInFlight`): the newest turn can finish FIRST, and a
+     * plain `= null` there would blank the row while the older turn is still
+     * running. That is the one ordering the identity check alone cannot see.
+     * A per-turn LIST on the wire would say "2 in flight" for a panel that can
+     * only usefully show one, so `askLive` stays host-side.
      */
     inFlight: LiveTurn | null;
   };
+  /**
+   * Every ask turn live right now, oldest first. HOST-ONLY bookkeeping.
+   *
+   * Kept OUTSIDE `ask` on purpose: `buildStatsBody` spreads `stats.ask` straight
+   * onto the wire, so anything added inside that object ships whether or not the
+   * shared contract declares it. This array only exists so `endInFlight` can
+   * answer "after this one ends, which turn — if any — is still running?".
+   */
+  askLive: LiveTurn[];
   review: { calls: number; ok: number; err: number; msTotal: number };
 }
 
@@ -264,6 +282,7 @@ export interface StatsSeed {
   binaryPath: string | null;
   binaryEnv: string | undefined;
   approvalMode: string;
+  approvalModeRejected: string | null;
   defaultWorkingDir: string | null;
   reviewWorkingDir: string | null;
   defaultProvider: string | null;
@@ -295,6 +314,7 @@ export function createStatsBag(seed: StatsSeed): StatsBag {
     binaryPath: seed.binaryPath,
     binaryEnv: seed.binaryEnv,
     approvalMode: seed.approvalMode,
+    approvalModeRejected: seed.approvalModeRejected,
     defaultWorkingDir: seed.defaultWorkingDir,
     reviewWorkingDir: seed.reviewWorkingDir,
     defaultProvider: seed.defaultProvider,
@@ -333,6 +353,7 @@ export function createStatsBag(seed: StatsSeed): StatsBag {
     quotaDriftSeen: false,
     protocolUnknownTypes: [],
     ask: { calls: 0, ok: 0, err: 0, msTotal: 0, tokens: 0, inFlight: null },
+    askLive: [],
     review: { calls: 0, ok: 0, err: 0, msTotal: 0 },
   };
 }
@@ -387,6 +408,7 @@ export function buildStatsBody(stats: StatsBag, quota: any): StatsSnapshot {
     },
     config: {
       approvalMode: stats.approvalMode,
+      approvalModeRejected: stats.approvalModeRejected,
       defaultWorkingDir: stats.defaultWorkingDir,
       reviewWorkingDir: stats.reviewWorkingDir,
       // The model profile bridged turns ask for when the call names none. On the
@@ -491,4 +513,33 @@ function viewInFlight(turn: LiveTurn | null): InFlightTurn | null {
     workingDir: turn.workingDir,
     provider: turn.provider,
   };
+}
+
+/**
+ * Register an ask turn as live and make it the row the panel shows.
+ *
+ * Exists as a function rather than the two writes it replaces so the slot and
+ * the bookkeeping array can never disagree: the panel's newest-wins rule is
+ * recomputed from `askLive` on every exit, so a turn pushed without becoming
+ * `inFlight` would be invisible until the next turn ends.
+ */
+export function beginInFlight(stats: StatsBag, turn: LiveTurn): void {
+  stats.askLive.push(turn);
+  stats.ask.inFlight = turn;
+}
+
+/**
+ * Retire an ask turn and re-point `inFlight` at whatever is STILL running.
+ *
+ * The old code nulled the slot behind an identity check, which covered "an
+ * older turn finishes while a newer one runs" but not the reverse: the newer
+ * turn finishing first nulled the row while the older turn was still executing,
+ * and the panel said no turn was in flight. Recomputing from `askLive` covers
+ * both orderings; `indexOf` (not blind pop) keeps a double-`finally` — or a
+ * turn that never registered — from retiring somebody else's row.
+ */
+export function endInFlight(stats: StatsBag, turn: LiveTurn): void {
+  const at = stats.askLive.indexOf(turn);
+  if (at >= 0) stats.askLive.splice(at, 1);
+  stats.ask.inFlight = stats.askLive.length > 0 ? stats.askLive[stats.askLive.length - 1] : null;
 }
