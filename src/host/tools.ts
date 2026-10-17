@@ -178,12 +178,20 @@ export function mountAskTool({
           providerReported: { type: 'boolean', description: 'provider 是否来自 daemon SSE 的 runtime_info（true = 远端实测值；false = daemon 未报，回显本插件请求值、未经远端证实——daemon 升级后若不再发 runtime_info，每回合都会带 false 并标注）' },
           protocol_unknown_types: {
             type: 'array',
-            description: '本回合 daemon 发来、本插件不认识的事件类型（空数组 = 词汇表未变，是常态；恒有本字段，故「没观察到漂移」与「没检查漂移」不会混淆）。非空说明 AtomCode 可能已升级或改了事件名。注意：轮数熔断靠计数 tool_start 生效，若被改名的正是这类被计数的事件，熔断会少计甚至完全不触发——此时 round_count 不可信',
+            description: '本回合 daemon 发来、本插件不认识的事件类型（空数组 = 词汇表未变，是常态；恒有本字段，故「没观察到漂移」与「没检查漂移」不会混淆）。非空说明 AtomCode 可能已升级或改了事件名。注意：轮数熔断靠计数 tool_start 生效，若被改名的正是这类被计数的事件，熔断会少计甚至完全不触发——此时 round_count 不可信。要和 daemon 自报的次数对照就看 daemon_tool_calls',
             items: { type: 'string' },
+          },
+          daemon_tool_calls: {
+            type: ['number', 'null'],
+            description: 'daemon 在 done 里自报的本回合工具调用次数（done.tool_calls，或 done.stats.tool_calls）。null = 它没报（旧 daemon 或极端的协议漂移）——「它说 0 次」和「它什么都没说」不是同一件事。与 round_count 对照即知本端熔断这一轮有没有真在工作：两者对不上而 round_count 更小，说明被计数的事件已改名，熔断本轮等于没生效',
+          },
+          daemon_rounds: {
+            type: ['number', 'null'],
+            description: 'daemon 自报的 agent 轮数（done.stats.rounds），null = 没报。与 daemon_tool_calls 不是同一个数字：一个 agent 轮可以并行发起多次工具调用，所以轮数 ≤ 工具调用数。用于判断漂移的是哪一边',
           },
           error: { type: 'string' },
         },
-        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'tools_truncated', 'stop_reason', 'working_dir', 'provider', 'providerReported', 'protocol_unknown_types', 'error'],
+        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'tools_truncated', 'stop_reason', 'working_dir', 'provider', 'providerReported', 'protocol_unknown_types', 'daemon_tool_calls', 'daemon_rounds', 'error'],
         additionalProperties: false,
       },
       render(_args: any, value: any) {
@@ -254,15 +262,41 @@ export function mountAskTool({
           // said out loud here. It is worse than a plain caveat: the round fuse
           // that bounds this turn counts `tool_start`, so a renamed tool event
           // leaves the fuse silently disarmed while every surface still reports
-          // success. Say which of the two it is rather than hedging.
+          // success.
+          //
+          // This used to stop at "IF the renamed event is one of the counted
+          // ones, the fuse is disarmed" — a hedge, because the plugin had no way
+          // to know. It does now: the daemon reports its OWN tool-call count in
+          // `done`, so the two counts can be compared and the sentence can
+          // become a verdict. Three outcomes, each stated as what it is:
+          //   - daemon counted MORE than we did → the fuse did not fire this
+          //     turn. Not "might have": it did not.
+          //   - the two agree → the renamed event is NOT one of the counted
+          //     ones, so this turn's fuse worked. The drift is still worth
+          //     knowing (the next rename may hit a counted type), which is why
+          //     the line stays.
+          //   - the daemon reported nothing → back to the hedge, naming which
+          //     branch is unknowable instead of pretending certainty.
           if (Array.isArray(value.protocol_unknown_types) && value.protocol_unknown_types.length > 0) {
+            const ourCount = value.round_count || 0;
+            const theirCount = value.daemon_tool_calls;
+            const knows = typeof theirCount === 'number';
+            const disagrees = knows && theirCount !== ourCount;
             lines.push(
               `[注意：本回合 daemon 发来本插件不认识的事件类型（${value.protocol_unknown_types.join(', ')}），` +
                 'AtomCode 可能已升级或改了事件名。本端轮数熔断靠计数 tool_start 生效——' +
-                (value.round_count === 0
-                  ? '而本回合轮数为 0：若被改名的是这类事件，熔断此刻已是失效状态。'
-                  : '若被改名的是这类事件，熔断会少计，下面的 round_count 偏小。') +
-                '可调小 max_rounds 或人工盯防本轮]',
+                (disagrees
+                  ? `而 daemon 自报 ${theirCount} 次工具调用、本端只数到 ${ourCount} 次：两次计数对不上，` +
+                    (theirCount > ourCount
+                      ? '**本回合的熔断确实没有生效**（不是"可能失效"）。'
+                      : '本端多算了——熔断比应有的更早触发，同样需要核对。')
+                  : knows
+                    ? `daemon 自报 ${theirCount} 次工具调用、与本端计数一致：被改名的不在这类被计数的事件里，本回合的熔断是准的。` +
+                      '但下一次改名未必还避开它。'
+                    : ourCount === 0
+                      ? '而本回合轮数为 0，且 daemon 没有自报次数：若被改名的是这类事件，熔断此刻已是失效状态。'
+                      : '若被改名的是这类事件，熔断会少计，下面的 round_count 偏小。daemon 没有自报次数，无法当场判定。') +
+                '墙钟超时仍是有效的兜底（且触发时会向 daemon 发 /chat/stop）；也可调小 max_rounds 或人工盯防本轮]',
               '',
             );
           }
@@ -271,6 +305,12 @@ export function mountAskTool({
           meta.push(`tokens=${value.tokens}`);
           if (value.round_count != null && value.round_count > 0) meta.push(`rounds=${value.round_count}`);
           meta.push(`tool_calls=${value.tool_calls}`);
+          // Only when the daemon actually said something: printing
+          // `daemon_tool_calls=null` in a one-line meta block invites reading it
+          // as zero, which is the one thing this field must not be confused with.
+          if (typeof value.daemon_tool_calls === 'number') {
+            meta.push(`daemon_tool_calls=${value.daemon_tool_calls}`);
+          }
           meta.push(`stop_reason=${value.stop_reason}`);
           // Always present, so "which directory did this run in" is never a
           // guess — `null` is printed as what it means rather than as a blank.
@@ -321,6 +361,12 @@ export function mountAskTool({
         provider: askProvider || 'default',
         providerReported: false,
         protocol_unknown_types: [],
+        // null, not 0: a refused turn never reached the daemon, so the daemon
+        // reported nothing. "It said zero" and "it never got to say anything"
+        // are different facts, and the render compares this field against our
+        // own count.
+        daemon_tool_calls: null,
+        daemon_rounds: null,
         error,
       });
       // Repo ladder: explicit arg > host session cwd (ready-to-use hook) > plugin
@@ -521,6 +567,11 @@ export function mountAskTool({
         provider: result.provider,
         providerReported: result.providerReported,
         protocol_unknown_types: result.unknownTypes,
+        // The daemon's own counts, passed through untouched so the render can
+        // compare them against ours. Null means it did not report them — the
+        // comparison is then impossible rather than favourable.
+        daemon_tool_calls: result.daemonToolCalls,
+        daemon_rounds: result.daemonRounds,
         error: reportedError,
       };
     },

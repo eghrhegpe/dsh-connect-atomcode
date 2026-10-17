@@ -335,7 +335,7 @@ AtomCode error: missing base URL: pass --base-url, set $ATOMCODE_BASE_URL, or ad
 |---|---|
 | `GET /health` | `lib/daemon.js: health()` —— 存活探测与拉起轮询 |
 | `GET /models` | `lib/daemon.js: listModels()` —— **插件本体已调用**：详情页 ask 档位下拉的选项来源（缓存 30s；拿不到时下拉禁用并写明原因，不渲染空框） |
-| `POST /chat` (SSE) | `lib/daemon.js: streamChat()/askChat()` —— `atomcode_ask`（`provider` 字段由插件的 `default_provider` 配置或调用参数填入；**留空时连字段都不发**） |
+| `POST /chat` (SSE) | `lib/daemon.js: streamChat()/askChat()` —— `atomcode_ask`（`provider` 字段由插件的 `default_provider` 配置或调用参数填入；**留空时连字段都不发**）。`done.tool_calls`（回落到 `done.stats.tool_calls`）与 `done.stats.rounds` **已消费**：作为 daemon 自己的计数，与本端数 `tool_start` 得到的轮数对照，判定轮数熔断这一轮是否真的生效（见 `daemonToolCalls`/`daemonRounds`）；`done.stats` 的 token 明细仍未用 |
 | `POST /command` `{command:"status"}` | `lib/daemon.js: runCommand()` + `lib/quota.js` —— 额度显示 |
 | `POST /chat/stop` `{session_id}` | `lib/daemon.js: stopChat()` —— **插件本体已调用**：ask 回合被熔断 / 取消 / 流截断时，请求 daemon 停掉它（此前只断本端 HTTP 流）。契约见 `scripts/probes/chat-stop.mjs`：`session_id` 必填（空 body → 422）；未知 id → 200 `"was not running"`（**200 ≠ 回合被停掉**，故 `ok` 语义是"daemon 受理了请求"）；回合刚开始还没拿到 `session_assigned` 时无 id 可发，这一种情况在错误文本里具名 |
 | `atomcode daemon --port … --no-telemetry` | `lib/daemon.js: spawnDaemon()` —— 自动拉起 |

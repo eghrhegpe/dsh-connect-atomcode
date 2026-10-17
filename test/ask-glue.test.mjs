@@ -73,7 +73,14 @@ function startFakeDaemon(state) {
           type: 'done',
           session_id: sessionId,
           tokens: 5,
-          tool_calls: state.toolStarts || 0,
+          // `state.reportedToolCalls` overrides what the daemon CLAIMS it ran,
+          // which is how the "our fuse missed calls the daemon made" case is
+          // produced: the wire carries fewer `tool_start` events than the number
+          // `done` reports. Unset = the honest fixture behaviour (the daemon
+          // reports exactly what it emitted).
+          ...(state.reportedToolCalls !== undefined
+            ? { tool_calls: state.reportedToolCalls }
+            : { tool_calls: state.toolStarts || 0 }),
           stop_reason: 'stopped',
         });
         res.end(sse(events));
@@ -687,7 +694,14 @@ describe('atomcode_ask — a renamed daemon event is NAMED, never a silent succe
 
   before(async () => { fake = await startFakeDaemon(state); });
   after(() => fake.server.close());
-  beforeEach(() => { state.requests.length = 0; state.unknownTypes = []; });
+  beforeEach(() => {
+    state.requests.length = 0;
+    state.unknownTypes = [];
+    // Cleared here rather than left to each case: an override that leaked out of
+    // the one test that set it would quietly change what every later turn claims
+    // the daemon reported.
+    delete state.reportedToolCalls;
+  });
 
   it('a SUCCESSFUL turn carrying an unknown SSE type reports it on the tool output', async () => {
     state.unknownTypes = ['tool_begin'];
@@ -710,14 +724,66 @@ describe('atomcode_ask — a renamed daemon event is NAMED, never a silent succe
     );
   });
 
-  it('the render names the type AND says the round fuse is disarmed', async () => {
+  it('the render names the type, and CONFIRMS the fuse worked when both counts agree', async () => {
+    // This fixture reports `tool_calls: 0` on `done` while the turn carried an
+    // unknown type — i.e. the daemon's own count says no tool ran, so the
+    // renamed event was NOT one of the counted ones. That is now a measurable
+    // verdict rather than the old "if it was a tool event, the fuse is
+    // disarmed": the two numbers are compared and the sentence says which
+    // case it is. Drift is still worth naming (the next rename may hit a
+    // counted type), so the line stays either way.
     state.unknownTypes = ['tool_begin'];
     const statePath = tempState();
     const ask = await mountAsk(mod, { statePath, port: fake.port });
     const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
     const text = ask.output.render({}, r).map((part) => part.text).join('\n');
     assert.match(text, /不认识的事件类型（tool_begin）/, 'the drifted type must be named, not summarised');
-    assert.match(text, /轮数为 0/, 'and the consequence must be stated, not hedged');
+    assert.match(text, /与本端计数一致/, 'and the comparison must be stated as the result it is');
+    assert.match(text, /下一次改名未必还避开它/, 'a confirmed-clean fuse must not be sold as "no risk"');
+  });
+
+  it('the render says the fuse DID NOT FIRE when the daemon counted more than we did', async () => {
+    // The shape the old wording could only hedge about, now measured: the
+    // daemon reports calls the plugin never saw counted. This is the turn where
+    // `max_rounds` silently did nothing.
+    state.unknownTypes = ['tool_begin'];
+    state.reportedToolCalls = 12;
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+    const text = ask.output.render({}, r).map((part) => part.text).join('\n');
+    assert.match(text, /daemon 自报 12 次工具调用、本端只数到 0 次/, 'both numbers, not just "a mismatch"');
+    assert.match(text, /熔断确实没有生效/, 'stated as a fact, not as a possibility');
+    assert.match(text, /不是"可能失效"/, 'the upgrade from hedge to verdict must be visible in the words');
+  });
+
+  it('the render falls back to the hedge when the daemon reports no count', async () => {
+    // An older daemon (or a body-rename drift) sends no number. The plugin must
+    // not invent agreement — "it said nothing" is not "it said the same thing" —
+    // and with our count at 0 this is the dangerous shape: the fuse may have
+    // been disarmed for the whole turn.
+    state.unknownTypes = ['tool_begin'];
+    state.reportedToolCalls = null;
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+    const text = ask.output.render({}, r).map((part) => part.text).join('\n');
+    assert.equal(r.daemon_tool_calls, null, 'the field must stay null rather than default to a favourable 0');
+    assert.match(text, /daemon 没有自报次数/, 'the reason the verdict is unavailable must be named');
+    assert.match(text, /熔断此刻已是失效状态/, 'and the 0-round case must not be softened');
+  });
+
+  it('with no daemon count but a non-zero one of ours, it says which branch is unknowable', async () => {
+    state.unknownTypes = ['tool_begin'];
+    state.reportedToolCalls = null;
+    state.toolStarts = 3;
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+    const text = ask.output.render({}, r).map((part) => part.text).join('\n');
+    assert.match(text, /无法当场判定/, 'a partial count is not evidence of a working fuse');
+    // The round count is what the caller has, so it must still be printed.
+    assert.match(text, /round_count 偏小/);
   });
 
   it('the drift reaches the stats snapshot the panel polls', async () => {

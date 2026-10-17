@@ -415,3 +415,80 @@ describe('daemon /chat SSE client — hermetic', () => {
     );
   });
 });
+
+describe('askChat — the daemon\'s OWN counts, kept separate from ours', () => {
+  // Why this is a contract and not a convenience: the round fuse counts
+  // `tool_start` events, so a renamed tool event leaves the fuse firing zero
+  // times while the daemon happily runs the turn. The only way to turn "the fuse
+  // may have been disarmed" into a verdict is to compare our count against the
+  // daemon's own — which requires the two to be INDEPENDENT. Any default that
+  // derived from our side makes them agree by construction and destroys the
+  // comparison.
+  // Its own shutter list: the first describe's `open` is scoped to that block,
+  // and reaching for it from here is a ReferenceError that fails every case AND
+  // leaks every fake server — a hang, not a red test.
+  const open = [];
+  after(() => {
+    for (const { server } of open) server.close();
+  });
+  const withDone = (done) => async () => {
+    const fake = await startFakeDaemon((req, res) =>
+      respondSse(res, [
+        { type: 'session_assigned', session_id: 's' },
+        { type: 'tool_start', name: 'bash' },
+        { type: 'text', content: 'ok' },
+        done,
+      ]),
+    );
+    open.push(fake);
+    return askChat({ message: 'hi', port: fake.port, timeoutMs: 10_000 });
+  };
+
+  it('reads done.tool_calls when the daemon sends it', async () => {
+    const r = await withDone({ type: 'done', session_id: 's', tool_calls: 12, stop_reason: 'stopped' })();
+    assert.equal(r.daemonToolCalls, 12, 'the daemon\'s number, unmodified');
+    // `toolCalls` is the count the tool PUBLISHES (it prefers the daemon's
+    // number when there is one), so the two agreeing here is correct — the
+    // field that must stay independent is `daemonToolCalls`, and the case where
+    // that independence is testable is the one where the daemon reports nothing
+    // (see the null case below).
+    assert.equal(r.toolCalls, 12, 'the published count prefers the daemon\'s when available');
+    assert.equal(r.roundCount, 1, 'premise: OUR count is a different number — that is the whole point');
+  });
+
+  it('falls back to done.stats.tool_calls, the second spelling in the same frame', async () => {
+    const r = await withDone({ type: 'done', session_id: 's', stats: { tool_calls: 7, rounds: 3 }, stop_reason: 'stopped' })();
+    assert.equal(r.daemonToolCalls, 7, 'the measured frames carry both spellings; either is evidence');
+    assert.equal(r.daemonRounds, 3, 'rounds is read from the nested block — it has no top-level twin');
+  });
+
+  it('answers NULL, never our own count, when the daemon reports nothing', async () => {
+    const r = await withDone({ type: 'done', session_id: 's', stop_reason: 'stopped' })();
+    assert.equal(r.daemonToolCalls, null, '"it said nothing" must not be filled in with what WE saw');
+    assert.equal(r.daemonRounds, null, 'same for rounds');
+    assert.equal(r.roundCount, 1, 'our count still exists — it is simply not evidence about the daemon');
+  });
+
+  it('keeps a reported ZERO distinct from a missing field', async () => {
+    // A daemon that ran no tools and says so is a real measurement, and the
+    // render reads it as "the rename did not hit a counted event". Folding it
+    // into null would silently downgrade that to "unknowable".
+    const r = await withDone({ type: 'done', session_id: 's', tool_calls: 0, stop_reason: 'stopped' })();
+    assert.equal(r.daemonToolCalls, 0);
+    assert.notEqual(r.daemonToolCalls, null);
+  });
+
+  it('prefers the top-level field over the nested copy', async () => {
+    // Both are present in the measured frames. If they ever DISAGREE, the
+    // top-level one is the vocabulary of record (its peer is done.tokens), so
+    // the nested value must not silently win.
+    const r = await withDone({
+      type: 'done',
+      session_id: 's',
+      tool_calls: 5,
+      stats: { tool_calls: 99, rounds: 2 },
+      stop_reason: 'stopped',
+    })();
+    assert.equal(r.daemonToolCalls, 5);
+  });
+});

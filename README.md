@@ -102,7 +102,7 @@ provider（本机实测通路是本地代理），否则插件会在调用前就
 | `working_dir` | `''` | ask 回合的缺省工作目录（同时是侧边对话的会话键）。空 = 交给调用参数 / 宿主会话 cwd；**这三层都取不到、而 `approval_mode` 又是 `bypass` 时，ask 会拒绝该回合**（不放行无人值守的工具调用跑在用户 home 里），除非调用方传 `allow_unattended: true`。面板**不提供输入框**，只能在 patch 里改；详情页「回合边界」标出你改过没有 |
 | `review_working_dir` | `''` | **review 的缺省仓库根**。空 = review **不猜**，必须由调用传 `working_dir`（见「治理记录」） |
 | `state_path` | `''` | 会话映射文件（缺省 `~/.dsh/state/dsh-connect-atomcode/sessions.json`）。**面板选的模型档位存在同目录的 `provider.json`**，所以这一个旋钮同时决定两者的位置 |
-| `ask_max_rounds` | `25` | ask 的工具调用次数上限（按 SSE `tool_start` 事件计；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数）；`0` = 不限（交给 daemon 自带治理）。**上限 1000，超过按 1000 计**（钳制在代码里——熔断不是能被一个巨大数字关掉的东西；关它只能用 `0` 这个字面量）。>0 时插件在 SSE 上数 `tool_start`，超限即断开并返回 `atomcode turn aborted: agent exceeded N tool rounds`，**同时向 daemon 发 `POST /chat/stop` 请求停掉该回合**（契约为实测：`session_id` 必填；daemon 回 `was not running` 也是受理，只说明回合已结束）。所以它是"别再等了 + 尽力停止"的止损，不是远程 kill——回合刚开始、还没拿到 `session_assigned` 时无 id 可发，这一种情况在错误文本里写明。面板**不提供输入框**；详情页「回合边界」标出这是默认还是你改过 |
+| `ask_max_rounds` | `25` | ask 的工具调用次数上限（按 SSE `tool_start` 事件计；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数）；`0` = 不限（交给 daemon 自带治理）。**上限 1000，超过按 1000 计**（钳制在代码里——熔断不是能被一个巨大数字关掉的东西；关它只能用 `0` 这个字面量）。>0 时插件在 SSE 上数 `tool_start`，超限即断开并返回 `atomcode turn aborted: agent exceeded N tool rounds`，**同时向 daemon 发 `POST /chat/stop` 请求停掉该回合**（契约为实测：`session_id` 必填；daemon 回 `was not running` 也是受理，只说明回合已结束）。所以它是"别再等了 + 尽力停止"的止损，不是远程 kill——回合刚开始、还没拿到 `session_assigned` 时无 id 可发，这一种情况在错误文本里写明。**计数会不会被改名致盲是可以当场判定的**：回合结束时 daemon 会自报它自己的工具调用次数（`daemon_tool_calls`），与本端计数对照即知这一轮熔断是准的、还是压根没生效——两者一致就说一致，对不上就说对不上（不再用"若被改名的是这类事件…"这种模棱两可的措辞）。面板**不提供输入框**；详情页「回合边界」标出这是默认还是你改过 |
 | `session_key_prefix` | 自动探测 | 会话键前缀，隔离多 profile（web / desktop）共用同一 state 文件；空 = 按 `DSH_PROFILE`/argv 自动判定 |
 | `daemon_retry_secs` | `60` | 自动拉起**失败**后的重试冷却。`0` = 每次轮询都重试；不设则失败会永久禁用本次挂载的自动拉起 |
 | `review_no_web` | `true` | 评审关 web_search（适配代理受限网络；有外网可设 false） |
@@ -218,7 +218,7 @@ npm test           # 离线套件由 scripts/test.mjs 自动发现（排除 *-li
 
 各套件用本机 `node:http` 起**假 daemon**（或纯函数），所以把过去只有 live 套件覆盖（而没有 daemon 就直接跳过）的路径全部变成离线可测：
 
-- `daemon-stream.test.mjs` — `askChat` 的 SSE 聚合（reply 拼接 / session / tokens 回退 / 工具配对 / provider 捕获 / roundCount）、轮数熔断、三种 abort 原因（超时 / 调用方取消 / 熔断）。
+- `daemon-stream.test.mjs` — `askChat` 的 SSE 聚合（reply 拼接 / session / tokens 回退 / 工具配对 / provider 捕获 / roundCount）、轮数熔断、三种 abort 原因（超时 / 调用方取消 / 熔断），以及 **daemon 自报计数与本端计数的隔离**（读 `done.tool_calls` / 回落 `done.stats.tool_calls` / 缺字段答 null 而不是拿本端数顶替 / 报 0 与没报不是同一件事 / 两种拼写不一致时以顶层为准）。
 - `chat-stop.test.mjs` — `/chat/stop` 取消通路：熔断 / 取消 / 流截断三种死法都会带 `session_id` 发停止请求，`done` 之后绝不发，无 id 时具名不猜，stop 失败照实报。
 - `sessions-ttl.test.mjs` — 会话续接存储的生死判定：过期键不再续且路过即清、`count()` 只数真能续的键、**年龄未知的旧数据必须保留**；以及 daemon 指纹判死——daemon 重启后旧 id 不再续（`prune()` 在创建时扫掉上个 daemon 的遗产）、指纹缺失/读不到/探针抛错都按"无法判定"放行，`snapshot()` 一次读同时给出面板那两个事实。
 - `knob-clamps.test.mjs` — 旋钮上限钳制（`timeout_secs` 1800 / `max_rounds` 1000 / `review_max_duration_secs` 1740，`0` 字面量永不被钳制）、配置默认值同样被钳（面板不显示代码不执行的预算），以及 `readDaemonIdentity` 指纹的稳定性/随 daemon 变化/读不到时答 null 不猜。
