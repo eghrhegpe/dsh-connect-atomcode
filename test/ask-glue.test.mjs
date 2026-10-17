@@ -748,3 +748,106 @@ describe('atomcode_ask — a renamed daemon event is NAMED, never a silent succe
     );
   });
 });
+
+describe('atomcode_ask — an unnamed directory is REFUSED, not warned about afterwards', () => {
+  // The pairing that matters is `approval_mode: bypass` (the shipped default)
+  // AND no resolvable working_dir: it hands AtomCode a full autonomous tool
+  // loop, auto-approved, running in whatever cwd the daemon was launched in —
+  // the user's home, in the default launch. `atomcode_review` has refused this
+  // case since it existed; ask only MENTIONED it, in the render, which runs
+  // after the turn. A warning delivered with the results cannot stop the thing
+  // it warns about — so the weaker guard sat on the more dangerous tool (review
+  // is one-shot and bounded; ask is the one with the tool loop). These cases pin
+  // the refusal and, just as importantly, the three ways a caller gets a
+  // WORKING turn back.
+  const state = { requests: [], counter: 400, mode: 'ok' };
+  let fake;
+
+  before(async () => { fake = await startFakeDaemon(state); });
+  after(() => fake.server.close());
+  beforeEach(() => { state.requests.length = 0; });
+
+  it('bypass + no working_dir refuses BEFORE the daemon is touched', async () => {
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    const r = await ask.execute({ message: 'hi' }, {});
+    assert.equal(r.ok, false, 'the turn must not report success');
+    assert.equal(r.working_dir, null, 'the refused turn still has to say it ran nowhere');
+    assert.match(r.error, /拒绝了本回合/, 'a refusal must read as a refusal, not as a daemon failure');
+    assert.match(r.error, /红线 8/, 'and must name the rule it is enforcing');
+    assert.match(r.error, /working_dir/, 'the message must name escape 1');
+    assert.match(r.error, /allow_unattended/, 'and the explicit escape');
+    assert.equal(
+      state.requests.length,
+      0,
+      'nothing may reach the daemon: refusing after POSTing /chat would already have started the turn',
+    );
+  });
+
+  it('allow_unattended:true is the acknowledged way through', async () => {
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    const r = await ask.execute({ message: 'hi', allow_unattended: true }, {});
+    assert.equal(r.ok, true, 'an acknowledged turn must be allowed to run');
+    assert.equal(r.working_dir, null, 'the acknowledgement does not invent a directory');
+    assert.equal(
+      state.requests.at(-1).working_dir,
+      undefined,
+      'no directory was named, so none may be sent',
+    );
+    const text = ask.output.render({}, r).map((part) => part.text).join('\n');
+    assert.match(text, /allow_unattended=true 放行/, 'the render must present this as the acknowledgement it is');
+  });
+
+  it('a NON-bypass approval_mode needs no acknowledgement — the gate is the pairing, not the field', async () => {
+    // With a human in the loop an unnamed directory is not unattended autonomy,
+    // and refusing it would enforce a rule nobody is at risk of breaking.
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port, config: { approval_mode: 'on-request' } });
+    const r = await ask.execute({ message: 'hi' }, {});
+    assert.equal(r.ok, true, 'only the bypass pairing is refused');
+    assert.equal(state.requests.at(-1).approval_mode, 'on-request');
+  });
+
+  it('a configured working_dir fills the gap, and reaches the wire', async () => {
+    const statePath = tempState();
+    const ask = await mountAsk(mod, {
+      statePath,
+      port: fake.port,
+      config: { working_dir: 'C:\\configured' },
+    });
+    const r = await ask.execute({ message: 'hi' }, {});
+    assert.equal(r.ok, true, 'rung 3 of the ladder is a real answer to the refusal');
+    assert.equal(r.working_dir, 'C:\\configured');
+    assert.equal(state.requests.at(-1).working_dir, 'C:\\configured');
+  });
+
+  it('the host session cwd fills the gap too, without any flag', async () => {
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    const r = await ask.execute({ message: 'hi' }, { cwd: 'C:\\from-host' });
+    assert.equal(r.ok, true, 'once the host exposes the session cwd the refusal stops firing on its own');
+    assert.equal(state.requests.at(-1).working_dir, 'C:\\from-host');
+  });
+
+  it('a refused turn is charged to the error counter the panel polls', async () => {
+    // An average built from a subset of calls is worse than no average: the
+    // refusal has to reach stats whether or not it reached the daemon.
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port, withRoutes: true });
+    const stats = ask.routes.find((r) => r.path === '/api/atomcode-bridge/stats');
+    await ask.execute({ message: 'refused' }, {});
+    const res = await callRoute(stats, { headers: { host: '127.0.0.1:3080' } });
+    assert.equal(res.body.ask.calls, 1, 'the refused call happened; the panel must see it');
+    assert.equal(res.body.ask.err, 1, 'and it failed');
+  });
+
+  it('the schema documents the flag, so the retry is one call away', async () => {
+    const statePath = tempState();
+    const ask = await mountAsk(mod, { statePath, port: fake.port });
+    const param = ask.parameters.properties.allow_unattended;
+    assert.ok(param, 'a refusal whose escape is undocumented is a dead end');
+    assert.match(param.description, /默认 false/);
+    assert.match(param.description, /working_dir/, 'and must send the caller to the directory first');
+  });
+});

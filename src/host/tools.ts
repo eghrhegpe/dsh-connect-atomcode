@@ -111,6 +111,8 @@ export function mountAskTool({
     description:
       '把一条消息转发给本机 AtomCode（终端 AI 编程助手，官方二进制）的 daemon 执行一个完整自主回合（它自带工具循环，approval_mode 默认 bypass 无人值守放行），取回整轮回复。' +
       '用于"帮我问 AtomCode / 让 AtomCode 处理 / 侧边咨询"场景；拿到结果后把 reply 转达给用户。' +
+      '调用时请给出 working_dir（要处理的仓库/目录）——它同时是它的读写边界和侧边对话的会话键；缺省优先级：参数 > 宿主会话 cwd > 插件配置 working_dir，' +
+      '三者都取不到而 approval_mode 又是 bypass 时本工具直接拒绝该回合（不放行无人值守的工具调用跑在用户 home 里），除非显式传 allow_unattended=true。' +
       'continue=true 接续本工作目录上一次侧边对话（自动恢复 session，无需记 id）；默认开新线。续线接到死会话时用 reset_session=true 重新开线。' +
       '整回合可能数分钟。' +
       providerHint,
@@ -128,7 +130,8 @@ export function mountAskTool({
         session_id: { type: 'string', description: '可选：显式接续某个 AtomCode 会话（优先于 continue）' },
         reset_session: { type: 'boolean', description: '可选：清掉本工作目录记录的侧边会话（续线接到一条已过期的 daemon 会话、或想彻底开新线时用；不影响本回合）' },
         provider: { type: 'string', description: '可选：点名 AtomCode 模型档位，传它就换本次回合用的模型。名字以 daemon GET /models 的 provider 字段为准（如 "AtomGit-glm5.3-flash"），不要传裸模型 id（"glm5.3-flash"）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
-        working_dir: { type: 'string', description: '可选：回合的工作目录，同时是侧边对话的会话键。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 插件配置 working_dir > 宿主 home 兜底' },
+        working_dir: { type: 'string', description: '回合的工作目录，同时是侧边对话的会话键。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 插件配置 working_dir。三者都没有时本工具**拒绝**该回合（见 allow_unattended）——让 AtomCode 的工具在 daemon 自己的 cwd（通常是用户 home）里无人值守跑，是 atomcode_review 一直直接拒绝的那个情况' },
+        allow_unattended: { type: 'boolean', description: '可选，默认 false。只在 approval_mode=bypass 且上面三条都取不到目录时才需要它：那种组合下本工具默认拒绝（红线 8——无人值守的工具调用跑在一个没人指定的目录里）。确实只做通用问答、不需要任何目录时，显式传 true 表示知情同意；能给出目录就优先给 working_dir，别用它绕开' },
         timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800；上限 1800（本工具向宿主声明的超时上限就是 30 分钟），超过按 1800 计——代码里钳制，不是"传了更大的值但悄悄不生效"' },
         max_rounds: { type: 'number', description: '可选：工具调用次数上限（按 daemon SSE 的 tool_start 事件计数；一个 agent 回合可能并行发起多次工具调用，故事件数 ≥ agent 轮数——把它当轮数理解，会在更少的 agent 轮数上就熔断）。默认取插件配置，当前 ' + askMaxRounds + '；上限 1000，超过按 1000 计（钳制在代码里，inflate 关不掉熔断）。传 0 关掉本端熔断，交回 daemon 自带治理——与 atomcode_review 的 max_rounds: 0 同义）。超限时本端中止等待并返回错误，同时向 daemon 发 POST /chat/stop 请求停掉该回合（以 daemon 应答为准；回合刚开始还没拿到 session_id 时无法请求，错误文本会说明这一种情况）' },
       },
@@ -167,8 +170,8 @@ export function mountAskTool({
           working_dir: {
             type: ['string', 'null'],
             description:
-              '本回合实际使用的工作目录（同时是侧边对话的会话键）。null = 本次没有指定：回合跑在 daemon 自己的 cwd 下（通常是用户 home），' +
-              '而本工具的 approval_mode 默认 bypass——即在该目录里无人值守放行工具调用。要指定仓库就显式传 working_dir',
+              '本回合实际使用的工作目录（同时是侧边对话的会话键）。null = 本回合没有指定任何目录，跑在 daemon 自己的 cwd 下（通常是用户 home）——' +
+              '而本工具的 approval_mode 默认 bypass，即在该目录里无人值守放行工具调用；这个组合现在只可能由调用方显式传 allow_unattended=true 产生（否则本工具在开跑前就拒绝了）。要指定仓库就显式传 working_dir',
           },
           provider: { type: 'string' },
           providerReported: { type: 'boolean', description: 'provider 是否来自 daemon SSE 的 runtime_info（true = 远端实测值；false = daemon 未报，回显本插件请求值、未经远端证实——daemon 升级后若不再发 runtime_info，每回合都会带 false 并标注）' },
@@ -224,17 +227,24 @@ export function mountAskTool({
           if (value.providerReported === false) {
             lines.push('[注意：daemon 未报 runtime_info，provider= 是本插件回传请求值、未经远端证实（daemon 可能已升级）]', '');
           }
-          // The one thing a turn run without a working_dir never used to say:
+          // The one thing a turn run without a working_dir has to keep saying:
           // where its tools actually ran. `null` means the daemon's own cwd (the
-          // user's home, in the default launch). Said out loud only when the turn
-          // was ALSO unattended (`approval_mode: bypass`, the default) — that
-          // pairing is the risk: tools auto-approved in a directory nobody named.
-          // review refuses the case outright (红线 8); ask cannot, so it names it.
+          // user's home, in the default launch), auto-approved because
+          // `approval_mode: bypass` is the default.
+          //
+          // This used to be the ONLY guard on that pairing, which made it a
+          // guard in name only: a render runs AFTER the turn, so the sentence
+          // describing "tools ran unattended in a directory nobody named"
+          // arrived with the results of exactly that. review refuses the case
+          // outright (红线 8); ask now refuses it too, in `execute()`, before
+          // the daemon is touched — so this branch is reachable only for a turn
+          // the caller explicitly waved through (`allow_unattended: true`), and
+          // it reads as the acknowledgement it is rather than as a discovery.
           // Every turn still carries `working_dir=` in the meta line below.
           if (approvalMode === 'bypass' && (value.working_dir === null || value.working_dir === undefined)) {
             lines.push(
-              '[注意：本回合未指定 working_dir，工具在 daemon 自己的 cwd 下执行（通常是用户 home），且 approval_mode=bypass 无人值守放行。' +
-                '要限定目录请显式传 working_dir 或配置插件的 working_dir]',
+              '[注意：本回合未指定 working_dir——调用方已显式 allow_unattended=true 放行。工具在 daemon 自己的 cwd 下执行（通常是用户 home），' +
+                '且 approval_mode=bypass 无人值守放行。要限定目录请显式传 working_dir 或配置插件的 working_dir]',
               '',
             );
           }
@@ -279,6 +289,13 @@ export function mountAskTool({
       },
     },
     async execute(args: any, exec: any) {
+      // The tool's own clock, started before every branch that can return —
+      // including the refusal below. It used to start after the ladder, so the
+      // one early return that is NOT a failure (a refused call) had no elapsed
+      // time to report and the panel's average would have been built from a
+      // subset of the calls that reached it. Same reason `refuse()` in
+      // `atomcode_review` counts calls, errors and milliseconds together.
+      const t0 = Date.now();
       // Resolved ONCE, before any failure path, so a refused/failed turn still
       // reports which model the bridge was asking for (`empty()` below) instead
       // of a misleading 'default'. Ladder: argument > panel pick > patch field >
@@ -311,6 +328,35 @@ export function mountAskTool({
         typeof args.working_dir === 'string' && args.working_dir.trim() !== ''
           ? args.working_dir
           : hostSessionCwd(exec) ?? defaultWorkingDir;
+      // 红线 8, ask side — the same rule `atomcode_review` has enforced from the
+      // start, and the pairing that makes it matter: NO resolvable directory
+      // PLUS `approval_mode: bypass` (the shipped default) means AtomCode's own
+      // tools run unattended inside whatever cwd the daemon was launched in,
+      // which in the default launch is the user's home.
+      //
+      // This case used to be handled by a sentence in the RENDER — which runs
+      // after the turn. A warning that arrives with the results cannot prevent
+      // the thing it warns about, and review is the BOUNDED path (one-shot,
+      // no tool loop) while ask is the one with a full autonomous tool loop.
+      // The weaker guard sat on the more dangerous tool. Now both refuse.
+      //
+      // Refused rather than silently redirected to a sandbox directory: a model
+      // that named no directory may still mean "read the files under my home",
+      // and quietly running it somewhere else trades a visible risk for an
+      // invisible wrong answer. The caller knows where the work belongs; the
+      // message names all three ways forward, so the retry is one call away.
+      // Nothing has been spawned, written, or resolved into a session key yet.
+      if (!workDir && approvalMode === 'bypass' && args.allow_unattended !== true) {
+        stats.ask.calls += 1;
+        stats.ask.err += 1;
+        stats.ask.msTotal += Date.now() - t0;
+        return empty(
+          'atomcode_ask 拒绝了本回合：取不到 working_dir，而 approval_mode=bypass 会让 AtomCode 的工具在 daemon 自己的 cwd（通常是用户 home）里无人值守执行——' +
+            '这正是 atomcode_review 一直直接拒绝的那个情况（红线 8）。三种走法：' +
+            '① 传 working_dir 指定本回合的目录；② 在插件配置 working_dir 里设一个默认目录；' +
+            '③ 本回合确实只做通用问答、不涉及任何目录时，显式传 allow_unattended=true 表示知情同意。',
+        );
+      }
       // Normalise the working directory so that `C:\Repo`, `c:\repo` and
       // `C:\repo\` all map to the SAME session key. `resolve` on Windows
       // uppercases the drive letter and collapses trailing slashes; on
@@ -345,7 +391,6 @@ export function mountAskTool({
       // turn actually replayed (not the one that was just discarded).
       const continued = sessionId !== undefined;
 
-      const t0 = Date.now();
       stats.ask.calls += 1;
       if (!(await ensureDaemon(exec?.signal))) {
         stats.ask.err += 1;

@@ -437,7 +437,10 @@ describe('lib/index.js — cancelled startup', () => {
     ctrl.abort(); // the caller cancelled before the turn even started
 
     const startedAt = Date.now();
-    const result = await ask.execute({ message: 'hi' }, { signal: ctrl.signal });
+    // The directory is named so the run reaches the startup poll this case is
+    // about: an unnamed one is refused up front (see the suite note in
+    // "two namespaces" below), which never reaches `ensureDaemon` at all.
+    const result = await ask.execute({ message: 'hi', working_dir: 'C:\\cancel-probe' }, { signal: ctrl.signal });
     const elapsed = Date.now() - startedAt;
 
     assert.equal(result.ok, false);
@@ -587,10 +590,18 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     }
     const { ctx, calls } = fakeCtx();
     const mod = await import(fileUrl(BRIDGE));
+    // A working_dir is supplied by DEFAULT here because this suite is about the
+    // provider ladder on the wire, not about directory resolution: with
+    // `approval_mode: bypass` (the shipped default) and no resolvable directory,
+    // `atomcode_ask` now REFUSES the turn before touching the daemon — so every
+    // case below would otherwise fail on the same refusal and test nothing.
+    // `extraConfig` still wins, so a case that wants to exercise the ladder's
+    // directory rung can override it.
     mod.apply(ctx, {
       state_path: join(dir, 'sessions.json'),
       auto_start: false,
       port: probe.port,
+      working_dir: join(dir, 'probe-repo'),
       ...extraConfig,
     });
     const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
