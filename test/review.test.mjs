@@ -18,6 +18,7 @@ import {
   cleanupTempFiles,
   OUTPUT_CAP_BYTES,
 } from '../lib/review.js';
+import { sentinelPort } from './dead-port.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -347,7 +348,11 @@ describe('atomcode_review — the round fuse reaches the child the way the ask t
       effect() {},
       on() {},
     };
-    mod.apply(ctx, { auto_start: false, port: 45995, state_path: statePath });
+    // Sentinel 7: inert — the spawner is overridden and a non-loopback base_url
+    // is never probed; the number only has to be the suite's OWN (it used to
+    // share 45995 with `protocol`, and that collision is why the runner was
+    // serial for its first life).
+    mod.apply(ctx, { auto_start: false, port: sentinelPort(7), state_path: statePath });
     review = tools.find((t) => t.name === 'atomcode_review');
     assert.ok(review, 'the review tool must be registered');
   });

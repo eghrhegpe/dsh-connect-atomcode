@@ -25,12 +25,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it, after } from 'node:test';
+import { requireDeadPort, sentinelPort } from './dead-port.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BRIDGE = join(ROOT, 'lib', 'index.js');
 const CLIENT = join(ROOT, 'client.js');
 
-const CLOSED_PORT = 45993;
+/** Sentinel 3 — this fixture IS a refusal, so the suite proves it still is. */
+const CLOSED_PORT = await requireDeadPort(sentinelPort(3));
 const STATS_PATH = '/api/atomcode-bridge/stats';
 const REVIEW_FALLBACK = '未插手';
 

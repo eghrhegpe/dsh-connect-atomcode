@@ -39,13 +39,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 import { existsSync } from 'node:fs';
+import { requireDeadPort, sentinelPort } from './dead-port.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BRIDGE = join(ROOT, 'lib', 'index.js');
 const TEST_DIR = join(ROOT, 'test');
 const mod = await import(pathToFileURL(BRIDGE).href);
 
-const CLOSED_PORT = 45992;
+/** Sentinel 2 of test/dead-port.mjs — the stats route must see a real refusal. */
+const CLOSED_PORT = await requireDeadPort(sentinelPort(2));
 const STATS_PATH = '/api/atomcode-bridge/stats';
 const REAL_STATE_DIR = join(homedir(), '.dsh', 'state', 'dsh-connect-atomcode');
 

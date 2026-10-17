@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { sentinelPort } from './dead-port.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const mod = await import(pathToFileURL(join(ROOT, 'lib', 'index.js')).href);
@@ -47,9 +48,11 @@ function mount() {
     effect() {},
     on() {},
   };
+  // Sentinel 10: inert — render is a pure function; the mount exists only to
+  // obtain the descriptors (see the suite header).
   mod.apply(ctx, {
     auto_start: false,
-    port: 45997,
+    port: sentinelPort(10),
     state_path: join(mkdtempSync(join(tmpdir(), 'atomcode-budget-')), 'sessions.json'),
   });
   const ask = tools.find((t) => t.name === 'atomcode_ask');

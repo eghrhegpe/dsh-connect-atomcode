@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it, before, after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { requireDeadPort, sentinelPort } from './dead-port.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BRIDGE = join(ROOT, 'lib', 'index.js');
@@ -23,8 +24,13 @@ const SESSIONS = join(ROOT, 'lib', 'sessions.js');
 const mod = await import(pathToFileURL(BRIDGE).href);
 const { createSessionStore } = await import(pathToFileURL(SESSIONS).href);
 
-/** A loopback port nothing listens on, so /health fails fast and hermetically. */
-const CLOSED_PORT = 45991;
+/**
+ * A loopback port nothing listens on, so /health fails fast and hermetically.
+ * Sentinel 1 of test/dead-port.mjs, proven free at import time — this suite is
+ * the heaviest user of the `refused` classification, so "nothing listens" is
+ * load-bearing here, not incidental.
+ */
+const CLOSED_PORT = await requireDeadPort(sentinelPort(1));
 const STATS_PATH = '/api/atomcode-bridge/stats';
 
 const PROVIDER_PATH = '/api/atomcode-bridge/provider';

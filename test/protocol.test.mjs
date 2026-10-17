@@ -22,6 +22,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { askChat, healthInfo } from '../lib/daemon.js';
 import { parseStatusQuota } from '../lib/quota.js';
 import { parseDefaultProvider, parseTomlProviders } from '../lib/review.js';
+import { requireDeadPort, sentinelPort } from './dead-port.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const mod = await import(pathToFileURL(join(ROOT, 'lib', 'index.js')).href);
@@ -216,12 +217,13 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
   });
 
   it('names the cause: a refusal is a REFUSAL, and nothing else', async () => {
-    // Bind, learn the port, release it — so "nothing listens" is a fact about
-    // THIS port rather than an assumption about a hardcoded one that some other
-    // process on the machine is free to take.
-    const fake = await startFakeDaemon(() => {});
-    const deadPort = fake.port;
-    await new Promise((resolve) => fake.server.close(resolve));
+    // A sentinel port proven free RIGHT NOW (test/dead-port.mjs), so "nothing
+    // listens" stays a fact about THIS number instead of an assumption. It used
+    // to be learned by binding an ephemeral port and releasing it — a fact too,
+    // but under the parallel runner another suite's listen(0) could be handed
+    // the just-released number before this request lands. The sentinel band sits
+    // below every OS dynamic range, so no concurrent binder can receive it.
+    const deadPort = await requireDeadPort(sentinelPort(6));
     const info = await healthInfo(deadPort);
     assert.equal(info.up, false);
     assert.equal(info.version, '');
@@ -245,7 +247,10 @@ describe('ask render — a completed turn must show its caveat, a clean one must
       effect() {},
       on() {},
     };
-    mod.apply(ctx, { auto_start: false, port: 45995, state_path: join(fakeHome, 'sessions.json') });
+    // Sentinel 4: INERT mount — `render` is obtained from the descriptor and
+    // `auto_start: false` means nothing ever connects; it only needs a unique
+    // dead number of its own, which is what the offset table guarantees.
+    mod.apply(ctx, { auto_start: false, port: sentinelPort(4), state_path: join(fakeHome, 'sessions.json') });
     const ask = tools.find((t) => t.name === 'atomcode_ask');
     render = ask.output.render; // the descriptor nests render under `output`
   });
@@ -465,9 +470,10 @@ describe('review provision is re-read per call, not frozen at mount', () => {
       const savedUserProfile = process.env.USERPROFILE;
       process.env.HOME = fakeHome;
       process.env.USERPROFILE = fakeHome;
+      // Sentinel 5: inert (see the render-mount note in this file).
       mod.apply(ctx, {
         auto_start: false,
-        port: 45994,
+        port: sentinelPort(5),
         state_path: join(fakeHome, 'sessions.json'),
       });
       const review = tools.find((t) => t.name === 'atomcode_review');

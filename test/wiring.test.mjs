@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, after } from 'node:test';
+import { requireDeadPort, sentinelPort } from './dead-port.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Every path here is a BUILD ARTIFACT (`npm run build`), not a source: the host
@@ -410,7 +411,8 @@ describe('lib/index.js — ask safety defaults', () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-safe-')), 'sessions.json');
     const { ctx, calls } = fakeCtx();
     const mod = await import(fileUrl(BRIDGE));
-    mod.apply(ctx, { state_path: statePath, auto_start: false, port: 45996 });
+    // Sentinel 8: inert mount (auto_start false, descriptor-only assertions).
+    mod.apply(ctx, { state_path: statePath, auto_start: false, port: sentinelPort(8) });
     const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
     // v0.3 defaulted to 0 (unlimited) alongside approval_mode: bypass, i.e.
     // "unattended autonomous agent with no ceiling" was the SHIPPED default.
@@ -546,13 +548,14 @@ describe('lib/index.js — cancelled startup', () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-cancel-')), 'sessions.json');
     const { ctx, calls } = fakeCtx();
     const mod = await import(fileUrl(BRIDGE));
-    // Nothing listens on this port, so ensureDaemon would otherwise poll for 30s
-    // (20 × 1.5s) before giving up.
+    // Sentinel 9 — and this one LOAD-BEARING: ensureDaemon fast-fails on the
+    // refusal instead of polling for 30s (20 × 1.5s) against a live-but-wrong
+    // daemon, so the case proves the port is actually free before relying on it.
     mod.apply(ctx, {
       state_path: statePath,
       auto_start: true,
       binary: 'definitely-not-a-real-binary-xyz-123',
-      port: 45999,
+      port: await requireDeadPort(sentinelPort(9)),
     });
     const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
     const ctrl = new AbortController();
@@ -1055,7 +1058,9 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     // default: with no plugin default, selection must refuse rather than pick a
     // billing channel. Naming one in the plugin config resolves that refusal.
     //
-    // Both direct entries point at DEAD LOOPBACK ports on purpose. The CLI's argv
+    // Both direct entries point at DEAD LOOPBACK ports on purpose — sentinels
+    // 11/12 from dead-port.mjs, verified before use because the assertion reads
+    // the port back out of the diagnostic. The CLI's argv
     // is not observable from here (the run dies at a missing binary), so "which
     // entry did selection pick" would otherwise be unassertable — and a weaker
     // version of this test passed vacuously: the fake binary fails identically for
@@ -1065,8 +1070,10 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     // precedence claim assertable in the positive direction.
     const fakeHome = mkdtempSync(join(tmpdir(), 'atomcode-dp-rev-'));
     mkdirSync(join(fakeHome, '.atomcode'), { recursive: true });
-    const FIRST = 'http://127.0.0.1:45981/v1';
-    const SECOND = 'http://127.0.0.1:45982/v1';
+    const FIRST_PORT = await requireDeadPort(sentinelPort(11));
+    const SECOND_PORT = await requireDeadPort(sentinelPort(12));
+    const FIRST = `http://127.0.0.1:${FIRST_PORT}/v1`;
+    const SECOND = `http://127.0.0.1:${SECOND_PORT}/v1`;
     writeFileSync(
       join(fakeHome, '.atomcode', 'config.toml'),
       [
@@ -1113,15 +1120,15 @@ describe('lib/index.js — default_provider / review_default_provider (two names
       assert.equal(r2.ok, false, 'the run still fails — at the dead endpoint, not at selection');
       assert.doesNotMatch(r2.error, /needs a repository/);
       assert.match(r2.error, /provider "second"/, 'the configured entry must be the one selected');
-      assert.match(r2.error, /45982/, 'and its base_url is what got probed');
-      assert.doesNotMatch(r2.error, /45981/, 'the other direct entry must not be touched');
+      assert.match(r2.error, new RegExp(String(SECOND_PORT)), 'and its base_url is what got probed');
+      assert.doesNotMatch(r2.error, new RegExp(String(FIRST_PORT)), 'the other direct entry must not be touched');
 
       // A per-call argument outranks the configured default — asserted in the
       // POSITIVE direction, which is what the earlier version could not do.
       const withArg = await mountReview({ review_default_provider: 'second' });
       const r3 = await withArg.execute({ working_dir: repo, task: 'noop', provider: 'first' }, {});
       assert.match(r3.error, /provider "first"/, 'the argument must win over the configured default');
-      assert.doesNotMatch(r3.error, /45982/, 'the pinned default must not be the one dialed');
+      assert.doesNotMatch(r3.error, new RegExp(String(SECOND_PORT)), 'the pinned default must not be the one dialed');
 
       // The namespaces stay apart: the ASK-side profile must not resolve the
       // review ambiguity, because "AtomGit-qwen3.8-27b" is not a billable direct
