@@ -39,6 +39,42 @@ function fileUrl(p) {
   return `file:///${p.replace(/\\/g, '/')}`;
 }
 
+/**
+ * The knobs `cordis.patch.yml` documents, as a user meets them: the direct
+ * children of a `config:` block.
+ *
+ * Scoped, rather than "every key sitting at 8 spaces of indentation". The bare
+ * indent pattern was the first version, and it cannot tell a config knob from
+ * any other YAML that lands on the same column — re-indenting or nesting a table
+ * would move the scan surface with nothing noticing. This walks the shape the
+ * file actually documents, and the caller feeds it planted samples so the walk
+ * itself is proven.
+ */
+function documentedKnobs(yaml) {
+  const keys = [];
+  let blockIndent = null;
+  let childIndent = null;
+  for (const line of yaml.split('\n')) {
+    if (/^\s*(#|$)/.test(line)) continue; // comments and blanks never move the cursor
+    const indent = line.match(/^\s*/)[0].length;
+    if (/^\s*config:\s*(#.*)?$/.test(line)) {
+      blockIndent = indent;
+      childIndent = null;
+      continue;
+    }
+    if (blockIndent === null || indent <= blockIndent) {
+      blockIndent = null; // dedented out of the config block
+      continue;
+    }
+    childIndent ??= indent;
+    // A KNOB is a documented SCALAR. `key:` with nothing after the colon is a
+    // nested block (a table of more keys), not something a user sets to a value.
+    const m = indent === childIndent ? /^([a-z][a-z0-9_]*):\s*\S/.exec(line.trim()) : null;
+    if (m) keys.push(m[1]);
+  }
+  return [...new Set(keys)].sort();
+}
+
 function fakeCtx() {
   const calls = { tools: [], effects: 0 };
   const tools = {
@@ -778,7 +814,7 @@ describe('lib/index.js — default_provider / review_default_provider (two names
   });
 
   it('every knob cordis.patch.yml documents is READ, and every knob read is documented', () => {
-    // Two directions, one disease: a hand-maintained correspondence with nothing
+    // two directions, one disease: a hand-maintained correspondence with nothing
     // watching it. A key the patch documents but `readConfig` never reads is a
     // knob the user can set with NOTHING happening (and the patch is the field
     // documentation of record, so that is where they will set it). A key
@@ -787,9 +823,20 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     // probes index, the release checklist), which is why this is a tripwire
     // rather than a repair: today the two sets agree exactly, 17 v 17.
     const yaml = readFileSync(join(__dirname, '..', 'cordis.patch.yml'), 'utf8');
-    const documented = [
-      ...new Set([...yaml.matchAll(/^\s{8}([a-z][a-z0-9_]*):/gm)].map((m) => m[1])),
-    ].sort();
+    const documented = documentedKnobs(yaml);
+    // The extraction must be able to say "no". Planted samples, so a reshaped or
+    // re-indented YAML cannot silently empty the scan surface (every knob then
+    // reads as "documented nowhere") or widen it (any key on the same column counts).
+    assert.deepStrictEqual(
+      documentedKnobs('a:\n  config:\n    port: 1\n    nested:\n      inner: 2\n  other: 3\n'),
+      ['port'],
+      'the knob scan must see scalar children of config only — not siblings, not nested blocks',
+    );
+    assert.deepStrictEqual(documentedKnobs('# no config block here\nfoo: 1\n'), []);
+    assert.ok(
+      documented.length >= 10,
+      `expected the patch to document the plugin's knobs, saw ${documented.length} — the scan surface is wrong, not the file`,
+    );
     const source = readFileSync(join(__dirname, '..', 'src', 'host', 'config.ts'), 'utf8');
     // `config.js` / `tsdown.config.mjs` are FILE names, not knobs — the only
     // false positive this pattern has ever produced.

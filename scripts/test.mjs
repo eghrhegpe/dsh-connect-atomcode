@@ -8,12 +8,15 @@
  *  1. The two LIVE suites (`*-live.test.mjs`) live in the same directory and must
  *     NOT join the offline gate — they touch the local daemon, and one of them is
  *     opt-in behind `ATOMCODE_LIVE_TURNS=1`. A directory glob would sweep them in.
- *  2. Serial execution is retained, and the reason is TIMING — not the build.
- *     Several suites mount against hardcoded "nothing is listening here" ports
- *     (`test/protocol.test.mjs` and `test/review.test.mjs` both use 45995), and
- *     one assertion sits inside an absolute deadline (`test/stats-route.test.mjs`
- *     waits 1600ms for a 1s start budget). Running files in parallel would trade
- *     that known serial cost for load-dependent flakes. An earlier version of
+ *  2. Serial execution is retained, and the reason is SHARED PORTS — not the
+ *     build. `test/protocol.test.mjs` and `test/review.test.mjs` both mount on
+ *     the same hardcoded "nothing is listening here" port (45995), and
+ *     `test/env-hermetic.test.mjs` uses 45992 for the same purpose. In parallel,
+ *     one suite's fake daemon could answer another suite's request — a
+ *     cross-suite coupling, not a load-dependent flake. (An earlier version also
+ *     cited a fixed 1600ms sleep in `test/stats-route.test.mjs`; that became a
+ *     `waitFor` poll on 2026-10-17 and is no longer an argument for serial.)
+ *     An earlier version of
  *     this note claimed `build-gate.test.mjs` rewrites `lib/` in place — it does
  *     not: `test/build-gate.test.mjs` overrides `outDir` and builds into
  *     `mkdtemp`, only READING the committed artifacts. Serialization outlived the
@@ -60,7 +63,22 @@ const inCI = process.env.GITHUB_ACTIONS === 'true' || process.env.CI === 'true';
  * table as everything else. Generous on purpose (the slowest suite is ~25s here,
  * ~1min in CI): this is a hang detector, not a performance gate.
  */
-const SUITE_TIMEOUT_MS = Number(process.env.ATOMCODE_SUITE_TIMEOUT_MS || 300_000);
+const DEFAULT_SUITE_TIMEOUT_MS = 300_000;
+const requestedSuiteTimeout = Number(process.env.ATOMCODE_SUITE_TIMEOUT_MS ?? DEFAULT_SUITE_TIMEOUT_MS);
+// A bad value must not DISABLE the detector. `Number('300s')` is NaN and
+// `Number('0')` is 0, and `spawnSync` reads both as "no timeout" — i.e. the one
+// moment someone reaches for this knob (a suite they think needs longer) is the
+// moment the hang detector silently stops existing. Say so, then use the default.
+if (!Number.isFinite(requestedSuiteTimeout) || requestedSuiteTimeout <= 0) {
+  console.warn(
+    `⚠ ATOMCODE_SUITE_TIMEOUT_MS=${process.env.ATOMCODE_SUITE_TIMEOUT_MS} is not a positive number of milliseconds` +
+      ` — using ${DEFAULT_SUITE_TIMEOUT_MS} (a value spawnSync cannot read would mean NO timeout at all)`,
+  );
+}
+const SUITE_TIMEOUT_MS =
+  Number.isFinite(requestedSuiteTimeout) && requestedSuiteTimeout > 0
+    ? requestedSuiteTimeout
+    : DEFAULT_SUITE_TIMEOUT_MS;
 
 /**
  * A ceiling in seconds, without pretending 1500ms is "2s": the per-suite table

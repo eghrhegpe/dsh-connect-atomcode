@@ -130,7 +130,7 @@ describe('测试环境自洽 — 判定不许取决于「谁在跑」', () => {
     const suites = readdirSync(TEST_DIR).filter((f) => f.endsWith('.test.mjs'));
     const scanners = suites.map((f) => {
       const text = readFileSync(join(TEST_DIR, f), 'utf8');
-      return { name: f, stripped: withoutComments(text), raw: text };
+      return { name: f, stripped: withoutComments(text) };
     });
     const mounting = scanners.filter((s) => mountsHostBundle(s.stripped));
     // Liveness: the scan surface must actually contain the suites we know mount the host.
@@ -138,8 +138,12 @@ describe('测试环境自洽 — 判定不许取决于「谁在跑」', () => {
       mounting.length >= 6,
       `扫描面不对：只认出 ${mounting.length} 个挂载 host 的套件（应 ≥6）——判据本身失效时这里就会红`,
     );
+    // Both sides read `stripped`. Mount detection already ignores comments; if the
+    // pin check did not, a suite that only MENTIONS `process.env.HOME` in prose
+    // ("we deliberately do not pin HOME because …") would be exempted from the very
+    // rule this test exists to enforce — the false green it is here to catch.
     const unpinned = mounting
-      .filter((s) => !/process\.env\.(HOME|USERPROFILE)/.test(s.raw) && !/state_path|statePath/.test(s.raw))
+      .filter((s) => !/process\.env\.(HOME|USERPROFILE)/.test(s.stripped) && !/state_path|statePath/.test(s.stripped))
       .map((s) => `test/${s.name}`);
     assert.deepEqual(
       unpinned,

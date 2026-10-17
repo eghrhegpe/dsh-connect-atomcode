@@ -79,8 +79,12 @@ function exposedPaths() {
 describe('发版产物 — npm 包声明的内容必须在磁盘上真实存在', () => {
   it('every `files` entry exists on disk', () => {
     const missing = (pkg.files ?? []).filter((entry) => !existsSync(join(ROOT, entry)));
-    assert.ok(missing.length >= 0); // liveness: the whitelist itself must have been read
-    assert.ok((pkg.files ?? []).length > 0, 'package.json 必须有 files 白名单');
+    // Liveness: a floor, not `missing.length >= 0` — that is true for every input
+    // including an empty whitelist, so it would have proved nothing.
+    assert.ok(
+      (pkg.files ?? []).length >= 5,
+      `expected the manifest to whitelist several paths, saw ${(pkg.files ?? []).length}`,
+    );
     assert.deepEqual(
       missing,
       [],
