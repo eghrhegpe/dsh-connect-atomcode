@@ -20,7 +20,7 @@
  * @module dsh-connect-atomcode/host/stats
  */
 import type { HealthFailure } from './daemon.ts';
-import type { StatsSnapshot } from '../shared/stats.ts';
+import type { InFlightTurn, StatsSnapshot } from '../shared/stats.ts';
 import { DAEMON_PROBE_TIMEOUT_MS } from './config.ts';
 
 /** Host-side status endpoint helper (read-only, same-origin). */
@@ -208,8 +208,47 @@ export interface StatsBag {
   /** A UNION across the mount, never replaced — see `askChat`. */
   protocolUnknownTypes: string[];
   // ── counters. `ask` carries tokens; `review` has no such reading ──────────
-  ask: { calls: number; ok: number; err: number; msTotal: number; tokens: number };
+  ask: {
+    calls: number;
+    ok: number;
+    err: number;
+    msTotal: number;
+    tokens: number;
+    /**
+     * The ask turn running right now, or null.
+     *
+     * Held as a live object (with a start TIMESTAMP) rather than as the wire
+     * shape: `elapsedMs` has to be computed when the snapshot is built, or the
+     * panel would either render a frozen age or do clock arithmetic against a
+     * server clock it cannot see. Cleared in a `finally` around the call, so
+     * every exit path — success, daemon error, timeout, fuse, cancel — ends the
+     * row; a "running" row that outlives its turn is worse than no row.
+     *
+     * ONE slot, so two overlapping asks show the newer one; the older turn's
+     * `finally` leaves it alone (identity check) and the row keeps describing
+     * whichever turn is actually running. A per-turn list would say "2 in
+     * flight" for a panel that can only usefully show one.
+     */
+    inFlight: LiveTurn | null;
+  };
   review: { calls: number; ok: number; err: number; msTotal: number };
+}
+
+/**
+ * An in-flight ask turn as the host tracks it: the wire fields plus the start
+ * timestamp they are derived from. See `InFlightTurn` (shared) for why the
+ * elapsed time is not sent as a timestamp.
+ */
+export interface LiveTurn {
+  startedAt: number;
+  workingDir: string | null;
+  provider: string;
+  rounds: number;
+  completed: number;
+  chars: number;
+  sessionId: string;
+  lastTool: string;
+  tokens: number;
 }
 
 /**
@@ -293,7 +332,7 @@ export function createStatsBag(seed: StatsSeed): StatsBag {
     defaults: seed.defaults,
     quotaDriftSeen: false,
     protocolUnknownTypes: [],
-    ask: { calls: 0, ok: 0, err: 0, msTotal: 0, tokens: 0 },
+    ask: { calls: 0, ok: 0, err: 0, msTotal: 0, tokens: 0, inFlight: null },
     review: { calls: 0, ok: 0, err: 0, msTotal: 0 },
   };
 }
@@ -425,7 +464,31 @@ export function buildStatsBody(stats: StatsBag, quota: any): StatsSnapshot {
       oldestAgeMs: stats.sessionsOldestAgeMs,
       error: stats.sessionsError,
     },
-    ask: stats.ask,
+    ask: { ...stats.ask, inFlight: viewInFlight(stats.ask.inFlight) },
     review: stats.review,
+  };
+}
+
+/**
+ * Turn the host's live record into the wire shape, or `null` when nothing is
+ * running.
+ *
+ * The elapsed time is measured HERE, at snapshot build time, so the client
+ * renders an age it was handed instead of subtracting two clocks — with a
+ * client/server offset it would otherwise show a turn that started in the
+ * future, which is the kind of number a reader trusts less than a blank.
+ */
+function viewInFlight(turn: LiveTurn | null): InFlightTurn | null {
+  if (!turn) return null;
+  return {
+    elapsedMs: Math.max(0, Date.now() - turn.startedAt),
+    rounds: turn.rounds,
+    completed: turn.completed,
+    chars: turn.chars,
+    sessionId: turn.sessionId,
+    lastTool: turn.lastTool,
+    tokens: turn.tokens,
+    workingDir: turn.workingDir,
+    provider: turn.provider,
   };
 }

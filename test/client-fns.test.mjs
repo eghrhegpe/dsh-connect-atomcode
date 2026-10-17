@@ -71,7 +71,7 @@ async function loadClient(fakeRequire) {
 }
 
 const mod = await loadClient();
-const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint, daemonStatusLine, protocolDriftNotice } = mod.__test;
+const { fmtDuration, fmtCountdown, quotaColor, liveRemaining, pctLabel, barWidth, quotaFacts, panelStyle, quotaView, providerRows, providerSelectModel, turnBoundaryRows, isLoopbackEndpoint, daemonStatusLine, protocolDriftNotice, inFlightText } = mod.__test;
 
 describe('client __test — the formatters are exposed', () => {
   it('exports every pure helper the panel renders through', () => {
@@ -89,6 +89,7 @@ describe('client __test — the formatters are exposed', () => {
       providerSelectModel,
       daemonStatusLine,
       protocolDriftNotice,
+      inFlightText,
     })) {
       assert.equal(typeof fn, 'function', `${name} must be callable from tests`);
     }
@@ -989,5 +990,51 @@ describe('turnBoundaryRows — patch-only knobs must not masquerade as live sett
     const rows = turnBoundaryRows({ approvalMode: 'bypass', ...HOST });
     assert.match(rows[0].title, /approval_mode/);
     assert.match(rows[0].title, /无人值守/);
+  });
+});
+
+describe('inFlightText — what the panel says while a turn is running', () => {
+  // The row exists because an `atomcode_ask` reply arrives in ONE piece: for the
+  // minutes a turn runs, the panel previously had a frozen counter and nothing
+  // else — indistinguishable from a hung plugin. The sentence below is the only
+  // thing on screen for that whole window, so its wording is behaviour.
+  const base = {
+    elapsedMs: 134_000,
+    rounds: 3,
+    completed: 2,
+    chars: 1200,
+    sessionId: 'sess-1',
+    lastTool: 'bash',
+    tokens: 0,
+    workingDir: null,
+    provider: 'Fake-Provider',
+  };
+
+  it('names the counts, the last tool, the size so far and the age', () => {
+    const text = inFlightText(base);
+    assert.match(text, /3 次工具调用/, 'the round count');
+    assert.match(text, /1 未回/, 'and how many are still waiting — a stuck turn is usually waiting on one');
+    assert.match(text, /最近 bash/, 'the tool name, not just a number');
+    assert.match(text, /1200 字/, 'how much has arrived — a SIZE, never the text itself');
+    assert.match(text, /2m14s/, 'the age, formatted by the same helper the rest of the panel uses');
+  });
+
+  it('says what has not happened yet instead of printing zeroes', () => {
+    // A bare `0 次工具调用` beside real counters reads as a stalled turn; the
+    // wording has to separate "just started" from "not moving".
+    const text = inFlightText({ ...base, elapsedMs: 400, rounds: 0, completed: 0, chars: 0, lastTool: '' });
+    assert.match(text, /尚无工具调用/);
+    assert.match(text, /尚无输出/);
+  });
+
+  it('never prints a negative outstanding count', () => {
+    // `completed` can exceed `rounds` only if a future daemon answers a call it
+    // never announced. The row must not read「（-1 未回）」.
+    const text = inFlightText({ ...base, rounds: 1, completed: 2 });
+    assert.doesNotMatch(text, /-/);
+  });
+
+  it('is exported to the offline suite like every other renderer helper', () => {
+    assert.equal(typeof inFlightText, 'function');
   });
 });

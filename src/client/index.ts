@@ -32,6 +32,7 @@ import {
   panelStyle,
 } from './quota.ts';
 import {
+  inFlightText,
   providerRows,
   providerSelectModel,
   turnBoundaryRows,
@@ -134,6 +135,7 @@ const REGISTRATION = {
       providerRows,
       providerSelectModel,
       turnBoundaryRows,
+      inFlightText,
       isLoopbackEndpoint,
       daemonStatusLine,
       protocolDriftNotice,

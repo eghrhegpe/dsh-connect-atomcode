@@ -18,6 +18,7 @@ import type { ProviderSlotName } from '../shared/stats.ts';
 export type {
   ConfigBranch,
   DaemonBranch,
+  InFlightTurn,
   ProtocolBranch,
   ProviderBranch,
   ProviderSlot,

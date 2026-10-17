@@ -31,7 +31,13 @@ import {
   quotaColor,
   windowLabel,
 } from './quota.ts';
-import { daemonStatusLine, protocolDriftNotice, providerRows, turnBoundaryRows } from './rows.ts';
+import {
+  daemonStatusLine,
+  inFlightText,
+  protocolDriftNotice,
+  providerRows,
+  turnBoundaryRows,
+} from './rows.ts';
 
 /** One render prop for `Row` / `Metric` / `CallStat` — see index.ts. */
 type NumProps = { num: number; label: string; color?: string };
@@ -378,6 +384,27 @@ export function createStatusSection(deps: StatusSectionDeps) {
               )
             ),
             h(Row, { label: 'ask 累计 tokens' }, String(ask.tokens)),
+            // Live row, rendered ONLY while a turn is running. Absent means "no
+            // turn in flight", which is the normal state — an always-present row
+            // would have to invent a value for it, and a fabricated `0 次工具调用`
+            // beside real counters reads as a stalled turn rather than an idle
+            // bridge. Numbers come from the same 5s poll as everything else, so
+            // they can lag by up to one interval; the tooltip says so rather
+            // than letting the reader assume a live socket.
+            ask.inFlight
+              ? h(
+                  Row,
+                  { label: 'ask 进行中' },
+                  h(
+                    'span',
+                    {
+                      title:
+                        '有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失',
+                    },
+                    inFlightText(ask.inFlight),
+                  ),
+                )
+              : null,
             h(Row, { label: 'ask 平均耗时' }, fmtDuration(askAvg)),
             h(Row, { label: 'review 平均耗时' }, fmtDuration(reviewAvg))
           ),

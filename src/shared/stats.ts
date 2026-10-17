@@ -155,6 +155,40 @@ export type UnknownRecord = Record<string, unknown>;
 /** Which of the two provider namespaces a control addresses. They are NOT interchangeable. */
 export type ProviderSlotName = 'ask' | 'review';
 
+/**
+ * A turn that is running RIGHT NOW, as read by a panel poll.
+ *
+ * An `atomcode_ask` turn is aggregated and returned in one piece, so between the
+ * call and its return the turn is a black box: minutes of tool calls, file
+ * writes and shell commands with nothing on screen. These fields exist so the
+ * 5s poll has something true to say in that window — counts and names only,
+ * never partial content (a second, worse copy of a deliverable is exactly what
+ * a progress channel should not become).
+ *
+ * `elapsedMs` is measured by the HOST when it builds the snapshot, not sent as a
+ * start timestamp: a client clock offset would otherwise print as a turn that
+ * started in the future.
+ */
+export interface InFlightTurn {
+  elapsedMs: number;
+  /** `tool_start` events seen so far (≥ agent rounds: parallel calls each count). */
+  rounds: number;
+  /** Calls that already have a result; `rounds - completed` are still in flight. */
+  completed: number;
+  /** Reply characters accumulated so far — a size, not the text. */
+  chars: number;
+  /** The session id once assigned; `''` before the daemon sends one. */
+  sessionId: string;
+  /** Name of the most recent tool call; `''` before the first one. */
+  lastTool: string;
+  /** Tokens reported so far; the daemon often only reports them at the end. */
+  tokens: number;
+  /** The directory this turn runs in; `null` = the daemon's own cwd. */
+  workingDir: string | null;
+  /** The model profile this turn was asked for. */
+  provider: string;
+}
+
 /** One tool's statistics counters inside the snapshot. */
 export interface ToolStats {
   calls: number;
@@ -162,6 +196,11 @@ export interface ToolStats {
   err: number;
   msTotal: number;
   tokens?: number;
+  /**
+   * Present ONLY while a turn of this tool is running. Absent means "nothing in
+   * flight", which is the normal state — not "unknown".
+   */
+  inFlight?: InFlightTurn | null;
 }
 
 /** The `binary` branch — which AtomCode binary the daemon was launched with. */

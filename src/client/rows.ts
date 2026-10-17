@@ -11,6 +11,7 @@ import type {
   BoundaryRow,
   ConfigBranch,
   DaemonBranch,
+  InFlightTurn,
   ProtocolBranch,
   ProviderBranch,
   ProviderRow,
@@ -18,8 +19,40 @@ import type {
   ProviderSlotName,
 } from './types.ts';
 import { isLoopbackBaseUrl } from '../shared/loopback.ts';
+import { fmtCountdown } from './quota.ts';
 
 // ── 启动情况（daemon 存活） ───────────────────────────────────────────────
+
+/**
+ * The one line for a turn that is running right now.
+ *
+ * An ask reply is aggregated and returned in ONE piece, so before this existed
+ * the panel had nothing true to say for the whole turn: a frozen counter and a
+ * minutes-long gap, indistinguishable from a hung plugin. This prints counts and
+ * names only — never partial content, which would become a second, worse copy of
+ * a deliverable rendered somewhere nobody asked for.
+ *
+ * The tool call that has NOT answered is named too (`rounds - completed`):
+ * "3 轮 · 1 未回" says a tool call is outstanding, which is what a turn that
+ * looks stuck is usually waiting on.
+ */
+export function inFlightText(turn: InFlightTurn): string {
+  const pending = Math.max(0, (turn.rounds || 0) - (turn.completed || 0));
+  const parts = [
+    `${turn.rounds || 0} 次工具调用${pending > 0 ? `（${pending} 未回）` : ''}`,
+    turn.lastTool ? `最近 ${turn.lastTool}` : '尚无工具调用',
+    // Characters accumulated, NOT the text: it answers "is it producing
+    // anything" without shipping the answer twice.
+    turn.chars > 0 ? `已收 ${turn.chars} 字` : '尚无输出',
+    // `fmtCountdown`, not `fmtDuration`: a turn runs in MINUTES, and
+    // `fmtDuration` renders those as a stopwatch (`134.0 s`), which is the
+    // wrong shape for the one number a waiting user actually reads. This helper
+    // already speaks minutes and hours (it formats the rolling-window reset),
+    // so the two long durations on the page now read the same way.
+    `已跑 ${fmtCountdown(Math.round((turn.elapsedMs || 0) / 1000))}`,
+  ];
+  return parts.join(' · ');
+}
 
 /**
  * The one line the panel puts on the bundle card about daemon liveness.

@@ -301,7 +301,19 @@ describe('entries die with their daemon — a restart is not a wall-clock event'
       // the same predicate over the same read, and a second implementation is
       // how the two would drift.
       assert.equal(store.count(), snap.tracked);
-      assert.equal(store.oldestAgeMs(), snap.oldestAgeMs);
+      // NOT `equal(store.oldestAgeMs(), snap.oldestAgeMs)`: each accessor takes
+      // its own `Date.now()`, so an exact equality here is a race with the
+      // clock — it failed as `5001 !== 5000` the moment a millisecond fell
+      // between the two calls. What the assertion is FOR is that the two agree
+      // on which keys are live, so the tolerance is wide enough to absorb the
+      // elapsed milliseconds and far too narrow to absorb a different filtered
+      // set (the keys here are 4s and 60s apart).
+      const reRead = store.oldestAgeMs();
+      assert.equal(typeof reRead, 'number', 'the second accessor must answer a number for a live key');
+      assert.ok(
+        Math.abs(reRead - snap.oldestAgeMs) < 1_000,
+        `both accessors must describe the same live set; got ${reRead} vs ${snap.oldestAgeMs}`,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

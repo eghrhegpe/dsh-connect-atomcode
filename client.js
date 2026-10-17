@@ -496,6 +496,28 @@
 //#endregion
 //#region src/client/rows.ts
 /**
+	* The one line for a turn that is running right now.
+	*
+	* An ask reply is aggregated and returned in ONE piece, so before this existed
+	* the panel had nothing true to say for the whole turn: a frozen counter and a
+	* minutes-long gap, indistinguishable from a hung plugin. This prints counts and
+	* names only — never partial content, which would become a second, worse copy of
+	* a deliverable rendered somewhere nobody asked for.
+	*
+	* The tool call that has NOT answered is named too (`rounds - completed`):
+	* "3 轮 · 1 未回" says a tool call is outstanding, which is what a turn that
+	* looks stuck is usually waiting on.
+	*/
+	function inFlightText(turn) {
+		const pending = Math.max(0, (turn.rounds || 0) - (turn.completed || 0));
+		return [
+			`${turn.rounds || 0} 次工具调用${pending > 0 ? `（${pending} 未回）` : ""}`,
+			turn.lastTool ? `最近 ${turn.lastTool}` : "尚无工具调用",
+			turn.chars > 0 ? `已收 ${turn.chars} 字` : "尚无输出",
+			`已跑 ${fmtCountdown(Math.round((turn.elapsedMs || 0) / 1e3))}`
+		].join(" · ");
+	}
+	/**
 	* The one line the panel puts on the bundle card about daemon liveness.
 	*
 	* `downMessage` is worded by the HOST (`describeDaemonDown`), and the tool errors
@@ -820,7 +842,7 @@
 				} }, h("span", { style: S.callGroupLabel }, "atomcode_review"), h(CallStat, {
 					num: review.calls,
 					label: "调用"
-				}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)), h(Row, { label: "review 平均耗时" }, fmtDuration(reviewAvg))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "CodingPlan 额度"), !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", null, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", null, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
+				}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), ask.inFlight ? h(Row, { label: "ask 进行中" }, h("span", { title: "有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失" }, inFlightText(ask.inFlight))) : null, h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)), h(Row, { label: "review 平均耗时" }, fmtDuration(reviewAvg))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "CodingPlan 额度"), !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", null, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", null, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
 					...S.metricNum,
 					color: quotaColor(quotaPct, quota.limited)
 				} }, pctLabel(quotaPct)), h("span", { style: S.metricLabel }, "当前时间窗口用量" + (liveResetSecs == null ? "" : " · " + fmtCountdown(liveResetSecs) + " 后重置"))), quotaPct == null ? null : h("div", { style: {
@@ -985,6 +1007,7 @@
 				providerRows,
 				providerSelectModel,
 				turnBoundaryRows,
+				inFlightText,
 				isLoopbackEndpoint: isLoopbackBaseUrl,
 				daemonStatusLine,
 				protocolDriftNotice,

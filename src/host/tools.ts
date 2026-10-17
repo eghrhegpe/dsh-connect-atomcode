@@ -23,6 +23,7 @@ import {
 } from './review.ts';
 import { isLoopbackBaseUrl } from '../shared/loopback.ts';
 import { describeDaemonDown } from './stats.ts';
+import type { LiveTurn } from './stats.ts';
 import {
   HOST_TOOL_TIMEOUT_MS,
   HOST_TOOL_TIMEOUT_SECS,
@@ -414,19 +415,46 @@ export function mountAskTool({
       // path uses: an explicit 0 is "no fuse", not a missing value. See
       // resolveMaxRounds — the two tools used to disagree about that word.
       const maxRounds = resolveMaxRounds(args.max_rounds, askMaxRounds);
-      const result = await askChat({
-        message: String(args.message || ''),
-        port,
-        approvalMode,
-        timeoutMs,
-        // Forwarded unconditionally, 0 included: dropping it here would be the
-        // same "0 is not honoured" bug one layer down.
-        maxRounds,
-        ...(sessionId ? { sessionId } : {}),
-        ...(askProvider ? { provider: askProvider } : {}),
-        ...(workDir ? { workingDir: workDir } : {}),
-        ...(exec?.signal ? { signal: exec.signal } : {}),
-      });
+      // Live progress for the panel's 5s poll — the whole point being that an
+      // ask turn runs for minutes and used to be a black box for every one of
+      // them. `startedAt` is taken BEFORE the request goes out rather than on
+      // the first event, so a turn that spends 40s before its first token still
+      // shows an honest age instead of appearing to start late.
+      const live: LiveTurn = {
+        startedAt: Date.now(),
+        workingDir: workDir || null,
+        provider: askProvider || 'default',
+        rounds: 0,
+        completed: 0,
+        chars: 0,
+        sessionId: '',
+        lastTool: '',
+        tokens: 0,
+      };
+      stats.ask.inFlight = live;
+      let result: Awaited<ReturnType<typeof askChat>>;
+      try {
+        result = await askChat({
+          message: String(args.message || ''),
+          port,
+          approvalMode,
+          timeoutMs,
+          // Forwarded unconditionally, 0 included: dropping it here would be the
+          // same "0 is not honoured" bug one layer down.
+          maxRounds,
+          ...(sessionId ? { sessionId } : {}),
+          ...(askProvider ? { provider: askProvider } : {}),
+          ...(workDir ? { workingDir: workDir } : {}),
+          ...(exec?.signal ? { signal: exec.signal } : {}),
+          onProgress: (progress) => Object.assign(live, progress),
+        });
+      } finally {
+        // Identity-checked, not a blind clear: the bag holds ONE in-flight slot
+        // (see `LiveTurn`), and the model can have two ask calls running at
+        // once — a blind `= null` from the first one to finish would blank the
+        // row of the turn that is still running.
+        if (stats.ask.inFlight === live) stats.ask.inFlight = null;
+      }
       stats.ask.msTotal += Date.now() - t0;
       if (result.ok) {
         stats.ask.ok += 1;

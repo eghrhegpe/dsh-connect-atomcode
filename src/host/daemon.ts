@@ -335,6 +335,38 @@ export interface StreamChatOptions {
   stopTimeoutMs?: number;
   extraHeaders?: Record<string, string>;
   signal?: AbortSignal;
+  /**
+   * Called as the turn advances, with a reading of where it has got to.
+   *
+   * The aggregate `askChat` returns is, by construction, only available once the
+   * turn is OVER — which left a turn that runs for minutes with nothing to show
+   * anywhere in between. This callback is the one place those in-between states
+   * exist. It must not throw (a broken observer must not be able to kill a live
+   * turn); `askChat` guards the call.
+   */
+  onProgress?: (progress: TurnProgress) => void;
+}
+
+/**
+ * A reading of a turn's progress, taken while it is still running.
+ *
+ * Deliberately counts and names rather than carries content: it feeds a 5s
+ * panel poll, and shipping the partial reply past the callback would invite a
+ * second, worse copy of the deliverable to be rendered somewhere.
+ */
+export interface TurnProgress {
+  /** `tool_start` events seen so far (≥ agent rounds: parallel calls each count). */
+  rounds: number;
+  /** Tool calls with a result already seen. `rounds - completed` are in flight. */
+  completed: number;
+  /** Reply characters accumulated so far. */
+  chars: number;
+  /** The session id, once the daemon has assigned one; `''` before that. */
+  sessionId: string;
+  /** Name of the most recent tool call, `''` before the first one. */
+  lastTool: string;
+  /** Tokens reported so far (the daemon may only report them at the end). */
+  tokens: number;
 }
 
 /**
@@ -516,7 +548,10 @@ export async function* streamChat(opts: StreamChatOptions) {
  */
 export async function askChat(opts: StreamChatOptions) {
   let reply = '';
-  const usedTools = [];
+  // Annotated rather than left to inference: `report()` reads this from a
+  // closure, and a closure reference pins the array's type at the point of the
+  // read — before the first `push`, so the element type could not be inferred.
+  const usedTools: Array<{ name: string; success: boolean | null }> = [];
   let done = null;
   let tokens = 0;
   let sessionId = '';
@@ -562,6 +597,29 @@ export async function askChat(opts: StreamChatOptions) {
    * precedence, so they are merged once, below, in the same order.
    */
   let eventError = '';
+  // Publish a reading after every event. The observer is called through a guard
+  // rather than directly: it crosses into the caller's code (which updates the
+  // panel's live state), and an exception there would abort a perfectly healthy
+  // turn from inside the aggregation loop — the reporter breaking the thing it
+  // reports on. Same rule the session store's `onError` observer follows.
+  const report = () => {
+    if (!opts.onProgress) return;
+    try {
+      opts.onProgress({
+        rounds: roundCount,
+        // `outstanding` holds the calls started but not yet answered, so this is
+        // the count of calls that DID get a result — not a second tally that
+        // could drift from `rounds`.
+        completed: usedTools.length - outstanding.length,
+        chars: reply.length,
+        sessionId,
+        lastTool: usedTools.length > 0 ? usedTools[usedTools.length - 1]!.name : '',
+        tokens,
+      });
+    } catch {
+      // Swallowed on purpose — see above.
+    }
+  };
   try {
     for await (const ev of streamChat(opts)) {
       if (ev.type === 'text') reply += String(ev.content || '');
@@ -601,6 +659,10 @@ export async function askChat(opts: StreamChatOptions) {
       else if (ev.type === 'done') done = ev;
       else if (ev.type === 'error' && eventError === '') eventError = String(ev.message || 'atomcode turn error');
       else if (ev && typeof ev.type === 'string' && !KNOWN_SSE_TYPES.has(ev.type)) unknownTypes.add(ev.type);
+      // After the branch, so the reading describes the event that just landed —
+      // one call site instead of one per event type, which is how a new event
+      // type ends up not counted anywhere.
+      report();
     }
   } catch (error: any) {
     streamError = String(error && error.message ? error.message : error);
