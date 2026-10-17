@@ -31,6 +31,10 @@
  *  4. `--coverage` runs the whole set in ONE process with Node's built-in
  *     `--experimental-test-coverage` (no dependency) so the report is a single
  *     aggregate table: `npm run coverage`.
+ *  5. Every suite has a WALL-CLOCK ceiling (`ATOMCODE_SUITE_TIMEOUT_MS`, default
+ *     300s). At the ceiling the child is SIGKILLed and the suite is reported as
+ *     `TIMEOUT` in the same table as every other failure — see SUITE_TIMEOUT_MS
+ *     below for why a hang detector is not just tidiness.
  *
  * The child's stdio is INHERITED, never piped: output streams live (a suite can
  * hold a port for seconds), and piped child stdio is what a confined sandbox
@@ -47,6 +51,23 @@ const testDir = join(root, 'test');
 const withCoverage = process.argv.includes('--coverage');
 /** GitHub Actions turns `::group::` lines into collapsible log blocks. */
 const inCI = process.env.GITHUB_ACTIONS === 'true' || process.env.CI === 'true';
+/**
+ * Wall-clock ceiling for ONE suite. Nothing is more expensive to diagnose than a
+ * suite that never returns: before this existed, a wedged suite (a port, a
+ * promise, a stream nobody ends) hung `npm test` until GitHub killed the job at
+ * its 6-hour cap — no failing suite name, no log tail. At the ceiling the child
+ * is SIGKILLed and reported as `TIMEOUT`, which is a NAMED failure in the same
+ * table as everything else. Generous on purpose (the slowest suite is ~25s here,
+ * ~1min in CI): this is a hang detector, not a performance gate.
+ */
+const SUITE_TIMEOUT_MS = Number(process.env.ATOMCODE_SUITE_TIMEOUT_MS || 300_000);
+
+/**
+ * A ceiling in seconds, without pretending 1500ms is "2s": the per-suite table
+ * prints the elapsed time next to this reason, and `TIMEOUT after 2s` beside a
+ * `1.5s` column reads as if the runner waited longer than it did.
+ */
+const asSecs = (ms) => `${ms % 1000 === 0 ? ms / 1000 : (ms / 1000).toFixed(1)}s`;
 
 const all = readdirSync(testDir)
   .filter((f) => f.endsWith('.test.mjs'))
@@ -81,8 +102,14 @@ if (withCoverage) {
   const result = spawnSync(
     process.execPath,
     ['--test', '--test-reporter=spec', '--experimental-test-coverage', ...files],
-    { stdio: 'inherit' },
+    // One process means one budget for all of them: a per-suite ceiling is
+    // meaningless here, so the aggregate ceiling is the same number scaled by the
+    // suite count. Still bounded, which is the point.
+    { stdio: 'inherit', timeout: SUITE_TIMEOUT_MS * files.length, killSignal: 'SIGKILL' },
   );
+  if (result.error?.code === 'ETIMEDOUT') {
+    console.error(`\ncoverage run TIMEOUT after ${SUITE_TIMEOUT_MS * files.length}ms (killed)`);
+  }
   process.exit(result.status ?? 1);
 }
 
@@ -93,15 +120,22 @@ for (const file of files) {
   const started = Date.now();
   const result = spawnSync(process.execPath, ['--test', '--test-reporter=spec', file], {
     stdio: 'inherit',
+    timeout: SUITE_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
   });
   const ms = Date.now() - started;
+  const timedOut = result.error?.code === 'ETIMEDOUT';
   if (inCI) console.log('::endgroup::');
   rows.push({
     name,
     ms,
     status: result.status,
-    ok: result.status === 0,
-    how: result.signal ? `signal ${result.signal}` : `exit ${result.status}`,
+    ok: result.status === 0 && !timedOut,
+    how: timedOut
+      ? `TIMEOUT after ${asSecs(SUITE_TIMEOUT_MS)} (SIGKILLed)`
+      : result.signal
+        ? `signal ${result.signal}`
+        : `exit ${result.status}`,
   });
 }
 

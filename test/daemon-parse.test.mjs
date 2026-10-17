@@ -3,6 +3,8 @@
  * No daemon or network required.
  */
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   DEFAULT_PORT,
@@ -11,6 +13,21 @@ import {
   defaultBinary,
   spawnDaemon,
 } from '../lib/daemon.js';
+
+/**
+ * Poll until `cond()` holds, or fail with a NAMED timeout. A fixed sleep is a
+ * guess about how fast the machine is (these were 400/600ms) and turns a slow CI
+ * runner into a red suite that says nothing; polling a condition the code really
+ * produces is the same test with a margin it can state out loud.
+ */
+async function waitFor(cond, what, { timeoutMs = 3000, stepMs = 10 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (cond()) return;
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+  assert.fail(`timed out after ${timeoutMs}ms waiting for ${what}`);
+}
 
 describe('daemon.js — pure helpers', () => {
   it('DEFAULT_PORT is 13459', () => {
@@ -85,8 +102,12 @@ describe('daemon.js — spawnDaemon', () => {
       log: (message) => logs.push(message),
     });
     assert.equal(attempted, true, 'the boolean means "a spawn was attempted", not "it succeeded"');
-    // Give the async 'error' event a chance to arrive.
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // The 'error' event is async; poll for the log line instead of guessing how
+    // long a loaded CI runner needs.
+    await waitFor(
+      () => logs.some((line) => /spawn failed/i.test(line)),
+      'the async spawn failure to be reported through log()',
+    );
     assert.ok(
       logs.some((line) => /spawn failed/i.test(line)),
       `the async spawn failure must be reported through log(); got ${JSON.stringify(logs)}`,
@@ -98,13 +119,21 @@ describe('daemon.js — spawnDaemon', () => {
     // missing binary. This asserts the REPORT, not just survival: the earlier
     // version's `assert.ok(Array.isArray(logs))` was a tautology that could only
     // fail by killing the process.
+    //
+    // The path is built from `os.tmpdir()` + a name that cannot exist, NOT a
+    // Windows literal like `Z:\...`: on a machine that really has a Z: drive the
+    // old fixture would name an EXISTING directory and the test would fail for
+    // the wrong reason. Unique per run so a leftover directory cannot make it pass.
     const logs = [];
     await spawnDaemon({
       binary: process.execPath,
-      workingDir: 'Z:\\definitely\\not\\a\\real\\directory\\xyz',
+      workingDir: join(tmpdir(), `atomcode-no-such-cwd-${process.pid}-${Date.now()}`),
       log: (message) => logs.push(message),
     });
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await waitFor(
+      () => logs.some((line) => /spawn failed/i.test(line)),
+      'a bad cwd to be reported through log()',
+    );
     assert.ok(
       logs.some((line) => /spawn failed/i.test(line)),
       `a bad cwd must be reported through log(); got ${JSON.stringify(logs)}`,
@@ -120,6 +149,9 @@ describe('daemon.js — spawnDaemon', () => {
       log: 'not-a-function',
     });
     assert.equal(attempted, true);
+    // The only fixed sleep left in this file, and it stays one: this test passes
+    // by NOT dying, so there is no condition to poll. The wait is the test —
+    // long enough for an uncaught exception to take the process down.
     await new Promise((resolve) => setTimeout(resolve, 400));
   });
 });
