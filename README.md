@@ -62,7 +62,7 @@ bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行
 - **没给出目录就拒绝执行**：`approval_mode: bypass` 且三层都取不到 `working_dir` 时，`atomcode_ask` 在**碰 daemon 之前**就拒绝这一回合——否则它的工具会跑在 daemon 自己的 cwd（通常是用户 home）里且无人值守。这与 `atomcode_review` 拒绝缺目录是同一条红线，只是 review 从最初就拒绝，ask 此前只在**回合跑完之后**打印一句提示（警告晚于它警告的事）。确实只做通用问答时，显式传 `allow_unattended: true` 表示知情同意
 - **`ask_max_rounds: 25` 是止损不是远端 kill**：熔断按 `tool_start` 事件数断开客户端流，daemon 侧回合不保证停（一次 agent 回合还可能含多次并行调用）；对一个能写文件、执行 shell 的 agent，25 次足以造成实质损害
 - **这是设计决策，不是 bug**：修掉它需要让 `atomcode_ask` 的 approval 跟随 DSH 的会话权限，而 DSH 目前不暴露稳定的权限接口给插件侧
-- **共享仓库请务必把 `approval_mode` 改成非 bypass**（面板无输入口，改 patch；详情页「回合边界」行会显示是你改过还是插件默认）。注意 `docs/DECISIONS.md` 对此有相反的一条记录——非 bypass 会让无人值守回合卡在交互审批上，两条口径尚未统一，按你的场景权衡
+- **共享仓库的保护不在 `approval_mode` 上**（2026-10-17 实测撤回旧建议，见 `docs/DECISIONS.md`）：headless daemon 在**非 bypass** 时也会自动放行 ask 类工具（`[headless] auto-approved`），"改成非 bypass"既造不出人审门，还会丢掉只在 bypass 组合上触发的「缺目录就拒绝」门——**把 `approval_mode` 留在 `bypass`、把 `working_dir` 钉死**才是唯一有效的无人值守约束；真不想让工具进某个仓库，正确的做法是不让 `atomcode_ask` 指向它（`working_dir` 就是它的读写边界）。该字段的合法值是 `build | accept_edits | bypass | plan` 四者（daemon 对其它值 422，包括单测里用的 `on-request`），面板无输入口，改它要动 patch；详情页「回合边界」行会显示是你改过还是插件默认
 
 ## ⚠️ 已知限制：`atomcode_review` 与 AtomGit 网关
 
@@ -96,7 +96,7 @@ provider（本机实测通路是本地代理），否则插件会在调用前就
 | `port` | `13459` | ask 用的 daemon 端口（避开 TUI 的 13456） |
 | `auto_start` | `true` | 探测不到 daemon 时 detached 拉起。**面板或额度标签一被轮询就会触发**（ask 路径也会），不再是"等第一次调工具才拉" |
 | `binary` | `''` | 二进制名/路径（空 = PATH；`ATOMCODE_BIN` 亦可） |
-| `approval_mode` | `bypass` | ask 回合内 AtomCode 侧工具审批；共享仓库慎用无人值守。**它同时是「缺目录就拒绝」那个门的开关**：bypass + 取不到 `working_dir` = 拒绝该回合。面板**不提供输入框**，只能在 patch 里改——详情页「回合边界」会标出这是插件默认还是你改过 |
+| `approval_mode` | `bypass` | ask 回合内 AtomCode 侧工具审批；合法值 `build / accept_edits / bypass / plan`（其余值 daemon 422）。⚠️ 2026-10-17 实测：无人值守下**非 bypass 也自动放行 ask 类工具**，改它不形成人审门，**且「缺目录就拒绝」的门只在 bypass 组合上触发**——改成非 bypass 等于把这道门也关掉。面板**不提供输入框**，只能在 patch 里改——详情页「回合边界」会标出这是插件默认还是你改过 |
 | `default_provider` | `''` | **ask 路径**缺省的**模型档位名**（如 `AtomGit-glm5.3-flash`）。优先级：调用参数 `provider` > **详情页面板里选的档位** > 本字段 > AtomCode 自己在 `config.toml` 里的默认。**空 = 本层不插手**（再往下交给面板选择/AtomCode）。详见「怎么换模型」 |
 | `review_default_provider` | `''` | **review 路径**缺省的**直连条目名**（`[providers.<name>]`，如 `atomcode-local`）。⚠️ 与上一行**不是同一个命名空间**：把 `AtomGit-*` 填这里等于给 CLI 一个它认不出的计费通道。优先级同上（面板的 review 下拉是独立一格）。空 = 沿用自动选择（config.toml 的 `default_provider` 可用则用 → 唯一直连条目顶上 → 多个则要求点名，不猜） |
 | `working_dir` | `''` | ask 回合的缺省工作目录（同时是侧边对话的会话键）。空 = 交给调用参数 / 宿主会话 cwd；**这三层都取不到、而 `approval_mode` 又是 `bypass` 时，ask 会拒绝该回合**（不放行无人值守的工具调用跑在用户 home 里），除非调用方传 `allow_unattended: true`。面板**不提供输入框**，只能在 patch 里改；详情页「回合边界」标出你改过没有 |

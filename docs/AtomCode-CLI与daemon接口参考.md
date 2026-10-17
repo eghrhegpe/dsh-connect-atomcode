@@ -221,11 +221,21 @@ reasoning         {content}                 (增量)
 text              {content}                 (增量)
 tool_start        {name}
 tool_result       {success}
+tool_batch        {}                        ← 并行工具批次的标记（2026-10-17 实测）
 tokens            {prompt, completion, total}
 done              {tokens, tool_calls, session_id, stats:{duration_ms,rounds,tool_calls,prompt_tokens,completion_tokens,cached_tokens}, stop_reason}
 error             {message}
 rate_limited      {reset_at_display, reset_label, secs_until_reset, auto_resuming, server_message}   ← 只在被限流时出现
 ```
+
+> 客户端词汇里还有 `permission_request {call_id, tool_name, reason, arguments, allow_all_bash}`、`user_input_request`、`policy_intervention` 三个事件（SPA 包内字符串），但**无人值守回合实测不出现**（2026-10-17，见下节）：headless daemon 对 ask 类工具自动放行，不会发请求等人答。
+
+### `approval_mode` 的合法值与无人值守行为 `[实测 2026-10-17，5.2.3]`（探针：`scripts/probes/approval-mode.mjs`）
+
+- **合法值是封闭枚举 `build | accept_edits | bypass | plan`**：未知值在**模型调用之前**被 422 参数门拒绝（复用 `chat-stop.mjs` 的 422 技巧，零额度）——原文：`unknown variant ... expected one of 'build', 'accept_edits', 'bypass', 'plan'`。本仓库单测里用的 `on-request` **不是**合法值（只有 test/ 的假 daemon 收过它）。
+- **非 bypass 的无人值守回合不会卡在审批上**：`build` 与 `accept_edits` 下强制命令类工具（bash 写文件）的回合全程**零 `permission_request`**，命令被自动放行执行（`tool_result success=true`），7~8s 收口（flash 档位）。二进制里有 `[headless] auto-approved` 字符串与之吻合；本机 `~/.atomcode/config.toml` 无 approval / yolo / ask-timeout 键，故是 **daemon 设计而非本机配置**。
+- **应答通道存在但只对有客户端的上下文有意义**：SPA 经 `POST /chat/permission {session_id, decision, tool_name}` 应答审批（`decision` 即 Y/A/N），`POST /chat/user-input` 应答用户提问；无人值守的 `/chat` 回合没有这样的应答者，daemon 直接自动放行。
+- UI 模式语义（SPA i18n 原文）：`build` = "Approve each change (default)"，`accept_edits` = "Auto-approve file edits, ask for commands"，`bypass`/Auto = 全放行，`plan` = 计划模式。
 
 > `done.stats` **没有额度字段**（只有 token 明细）；额度只在 `POST /command {command:"status"}` 的 `text` 里。
 

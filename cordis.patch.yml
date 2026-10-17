@@ -46,8 +46,15 @@
         binary: ''
         # Approval mode for bridged ask turns: bypass = AtomCode's own tools
         # run unattended inside the turn. (This is AtomCode-side autonomy,
-        # independent of DSH's permission presets — review the trade-off
-        # before leaving it on in a shared repo.) Because bypass removes the
+        # independent of DSH's permission presets.) Accepted values are the
+        # closed enum `build | accept_edits | bypass | plan` (5.2.3: anything
+        # else is 422'd before the model call). Measured 2026-10-17
+        # (scripts/probes/approval-mode.mjs): an UNATTENDED daemon auto-approves
+        # the ask-class even when this is NOT bypass (`[headless]
+        # auto-approved`), so switching it off buys no human gate and DROPS the
+        # missing-directory refusal below — keep `bypass` plus a pinned
+        # working_dir; point ask at a shared repo only if you mean it.
+        # Because bypass removes the
         # human from the loop, it also gates the missing-directory case: with
         # bypass on, an ask turn that resolves no working_dir is refused rather
         # than run in the daemon's own cwd. See `working_dir` below.
