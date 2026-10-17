@@ -541,5 +541,7 @@ export function beginInFlight(stats: StatsBag, turn: LiveTurn): void {
 export function endInFlight(stats: StatsBag, turn: LiveTurn): void {
   const at = stats.askLive.indexOf(turn);
   if (at >= 0) stats.askLive.splice(at, 1);
-  stats.ask.inFlight = stats.askLive.length > 0 ? stats.askLive[stats.askLive.length - 1] : null;
+  // `?? null` because indexing is `LiveTurn | undefined` under
+  // `noUncheckedIndexedAccess` — the length check is what makes it real.
+  stats.ask.inFlight = (stats.askLive.length > 0 ? stats.askLive[stats.askLive.length - 1] : null) ?? null;
 }

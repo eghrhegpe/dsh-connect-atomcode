@@ -8,7 +8,7 @@
  * `src/shared/` directory (both `loopback.ts` and `stats.ts`) was still
  * undocumented. Nothing told the reader that half the code was invisible.
  *
- * This suite pins the map to the real tree in three directions:
+ * This suite pins the map to the real tree in four directions:
  *
  *  1. Every `src/host/*.ts` shows up in the map (forward: source → docs).
  *  2. Every `src/shared/*.ts` shows up in the map (forward: source → docs).
@@ -16,6 +16,12 @@
  *     line, and the other direction: every `src/host/*.ts` is either mapped to a
  *     real `lib/*.js` on disk, or annotated as inlined. This is the check that
  *     catches a stale artifact or a stale map line the moment either drifts.
+ *  4. Every `src/client/*.ts` is named on the map as landing in `client.js`, and
+ *     every `src/client/*.ts` line names a file that exists. The client half used
+ *     to be asserted only as "`index.ts` exists" plus "the `src/client/*.ts →
+ *     client.js` wildcard shape appears somewhere", so it drifted the same way the
+ *     host half once did: `status-section.ts` and `quota-chip.ts` landed and the
+ *     map never mentioned them. A wildcard is not a map.
  *
  * It reads both files as TEXT. This is deliberate: importing `lib/*.js` from
  * `src/*.ts` is what `test/wiring.test.mjs` documents as unsafe (module
@@ -119,9 +125,35 @@ describe('docs/README.md 代码地图 — must not fall behind src/ or lib/', ()
     );
   });
 
-  it('src/client/index.ts exists (it is the client IIFE entry, named in the map)', () => {
+  // The client half is a MULTI-FILE BUNDLE: every `src/client/*.ts` lands in the
+  // same `client.js`, so the map names them individually instead of writing
+  // `src/client/*.ts` once. That wildcard shape is exactly what let this map fall
+  // behind — `status-section.ts` and `quota-chip.ts` were added and the map (and
+  // its gate) never mentioned them, because the only client assertions were
+  // "index.ts exists" and "the `src/client/*.ts → client.js` shape appears".
+  // Both directions are pinned now, mirroring the host assertions above.
+  const CLIENT_MAP_LINE = /^src\/client\/([\w.-]+\.ts)\s*(?:→|-->)\s*client\.js/gm;
+  const clientMapped = new Set();
+  for (const m of MAP.matchAll(CLIENT_MAP_LINE)) clientMapped.add(m[1]);
+
+  it('every src/client/*.ts is named on the map with client.js as its artifact', () => {
     assert.ok(listTs('client').includes('index.ts'), 'src/client/index.ts must exist (it is the tsdown client entry)');
     assert.ok(MAP.includes('src/client/'), 'map must mention the src/client/ directory');
-    assert.ok(/src\/client\/\*\.ts/.test(MAP), 'map must show the src/client/*.ts → client.js shape (multi-file bundle)');
+    const missing = listTs('client').filter((f) => !clientMapped.has(f));
+    assert.deepStrictEqual(
+      missing,
+      [],
+      `docs/README.md 代码地图 is missing these src/client files: ${missing.join(', ')} — 渲染端每个源文件都要在图上点名（它们都被 bundle 进 client.js），别写 src/client/*.ts 这种通配符`,
+    );
+  });
+
+  it('every src/client line on the map names a source that exists', () => {
+    const onDisk = new Set(listTs('client'));
+    const dangling = [...clientMapped].filter((f) => !onDisk.has(f));
+    assert.deepStrictEqual(
+      dangling,
+      [],
+      `docs/README.md 代码地图 names src/client files that do not exist: ${dangling.join(', ')}`,
+    );
   });
 });

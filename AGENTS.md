@@ -275,6 +275,11 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
   （产物 `lib/index.js` 由构建生成，手改它等于没改）。
   **2026-10-16 补上这条断言**：此前这条纪律只写在文档里，而 `build-gate` 只比 `lib/` 与 `src/`、
   从不看 manifest——「只改一处」就是那样能悄悄漂开的。`cordis.patch.yml` 没有 version 字段。
+  **第三处是禁止的**：注释/文档字符串里不许写 `vX.Y.Z` 标签（写事件名——
+  `the apply() split` / `the abort path`，不写版本号）。旧纪律是「发版时 grep 一遍对齐」，
+  它失效过一次：手册把数量写死成 8 处，真去数时已经是 13 处。现在由 `test/wiring.test.mjs` 的
+  「no src/ or test/ file carries a vX.Y.Z release label in prose」断言（扫 `src/` + `test/` + `tsdown.config.mjs`），
+  漏一处就红并报出行号；理由与迁移过程见 `docs/RELEASING.md` §3.1。
   **发版打 git tag**：`git tag v<package.json version>`（两处手改 + `npm run build` 产物落定后再打；
   推荐先等 push master 的 CI 绿了再打 tag，顺序见 `docs/RELEASING.md` §6.1）。
   「某版本是哪次提交」回看 `git tag`，行为史靠 `CHANGELOG.md` + `git log --date=short`。

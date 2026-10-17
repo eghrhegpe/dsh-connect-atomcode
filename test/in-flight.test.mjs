@@ -271,6 +271,35 @@ describe('atomcode_ask — the panel can see a turn while it is in flight', () =
     fake.server.close();
   });
 
+  it('the NEWEST turn finishing first still leaves the older one visible', async () => {
+    // The ordering the identity check alone could not see. The slot holds the
+    // NEWEST turn, so when THAT one finishes first, a plain `= null` blanks the
+    // row while the older turn is still executing — the panel then claims
+    // nothing is in flight during a turn that is. `endInFlight` recomputes the
+    // slot from the set of live turns, which covers both orderings.
+    const fake = await startHoldDaemon({});
+    const { ask, routes } = await mount(fake.port, { approval_mode: 'bypass', working_dir: 'C:\\repo' });
+
+    const first = ask.execute({ message: 'one', working_dir: 'C:\\repo' }, {});
+    await waitFor(() => fake.chats.length === 1, 'the first turn to reach the daemon');
+    const second = ask.execute({ message: 'two', working_dir: 'C:\\repo' }, {});
+    await waitFor(() => fake.chats.length === 2, 'the second turn to reach the daemon');
+
+    const both = await readStats(routes);
+    assert.equal(both.ask.inFlight.sessionId, 'sess-2', 'the newest turn is the one the single row describes');
+
+    fake.release(1); // the NEWEST finishes FIRST — the case the old clear got wrong
+    await second;
+    const mid = await readStats(routes);
+    assert.ok(mid.ask.inFlight, 'the older turn is still running: the row must not vanish');
+    assert.equal(mid.ask.inFlight.sessionId, 'sess-1', 'and it must fall back to describing the older turn');
+
+    fake.release(0);
+    await first;
+    const after = await readStats(routes);
+    assert.equal(after.ask.inFlight, null, 'when the last one ends the row goes away');
+  });
+
   it('a turn that finishes does not blank a DIFFERENT turn still running', async () => {
     // One slot in the bag, and the model can have two ask calls in flight. The
     // clear is identity-checked for exactly this: a blind `= null` from

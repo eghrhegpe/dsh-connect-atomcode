@@ -263,6 +263,7 @@ describe('stats route — snapshot shape the panel depends on', () => {
       'binary.configured',
       'binary.source',
       'config.approvalMode',
+      'config.approvalModeRejected',
       'config.defaultWorkingDir',
       // Both provider knobs. `providerRows()` in the card dereferences them, and
       // an UNSET knob must arrive as an explicit null — a missing key would make
@@ -1070,17 +1071,21 @@ describe('stats route — auto-start on observation', () => {
         'restating the default is not departing from it'
       );
 
-      // A real departure IS reported.
+      // A real departure IS reported. `accept_edits` is a LEGAL non-default value
+      // (the closed enum is build | accept_edits | bypass | plan); this used to
+      // say `ask`, which the daemon 422s — the test was configuring a value the
+      // plugin would have forwarded straight into a failed turn.
       const dir3 = mkdtempSync(join(tmpdir(), 'atomcode-authored3-'));
       try {
         const changed = mountRoute({
           statePath: join(dir3, 'sessions.json'),
           port: CLOSED_PORT,
-          extra: { approval_mode: 'ask', ask_max_rounds: 40, working_dir: 'D:\\repo' },
+          extra: { approval_mode: 'accept_edits', ask_max_rounds: 40, working_dir: 'D:\\repo' },
         });
         const c = (await callRoute(changed, { headers: { host: '127.0.0.1:3080' } })).body;
         assert.deepEqual(c.config.authored, { approvalMode: true, workingDir: true, askMaxRounds: true });
-        assert.equal(c.config.approvalMode, 'ask');
+        assert.equal(c.config.approvalMode, 'accept_edits');
+        assert.equal(c.config.approvalModeRejected, null, 'a legal value is not a rejection');
         assert.equal(c.config.askMaxRounds, 40);
         assert.equal(c.config.defaultWorkingDir, 'D:\\repo');
       } finally {
@@ -1089,6 +1094,56 @@ describe('stats route — auto-start on observation', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an off-enum approval_mode at boot and names the value it refused', async () => {
+    // `approval_mode` is a CLOSED enum at the daemon (`build | accept_edits |
+    // bypass | plan`, measured through the 422 parameter gate — see
+    // `scripts/probes/approval-mode.mjs`). The plugin used to check only "is a
+    // non-empty string", so a typo travelled untouched from the patch file to
+    // every `/chat` and the first symptom was each turn failing with a daemon
+    // error. Now the value is refused here and the refused spelling rides along
+    // on the snapshot, because the panel must not label the fallback as the
+    // user's choice — and `authored` alone cannot carry that (it is derived from
+    // the RESOLVED value, which equals the default).
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-approval-'));
+    try {
+      const mounted = mountRoute({
+        statePath: join(dir, 'sessions.json'),
+        port: CLOSED_PORT,
+        extra: { approval_mode: 'accept-edits' },
+      });
+      const body = (await callRoute(mounted, { headers: { host: '127.0.0.1:3080' } })).body;
+      assert.equal(body.config.approvalMode, 'bypass', 'the fallback is what the code honours');
+      assert.equal(
+        body.config.approvalModeRejected,
+        'accept-edits',
+        'the refused spelling must reach the panel instead of vanishing',
+      );
+      assert.equal(
+        body.config.authored.approvalMode,
+        false,
+        'authored stays false (the resolved value IS the default) — which is exactly why the separate field is needed',
+      );
+
+      // A legal value reports no rejection, so the panel's "（已改）" path is unchanged.
+      const dir2 = mkdtempSync(join(tmpdir(), 'atomcode-approval2-'));
+      try {
+        const legal = mountRoute({
+          statePath: join(dir2, 'sessions.json'),
+          port: CLOSED_PORT,
+          extra: { approval_mode: 'accept_edits' },
+        });
+        const ok = (await callRoute(legal, { headers: { host: '127.0.0.1:3080' } })).body;
+        assert.equal(ok.config.approvalMode, 'accept_edits');
+        assert.equal(ok.config.approvalModeRejected, null);
+        assert.equal(ok.config.authored.approvalMode, true);
+      } finally {
+        rmSync(dir2, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

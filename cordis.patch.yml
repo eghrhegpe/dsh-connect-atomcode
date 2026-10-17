@@ -61,6 +61,9 @@
         # No panel input exists for this field: the detail page's 回合边界 card only
         # REPORTS it, and labels whether the value is this default or one you set
         # (the label comes from config.authored, not from comparing the value).
+        # A value OUTSIDE that enum is refused at boot rather than forwarded: the
+        # daemon would 422 every single turn, so readConfig falls back to `bypass`
+        # and the card names the spelling it refused.
         approval_mode: bypass
         # Which AtomCode MODEL bridged turns ask for when the call does not name
         # one. Value = the model PROFILE name, i.e. the `provider` field of

@@ -1148,6 +1148,11 @@ describe('version truth — the manifest and the reported version cannot disagre
   // names the release tag (`git tag v<version>`) and the npm publish, so a
   // mismatch here would mislabel both.
   //
+  // The third place — release numbers written into PROSE (`// the 0.4.3 split`) —
+  // is not tracked but BANNED, asserted by the last test in this block. The
+  // release runbook used to list those labels as a thing to hand-check; a list
+  // that only a human counts is a list that drifts.
+  //
   // Reading `src/` as TEXT (never importing it) is deliberate and safe here. The
   // "tests hit artifacts, not sources" rule exists for module identity — see the
   // `setSpawnOverride` note at the top of this file — and a text read shares no
@@ -1166,6 +1171,53 @@ describe('version truth — the manifest and the reported version cannot disagre
     assert.ok(
       built.includes(`version: "${pkg.version}"`),
       `lib/index.js must be built from a source reporting ${pkg.version}`,
+    );
+  });
+
+  // The THIRD version place, and the reason this test exists at all.
+  //
+  // Comments have always said things like "the split of the God module" with the
+  // release number glued on, and the release runbook had to admit it could not
+  // pin them: the labels are prose, so nothing could tell "8 of them" from "9 of
+  // them" — and by the time anyone counted, the docs were already one release
+  // behind. A metric nobody can check is not a discipline; it is a claim.
+  //
+  // So the rule is now a BAN rather than a count: name the EVENT ("the apply()
+  // split", "the abort path", "the earlier gate"), never the release, in any
+  // source or test comment. The release number belongs in exactly two hand-edited
+  // places (asserted above) plus CHANGELOG.md, which is generated from git log.
+  //
+  // This is what makes the ban enforceable rather than aspirational: a `vX.Y.Z`
+  // token anywhere in `src/`, `test/` or `tsdown.config.mjs` fails here, so the
+  // next "it's just a comment" version tag cannot land.
+  it('no src/ or test/ file carries a vX.Y.Z release label in prose', () => {
+    const ROOT = join(__dirname, '..');
+    const roots = [join(ROOT, 'src'), join(ROOT, 'test')];
+    const files = [join(ROOT, 'tsdown.config.mjs')];
+    const walk = (dir) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, entry.name);
+        if (entry.isDirectory()) walk(p);
+        else if (entry.name.endsWith('.ts') || entry.name.endsWith('.mjs')) files.push(p);
+      }
+    };
+    for (const r of roots) walk(r);
+
+    const offenders = [];
+    for (const p of files) {
+      readFileSync(p, 'utf8')
+        .split(/\r?\n/)
+        .forEach((line, i) => {
+          if (/v\d+\.\d+\.\d+/.test(line)) {
+            offenders.push(`${p.slice(ROOT.length + 1)}:${i + 1}: ${line.trim()}`);
+          }
+        });
+    }
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      'release numbers must not appear in src/ or test/ prose — name the event instead ("the apply() split", "the abort path", "the earlier gate"). The version lives in package.json + the src/host stats body (asserted above); the history lives in CHANGELOG.md. Offenders:\n' +
+        offenders.join('\n'),
     );
   });
 });

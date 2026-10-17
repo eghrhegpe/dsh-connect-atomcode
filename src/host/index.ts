@@ -31,7 +31,7 @@ import { mountAskTool, mountReviewTool } from './tools.ts';
  * to the client.
  */
 const PLUGIN = {
-  version: '0.4.2',
+  version: '0.4.3',
 } as const;
 
 export const name = 'atomcode-bridge';

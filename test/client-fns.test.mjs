@@ -991,6 +991,28 @@ describe('turnBoundaryRows — patch-only knobs must not masquerade as live sett
     assert.match(rows[0].title, /approval_mode/);
     assert.match(rows[0].title, /无人值守/);
   });
+
+  it('names a REFUSED approval_mode instead of labelling the fallback as the default', () => {
+    // The host refuses an off-enum value and resolves to the default, so
+    // `authored` says false — the "（插件默认）" tag would then tell a user who
+    // typed something that they never touched the knob. The refused spelling
+    // rides on `approvalModeRejected`, and the row must show BOTH the value in
+    // force and the fact that the file asked for something else.
+    const rejected = turnBoundaryRows({
+      approvalMode: 'bypass',
+      approvalModeRejected: 'bypasss',
+      ...HOST,
+    });
+    assert.match(rejected[0].text, /bypasss/, 'the value the file asked for must be named');
+    assert.match(rejected[0].text, /fallback|回落/, 'and that it was not honoured');
+    assert.ok(!/插件默认/.test(rejected[0].text), 'a refused value is not "the plugin default"');
+    assert.match(rejected[0].title, /build \/ accept_edits \/ bypass \/ plan/, 'the legal set is one hover away');
+
+    // No rejection ⇒ nothing added (the row is unchanged for every normal config).
+    const legal = turnBoundaryRows({ approvalMode: 'bypass', ...HOST });
+    assert.ok(!/回落/.test(legal[0].text));
+    assert.ok(!/回落/.test(legal[0].title));
+  });
 });
 
 describe('inFlightText — what the panel says while a turn is running', () => {

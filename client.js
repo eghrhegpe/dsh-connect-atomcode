@@ -597,6 +597,7 @@
 		const askDefault = Number.isInteger(defaults.askMaxRounds) ? defaults.askMaxRounds : null;
 		const approvalDefault = typeof defaults.approvalMode === "string" ? defaults.approvalMode : "";
 		const mode = typeof src.approvalMode === "string" ? src.approvalMode : "";
+		const modeRejected = typeof src.approvalModeRejected === "string" && src.approvalModeRejected !== "" ? src.approvalModeRejected : "";
 		const dir = typeof src.defaultWorkingDir === "string" ? src.defaultWorkingDir : "";
 		const rounds = Number.isInteger(src.askMaxRounds) ? src.askMaxRounds : null;
 		const verdict = (key, value, fallback) => {
@@ -608,8 +609,8 @@
 		return [
 			{
 				label: "审批模式",
-				text: mode === "" ? "—" : mode + tag(verdict("approvalMode", mode, approvalDefault)),
-				title: "patch 字段 approval_mode；面板上没有输入框，改它要动 cordis.patch.yml。bypass = AtomCode 自己的工具在回合内无人值守执行（AtomCode 侧自主，与 DSH 的权限预设无关）。"
+				text: mode === "" ? "—" : modeRejected !== "" ? `${mode}（已回落：你写的是 ${modeRejected}）` : mode + tag(verdict("approvalMode", mode, approvalDefault)),
+				title: "patch 字段 approval_mode；面板上没有输入框，改它要动 cordis.patch.yml。bypass = AtomCode 自己的工具在回合内无人值守执行（AtomCode 侧自主，与 DSH 的权限预设无关）。" + (modeRejected !== "" ? `你写的「${modeRejected}」不在 daemon 接受的取值里（build / accept_edits / bypass / plan），已回落到 ${mode}——照原样透传的话每个回合都会被 daemon 以 422 拒掉。` : "")
 			},
 			{
 				label: "工作目录",
@@ -829,7 +830,7 @@
 					title: error
 				}, error) : null), ask.inFlight ? h("div", { style: S.inFlight }, h("span", { style: S.inFlightDot }), h("span", {
 					style: S.inFlightLabel,
-					title: "有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失"
+					title: "有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失。模型并行发多条 ask 时这里只报「最近开始且仍在跑」的那一条（面板装不下第二条）；更早的那条跑完或最新那条先跑完，本行都会改报还活着的那条"
 				}, "ask 回合进行中"), h("span", { style: S.inFlightText }, inFlightText(ask.inFlight))) : null, proto.quotaTextDrift ? h("div", { style: S.notice }, "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。") : null, protoNotice ? h("div", { style: S.notice }, protoNotice) : null, cfg.reviewAvailable ? null : h("div", { style: S.notice }, "代码评审（atomcode_review）当前不可用：" + (cfg.reviewReason || "本机 AtomCode 配置没有可用的直连 provider") + "。侧边咨询（atomcode_ask）不受影响。"), h("div", { style: S.grid }, h("div", { style: S.card }, h("p", { style: S.cardTitle }, "CodingPlan 额度"), !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", null, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", null, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
 					...S.metricNum,
 					color: quotaColor(quotaPct, quota.limited)
