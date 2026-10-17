@@ -14,7 +14,7 @@
  * `package.json`'s `name` verbatim.
  */
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
@@ -92,7 +92,16 @@ describe('client half — registration contract', () => {
 
     // The English file is the anchor: without it the Host scans nothing at all.
     const localeDir = join(ROOT, 'locale');
-    for (const name of ['en.json', 'zh.json']) {
+    // DISCOVERED, not listed: a hardcoded ['en.json', 'zh.json'] meant a NEW
+    // dictionary shipped unvalidated — the Host would load it (it globs every
+    // sibling *.json) while this test looked the other way. Same hand-maintained
+    // list disease as the probe index that went stale.
+    const dictionaries = readdirSync(localeDir).filter((name) => name.endsWith('.json'));
+    assert.ok(
+      dictionaries.includes('en.json'),
+      'locale/en.json must exist — the Host uses it as the scan anchor',
+    );
+    for (const name of dictionaries) {
       const file = join(localeDir, name);
       assert.ok(existsSync(file), `locale/${name} must exist`);
       const parsed = JSON.parse(readFileSync(file, 'utf8'));
