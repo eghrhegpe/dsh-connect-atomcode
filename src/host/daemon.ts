@@ -296,6 +296,8 @@ export interface StreamChatOptions {
   approvalMode?: string;
   timeoutMs?: number;
   maxRounds?: number;
+  /** Budget for the `POST /chat/stop` sent after a turn dies early (tests only). */
+  stopTimeoutMs?: number;
   extraHeaders?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -348,16 +350,17 @@ export async function* streamChat(opts: StreamChatOptions) {
   // instead of a non-null assertion so an unset value is handled, not lied to.
   const roundFuse = opts.maxRounds != null && opts.maxRounds > 0 ? opts.maxRounds : 0;
 
-  // Every abort this function can raise stops OUR side of the wire and nothing
-  // else: `ctrl.abort()` closes the fetch, while the daemon keeps running the
-  // turn it already accepted — tool calls, tokens and CodingPlan quota that
-  // nobody is waiting for any more. That used to be said in exactly one place
-  // (the `max_rounds` parameter description) and silent on the other two, so a
-  // caller whose turn timed out, or who cancelled, got a bare "aborted" and
-  // read it as "stopped". One sentence, appended to every reason, from one
-  // function — a caveat repeated per path is a caveat one path will lose.
-  const LOCAL_ABORT_CAVEAT =
-    '（本端已停止等待；daemon 侧的回合不会被中止，仍在继续跑并消耗额度与工具调用）';
+  // Every abort this function can raise stops OUR side of the wire:
+  // `ctrl.abort()` closes the fetch. What happens to the daemon's turn is then
+  // `askChat`'s job — it posts `/chat/stop` with the session id once the stream
+  // dies early (see `stopChat`). Before v0.4.3 no such request existed and the
+  // sentence below was the whole story: the daemon kept running the turn it had
+  // accepted — tool calls, tokens and CodingPlan quota that nobody was waiting
+  // for any more. The caveat is still needed, because a stop request can fail,
+  // but it no longer describes an unavoidable outcome, so it no longer claims
+  // one. One sentence, appended to every reason, from one function — a caveat
+  // repeated per path is a caveat one path will lose.
+  const LOCAL_ABORT_CAVEAT = '（本端已停止等待）';
 
   /** The one abort sentence — so no abort path can ship its own wording. */
   const abortError = () => new Error(`atomcode turn aborted: ${abortReason}${LOCAL_ABORT_CAVEAT}`);
@@ -468,7 +471,9 @@ export async function* streamChat(opts: StreamChatOptions) {
  *   terminal `done` carrying deliverable content (or a legitimately empty turn
  *   with no unknown types); `error` may be non-empty ALONGSIDE ok:true — a
  *   mid-turn error event that a later `done` does not cancel. Callers must
- *   surface it, not branch on it. `providerReported` is true only when
+ *   surface it, not branch on it. When the stream itself died early, `error`
+ *   ends with what the `/chat/stop` attempt achieved (`appendStopOutcome`) —
+ *   a turn that was cut is not silently left running. `providerReported` is true only when
  *   `provider` came from the daemon's own runtime_info; false means the
  *   daemon never reported one and `provider` is the requested value echoed
  *   back — surfaced per-turn so a protocol drift that drops runtime_info is
@@ -565,6 +570,22 @@ export async function askChat(opts: StreamChatOptions) {
   } catch (error: any) {
     streamError = String(error && error.message ? error.message : error);
   }
+  // A stream that ended early leaves the daemon's turn running: abort closes
+  // OUR side of the wire and nothing else. Now that the session id is known —
+  // read HERE rather than from the options, because it usually only arrives
+  // mid-stream as `session_assigned` — ask the daemon to stop it. See
+  // `stopChat` for what that does and does not promise.
+  //
+  // Only a stream-level failure gets this. A turn that reached `done` is over
+  // and must not be touched, and an `error` event the daemon sent INSIDE a
+  // stream that then finished is not ours to cancel.
+  if (streamError !== '') {
+    const target = sessionId || (typeof opts.sessionId === 'string' ? opts.sessionId : '');
+    streamError = appendStopOutcome(
+      streamError,
+      await stopChat({ port: opts.port, sessionId: target, timeoutMs: opts.stopTimeoutMs }),
+    );
+  }
   let error = streamError || eventError;
   let ok = done !== null;
   // Protocol-drift diagnostics — drift comes in two shapes and the v0.4.0 gate
@@ -633,6 +654,130 @@ export async function askChat(opts: StreamChatOptions) {
     // the render side shows it as a caveat instead of swallowing it.
     error: error || (ok ? '' : 'chat stream ended before done'),
   };
+}
+
+/**
+ * Budget for `POST /chat/stop`.
+ *
+ * Best-effort by construction: the request is sent from inside a turn that has
+ * ALREADY failed or been abandoned, so nothing may wait on it for long. 1.5s is
+ * a few loopback round trips; a daemon too wedged to answer a stop inside that
+ * is a daemon this caller cannot help, and the turn's own timeout has already
+ * elapsed anyway.
+ */
+export const STOP_COMMAND_TIMEOUT_MS = 1_500;
+
+/** The options bag `stopChat` accepts (see its own `@param` block). */
+export interface StopChatOptions {
+  port?: number;
+  sessionId?: string;
+  timeoutMs?: number;
+}
+
+/** What one stop attempt achieved. `sent:false` means there was nothing to ask. */
+export interface StopChatResult {
+  ok: boolean;
+  sent: boolean;
+  message: string;
+}
+
+/**
+ * Ask the daemon to stop a turn it is still running: `POST /chat/stop`.
+ *
+ * This is the other half of an abort. `streamChat` can only close ITS side of
+ * the wire — the daemon keeps the turn it accepted, burning tool calls and
+ * CodingPlan quota that nobody is waiting for. The endpoint that ends it exists
+ * and was listed as "unused" in the interface notes until now; it is used here
+ * so that "I stopped waiting" and "the turn stopped" stop being the same
+ * sentence.
+ *
+ * CONTRACT (measured against daemon 5.2.3, see scripts/probes/chat-stop.mjs):
+ *
+ *   - `session_id` is REQUIRED: the body `{}` answers HTTP 422
+ *     "missing field `session_id`". There is no way to stop "whatever is
+ *     running" — you have to name the session, and a turn cut before
+ *     `session_assigned` arrived has no id to name (that case is reported, not
+ *     guessed at).
+ *   - A 200 does NOT promise the turn was running: an unknown id answers
+ *     `{"success":true,"message":"Chat session <id> was not running"}`. So
+ *     `ok` means "the daemon accepted and processed the request", and the
+ *     message is passed through verbatim rather than paraphrased — a stop that
+ *     landed after the turn finished is not a failure, and saying "stopped"
+ *     would be the same kind of false comfort as the old caveat.
+ *
+ * Never throws: it runs on a path where the turn has already failed, and a
+ * throw here would replace the real diagnosis with a bookkeeping one.
+ *
+ * @param {{port?:number, sessionId?:string, timeoutMs?:number}} opts
+ * @returns {Promise<StopChatResult>}
+ */
+export async function stopChat(opts: StopChatOptions = {}): Promise<StopChatResult> {
+  const sessionId = typeof opts.sessionId === 'string' ? opts.sessionId.trim() : '';
+  // Nothing to name. This is a real state, not an error: a turn cut in its
+  // first milliseconds never received `session_assigned`.
+  if (sessionId === '') {
+    return { ok: false, sent: false, message: 'no session id yet — nothing to stop' };
+  }
+  const port = opts.port ?? DEFAULT_PORT;
+  const token = readToken(port);
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    const res = await fetch(`${baseUrl(port)}/chat/stop`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ session_id: sessionId }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? STOP_COMMAND_TIMEOUT_MS),
+    });
+    const text = await res.text().catch(() => '');
+    let message = text.slice(0, 200).trim();
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed.message === 'string') message = parsed.message;
+    } catch {
+      /* a non-JSON body still names itself through `text` */
+    }
+    if (!res.ok) {
+      return { ok: false, sent: true, message: `/chat/stop -> HTTP ${res.status} ${message}`.trim() };
+    }
+    return { ok: true, sent: true, message };
+  } catch (error: any) {
+    return {
+      ok: false,
+      sent: true,
+      message: String(error && error.message ? error.message : error),
+    };
+  }
+}
+
+/**
+ * Append what the stop attempt achieved to an already-failed turn's error.
+ *
+ * Kept pure and exported so the wording is asserted offline: the interesting
+ * states (no id yet / daemon answered / request failed) are all reachable
+ * without a daemon, and a caveat that only exists inside the catch block is a
+ * caveat nobody tests.
+ *
+ * @param {string} error - the turn's own error message.
+ * @param {StopChatResult} stop
+ * @returns {string}
+ */
+export function appendStopOutcome(error: string, stop: StopChatResult): string {
+  const base = String(error ?? '');
+  if (stop.sent === false) {
+    return (
+      `${base}（本端已停止等待；该回合还没拿到 session_id，无法请求 daemon 停止，` +
+      'daemon 侧可能仍在继续跑并消耗额度与工具调用）'
+    );
+  }
+  if (stop.ok === true) {
+    const detail = stop.message ? ` — ${stop.message}` : '';
+    return `${base}（已请求 daemon 停止该回合：/chat/stop 已应答${detail}）`;
+  }
+  return (
+    `${base}（已请求 daemon 停止该回合但未成功：${stop.message}；` +
+    'daemon 侧可能仍在继续跑并消耗额度与工具调用）'
+  );
 }
 
 /**

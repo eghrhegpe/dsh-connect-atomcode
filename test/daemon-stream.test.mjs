@@ -226,7 +226,7 @@ describe('daemon /chat SSE client — hermetic', () => {
     assert.match(r.error, /atomcode turn aborted: canceled by caller/);
   });
 
-  it('all three abort reasons carry the SAME "the daemon keeps running" caveat', async () => {
+  it('all three abort reasons carry the SAME caveat', async () => {
     // The caveat used to live in exactly one place — the `max_rounds` parameter
     // description. A turn that timed out, or one the caller cancelled, reported a
     // bare "aborted" and read as "the turn stopped", while the daemon was still
@@ -235,6 +235,14 @@ describe('daemon /chat SSE client — hermetic', () => {
     // Asserted as ONE test over all three reasons (rather than one line added to
     // each existing test) so a fourth abort path has to answer this question
     // here instead of quietly shipping its own wording.
+    //
+    // v0.4.3: an abort now ALSO asks the daemon to stop the turn (`stopChat`),
+    // so the sentence grew a second half describing what that achieved. What
+    // this test still guards is the shared FIRST half: every abort path starts
+    // from "本端已停止等待" plus its stop outcome, none ships its own wording.
+    // These fixtures carry no session id, so all three land on the
+    // "还没拿到 session_id" branch; the "stop landed" wording is asserted in
+    // test/chat-stop.test.mjs, where a session id exists.
     const slowDaemon = async () => {
       const fake = await startFakeDaemon((req, res) =>
         respondSse(
@@ -264,7 +272,7 @@ describe('daemon /chat SSE client — hermetic', () => {
     open.push(fuseDaemon);
     const fused = await askChat({ message: 'hi', port: fuseDaemon.port, timeoutMs: 10_000, maxRounds: 1 });
 
-    const caveat = /daemon 侧的回合不会被中止/;
+    const shared = /（本端已停止等待/;
     for (const [which, r] of [
       ['timeout', timedOut],
       ['caller cancel', canceled],
@@ -272,7 +280,8 @@ describe('daemon /chat SSE client — hermetic', () => {
     ]) {
       assert.equal(r.ok, false, `${which}: an aborted turn must not report ok`);
       assert.match(r.error, /atomcode turn aborted/, `${which}: the abort must be named, not a bare DOMException`);
-      assert.match(r.error, caveat, `${which}: must say the daemon-side turn is NOT stopped`);
+      assert.match(r.error, shared, `${which}: must share the abort caveat, not invent one`);
+      assert.match(r.error, /还没拿到 session_id/, `${which}: a turn with no id must SAY it could not be stopped`);
     }
   });
 
