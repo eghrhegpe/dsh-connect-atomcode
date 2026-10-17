@@ -24,6 +24,7 @@
  *
  * @module dsh-connect-atomcode/daemon
  */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -82,6 +83,40 @@ export function readToken(port: number, home: string = homedir()) {
     return parsed && typeof parsed.token === 'string' ? parsed.token : '';
   } catch {
     return '';
+  }
+}
+
+/**
+ * A fingerprint of the daemon CURRENTLY serving `port`, for judging whether a
+ * remembered `session_id` was issued by this daemon or by one that has since
+ * exited.
+ *
+ * The 24h TTL in `sessions.ts` cannot answer that: the dominant way a side
+ * conversation dies is a daemon restart or an idle exit (~30min), which leaves
+ * ids behind that no live session answers to, and a wall-clock window does not
+ * notice. The daemon writes `{ pid, port, token }` at startup, so `port:pid`
+ * plus the token — hashed, so no secret is copied into the state file —
+ * identifies the process that issued an id. A restart changes the pid AND the
+ * token, so the fingerprint moves even if the OS recycles the pid.
+ *
+ * The token is hashed rather than stored because `sessions.json` is a state
+ * file, not a credential store; pid alone was the first draft and is weaker
+ * than it looks (a just-freed pid is the one most likely to be reused).
+ *
+ * @param {number} port
+ * @param {string} [home] - override for tests; defaults to os.homedir().
+ * @returns {string|null} the fingerprint, or null when it cannot be read —
+ *   "cannot judge" is a real answer (a `--no-auth` daemon writes no file), and
+ *   callers must treat it as unknown rather than as "different".
+ */
+export function readDaemonIdentity(port: number, home: string = homedir()): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(home, '.atomcode', `daemon-${port}.json`), 'utf8'));
+    if (!parsed || !Number.isInteger(parsed.pid)) return null;
+    const token = typeof parsed.token === 'string' ? parsed.token : '';
+    return createHash('sha256').update(`${port}:${parsed.pid}:${token}`).digest('hex').slice(0, 16);
+  } catch {
+    return null;
   }
 }
 

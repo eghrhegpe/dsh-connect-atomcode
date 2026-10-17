@@ -48,6 +48,113 @@ export const DEFAULT_APPROVAL_MODE = 'bypass';
 export const DEFAULT_ASK_MAX_ROUNDS = 25;
 
 /**
+ * The tool timeout both `register()` calls declare to the DSH host, and the
+ * ceiling every wall-clock knob in this plugin answers to.
+ *
+ * It exists as a constant because the number used to be written out three
+ * times — twice as `30 * 60 * 1000` in the registrations and once as the ask
+ * default — while the parameter descriptions promised a cap the CODE never
+ * enforced: `timeout_secs: 1e9` produced a 1e12 ms wire budget that only the
+ * host's own guard could cut, and the caller got "已取消" where the description
+ * had promised a timeout. A knob whose limit lives in prose is a knob with no
+ * limit; the clamp below is that limit, in one place.
+ */
+export const HOST_TOOL_TIMEOUT_MS = 30 * 60 * 1000;
+/** The same deadline in seconds — the unit every per-call knob speaks. */
+export const HOST_TOOL_TIMEOUT_SECS = HOST_TOOL_TIMEOUT_MS / 1000;
+
+/**
+ * Ceiling for every round-count knob (`max_rounds` on both tools, and the
+ * `ask_max_rounds` / `review_max_rounds` config fields behind them).
+ *
+ * A round budget is a FUSE, and a fuse you can switch off by inflating the
+ * number is not a fuse: `max_rounds: 1e9` used to pass every gate untouched,
+ * leaving only the 30-minute wall clock between an unattended daemon turn and
+ * the user's quota. Disabling the fuse is a deliberate WORD in this plugin —
+ * `0`, which both tools and both config fields honour — not a magnitude.
+ *
+ * 1000 tool events is far past any legitimate turn (the defaults are 25 and
+ * 35); the clamp is there for hallucinated arguments and inflation attempts,
+ * and it never rewrites a real budget downward.
+ */
+export const MAX_ROUNDS_CEILING = 1000;
+
+/**
+ * Clamp one already-picked round budget to the ceiling. `0` — the deliberate
+ * "no fuse" word — passes through untouched.
+ *
+ * Exported separately from `resolveMaxRounds` because the CONFIG reader keeps
+ * its own stricter gate (integers only; a fractional `ask_max_rounds` is a
+ * typo, not 30.5 rounds) while the argument path floors whatever it is given.
+ * One clamp, two gates — the ceiling itself never gets a second copy.
+ */
+export function clampMaxRounds(value: number): number {
+  if (value === 0) return 0;
+  return Math.min(value, MAX_ROUNDS_CEILING);
+}
+
+/**
+ * Resolve one round-count knob — per-call argument first, configured default
+ * behind it — and CLAMP it to `MAX_ROUNDS_CEILING`. Lives here, next to the
+ * defaults and the ceiling, because the config reader and both tools' argument
+ * paths must answer with ONE policy: when this lived in `tools.ts`, the config
+ * values flowed to the panel unclamped and only the per-call arguments were
+ * bounded, so the panel could display a budget the code would never honour.
+ *
+ * This was also two hand-written predicates that read the same name
+ * differently: ask accepted `0` as "no fuse" while review read `0` as "unset,
+ * use 35". Both were defensible alone and each was explained by its own
+ * comment — and a model reading two JSON Schemas with one parameter name had
+ * no way to learn that `max_rounds: 0` meant opposite things depending on which
+ * tool it was calling. Three comments explaining a trap is worse than one
+ * function that cannot have it: `0` means "no round fuse" here, and each
+ * backend spells that in its own way (ask counts SSE events in-process and
+ * passes 0 through; review omits `--max-rounds`, which the CLI documents as
+ * UNLIMITED).
+ *
+ * An explicit `0` is therefore passed through UNTOUCHED by the clamp: it is the
+ * one deliberate way to hand governance back to the daemon/CLI, and clamping
+ * it into a number would turn a word into a lie.
+ *
+ * @param {unknown} raw - the per-call argument (`0` and up are honoured).
+ * @param {number} fallback - the configured default for the flanking tool.
+ * @returns {number} the round budget for this call, or 0 for "no fuse".
+ */
+export function resolveMaxRounds(raw: unknown, fallback: number): number {
+  const picked = Number.isFinite(raw) && (raw as number) >= 0 ? Math.floor(raw as number) : fallback;
+  return clampMaxRounds(picked);
+}
+
+/**
+ * Ceiling for `atomcode_review`'s wall-clock fuse (`max_duration_secs`).
+ *
+ * The process-level backstop waits `maxDuration + 60s`, so a duration above
+ * `HOST_TOOL_TIMEOUT_SECS - 60` pushes the backstop past the host's own 30min
+ * guard — the value then does not fail safe, it fails INVISIBLE: the host kills
+ * the call and the caller sees a cancel where the description promised the
+ * CLI's own fuse. Clamped so the fuse this plugin actually owns stays the
+ * binding one.
+ */
+export const MAX_REVIEW_DURATION_SECS = HOST_TOOL_TIMEOUT_SECS - 60;
+
+/**
+ * Read one wall-clock knob in seconds, clamped to `ceiling`.
+ *
+ * `0` and anything that cannot be a duration fall back to `fallback` — "no
+ * fuse" is not a word on this knob (unlike `max_rounds`), and the config
+ * reader already guarantees the fallback is a positive integer.
+ *
+ * @param {unknown} raw - the per-call argument.
+ * @param {number} fallback - the configured default.
+ * @param {number} ceiling - the largest value that still takes effect.
+ * @returns {number} the effective seconds for this call.
+ */
+export function resolveDurationSecs(raw: unknown, fallback: number, ceiling: number): number {
+  const picked = Number.isFinite(raw) && (raw as number) > 0 ? Math.floor(raw as number) : fallback;
+  return Math.min(picked, ceiling);
+}
+
+/**
  * Which DSH profile this host process belongs to, as a key-space prefix.
  *
  * The prefix keeps two profiles (web + desktop) writing DISJOINT keys in the
@@ -148,11 +255,13 @@ export function readConfig(rawConfig: Record<string, any>) {
   // the README and `daemon.ts` all read it as "no fuse". A `> 0` gate here used to
   // turn an explicit 0 into 25 — three documents promising a knob the code never
   // honoured. Only values that cannot BE a round count (non-integers, negatives)
-  // fall back.
-  const askMaxRounds =
+  // fall back. The clamp runs HERE as well as at the argument path so the value
+  // the panel displays is the budget the code will actually honour.
+  const askMaxRounds = clampMaxRounds(
     Number.isInteger(config.ask_max_rounds) && config.ask_max_rounds >= 0
       ? config.ask_max_rounds
-      : DEFAULT_ASK_MAX_ROUNDS;
+      : DEFAULT_ASK_MAX_ROUNDS,
+  );
   const authoredAskMaxRounds = askMaxRounds !== DEFAULT_ASK_MAX_ROUNDS;
   const configuredPrefix =
     typeof config.session_key_prefix === 'string' && config.session_key_prefix.trim() !== ''
@@ -178,14 +287,14 @@ export function readConfig(rawConfig: Record<string, any>) {
   // UNLIMITED (see `buildReviewArgs`). Reading 0 as "use 35" made the two
   // same-named knobs mean opposite things. `review_max_duration_secs` is a
   // separate fuse, unaffected by this.
-  const reviewMaxRounds =
+  const reviewMaxRounds = clampMaxRounds(
     Number.isInteger(config.review_max_rounds) && config.review_max_rounds >= 0
       ? config.review_max_rounds
-      : 35;
-  const reviewMaxDurationSecs =
-    Number.isInteger(config.review_max_duration_secs) && config.review_max_duration_secs > 0
-      ? config.review_max_duration_secs
-      : 900;
+      : 35,
+  );
+  // Same clamp as the per-call argument, so the configured default cannot be
+  // the one inflated value that slips past the ceiling.
+  const reviewMaxDurationSecs = resolveDurationSecs(config.review_max_duration_secs, 900, MAX_REVIEW_DURATION_SECS);
   // CodingPlan quota refresh interval. 0 disables the extra `/command status`
   // call entirely; the panel then reports that quota display is switched off.
   const quotaRefreshSecs =

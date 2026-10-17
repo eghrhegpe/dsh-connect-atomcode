@@ -13,7 +13,7 @@
 
 ## 仍然有效的决策
 
-- **ask_max_rounds 默认 25（不再是 0）**。它是**停止等待**的止损，不是远端 kill：断的是客户端这条 HTTP 流，daemon 侧回合可能继续在后台跑完。对无人值守的 agent 而言，这个数字约束的是**用户等多久**、不是 agent 干多少（25 轮 shell/写文件/出网足以造成实质损害）——请连同 `README.md` 的安全姿态一节一起读
+- **ask_max_rounds 默认 25（不再是 0）**。它是**停止等待 + 尽力停止**的止损：断客户端这条 HTTP 流，并向 daemon 发 `POST /chat/stop` 请求停掉该回合（见下条）；请求失败或回合刚开始还没拿到 session_id 时，daemon 侧回合可能继续跑完。对无人值守的 agent 而言，这个数字约束的是**用户等多久**、不是 agent 干多少（25 轮 shell/写文件/出网足以造成实质损害）——请连同 `README.md` 的安全姿态一节一起读。轮数上限 1000 在代码里钳制（见下条）：熔断不是能被一个巨大数字关掉的东西
 - **review 每次调用重读 config.toml**，不可用时直接拒绝
 - **review 缺省不猜仓库**：两者都没给时拒绝并说明原因
 - **reply/report 截断时打标记 + 置 `truncated` 字段**
@@ -29,6 +29,8 @@
 - **`atomcode_review` 是「经标准 OpenAI 兼容端点的有界一次性评审」，不承诺 Atom 原生通路**。Atom 官方网关（`llm-api.atomgit.com`）对推理端点强制 AtomCode 专有签名，review CLI（`atomcodex`）不会签 → 结构性够不着官方网关，只能走标准直连端点或本地 sidecar 后门。两条「稳定」轴要分开看：**网关/额度轴**上，Atom 原生登录用户的稳定评审通路是 `atomcode_ask` 里的原生 `code_review`（签名 daemon、滚动窗口额度）；**有界性轴**（轮数 + 墙钟双保险丝、`--json` findings、可复现）CLI 更强。工具描述已按此定位改写（2026-10-16）
 
 - **ask 回合被熔断 / 取消 / 流截断时，向 daemon 发 `POST /chat/stop`**（2026-10-17，未随版本号发布）。此前 abort 只断本端 HTTP 流，daemon 侧回合继续跑、继续烧工具调用与滚动窗口额度——这一条此前被三处注释当成既定事实描述（`streamChat` / `askChat` / `max_rounds` 参数说明），而端点一直躺在接口参考的「没用到的」清单里。契约是实测出来的（`scripts/probes/chat-stop.mjs`，无成本）：`session_id` **必填**（空 body → 422，没有"停掉正在跑的那个"这种用法）；未知 id → 200 `{"success":true,"message":"... was not running"}`——**200 不代表回合被停掉**，所以 `stopChat` 的 `ok` 语义是"daemon 受理了请求"，message 原样带回，不转述成"已停止"。回合刚开始就被切断、还没拿到 `session_assigned` 的回合没有 id 可发：这一种情况在错误文本里具名（`appendStopOutcome` 的 `sent:false` 分支），不用任何猜测兜底；`continue` 传入的 `sessionId` 作为第二来源。`done` 之后绝不发（回合已结束），daemon 自己在流内发的 `error` 事件也不发（不是我们取消的）
+- **三个旋钮的上限钳制在代码里，不在描述里**（2026-10-17）。`timeout_secs` / `max_rounds` / `max_duration_secs` 都曾经只在参数描述里承诺上限，代码原样放行：`1e9` 分别变成 1e12ms 线预算（被宿主守卫砍成"已取消"，描述承诺的超时没出现）、熔断失效（只剩 30min 墙钟）、保险丝失效（进程兜底 max+60s 越过宿主 30min，保险丝不是变长而是看不见地失效）。上限统一收在 `config.ts`（`HOST_TOOL_TIMEOUT_MS` / `MAX_ROUNDS_CEILING` / `MAX_REVIEW_DURATION_SECS`），解析器（`resolveMaxRounds` / `resolveDurationSecs`）同时钳制**每调用参数和配置默认值**——钳制只挂在参数路径时，面板会把一个代码永不执行的预算显示给用户。`0` 是"关熔断"的**字面量**，永不被钳制成数字；墙钟旋钮没有 `0` 语义（`0`/非法值回落默认）。`resolveMaxRounds` 从 `tools.ts` 移到 `config.ts`：默认值、门槛、上限、解析器是一个策略，拆在两个模块里就要么重复要么只钳一半
+- **会话键按 daemon 身份判死，TTL 退化为兜底**（2026-10-17）。侧边对话的主要死因是 daemon 重启/空闲退出（~30min 级），而 24h 挂钟 TTL 看不见它：三小时前写的 id，daemon 十分钟前重启过，TTL 判定「还活着」，每次 `continue` 都拿它撞一次失败、烧一个回合，恢复手段（`reset_session`）只在失败文本里出现。现在 `set()` 随条目记录 daemon 指纹（`readDaemonIdentity`：`port:pid:token` 的 sha256 前 16 位——token 哈希而非原文，state 文件不是凭证库；pid 单独不够，刚释放的 pid 最容易被复用），`get()/count()/prune()` 走同一个 `isResumable`：指纹不符即死，与年龄无关。**未知永不等于死**：没有指纹字段（旧数据）、身份文件读不到（daemon 没起、`--no-auth` 不写文件）、探针抛错，都按"无法判定"放行，退化到纯 TTL 行为——误杀一条活会话是这条规则唯一不能引入的失败模式。顺带：`count()`+`oldestAgeMs()` 两次全量读合并为 `snapshot()` 一次读（5s 轮询的同文件双读双 parse），单因子入口保留给只要一个事实的调用方
 
 > 机制层的硬约束（为什么不做 provider 接管、额度为什么只能靠文本解析、三条私有无版本协议怎么办）
 > 写在 `../AGENTS.md` 的「三条事实」——那里是给改代码的人的入口，本文件不重复。

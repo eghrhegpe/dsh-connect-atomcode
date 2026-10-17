@@ -23,6 +23,13 @@ import {
 } from './review.ts';
 import { isLoopbackBaseUrl } from '../shared/loopback.ts';
 import { describeDaemonDown } from './stats.ts';
+import {
+  HOST_TOOL_TIMEOUT_MS,
+  HOST_TOOL_TIMEOUT_SECS,
+  MAX_REVIEW_DURATION_SECS,
+  resolveDurationSecs,
+  resolveMaxRounds,
+} from './config.ts';
 import type { HostConfig } from './config.ts';
 import type { Runtime } from './runtime.ts';
 import { resolve } from 'node:path';
@@ -42,28 +49,6 @@ import { resolve } from 'node:path';
  */
 function hostSessionCwd(exec: any): string | undefined {
   return exec && typeof exec.cwd === 'string' && exec.cwd.trim() !== '' ? exec.cwd : undefined;
-}
-
-/**
- * Resolve a call's `max_rounds` argument against the configured default — for
- * BOTH tools, from one function.
- *
- * This was two hand-written predicates that read the same name differently: ask
- * accepted `0` as "no fuse" while review read `0` as "unset, use 35". Both were
- * defensible alone and each was explained by its own comment — and a model
- * reading two JSON Schemas with one parameter name had no way to learn that
- * `max_rounds: 0` meant opposite things depending on which tool it was calling.
- * Three comments explaining a trap is worse than one function that cannot have
- * it: `0` means "no round fuse" here, and each backend spells that in its own
- * way (ask counts SSE events in-process and passes 0 through; review omits
- * `--max-rounds`, which the CLI documents as UNLIMITED).
- *
- * @param {unknown} raw - the per-call argument (`0` and up are honoured).
- * @param {number} fallback - the configured default for the flanking tool.
- * @returns {number} the round budget for this call, or 0 for "no fuse".
- */
-export function resolveMaxRounds(raw: unknown, fallback: number): number {
-  return Number.isFinite(raw) && (raw as number) >= 0 ? Math.floor(raw as number) : fallback;
 }
 
 /**
@@ -131,9 +116,10 @@ export function mountAskTool({
       providerHint,
     // Declare timeoutMs so the DSH tool timeout policy can see this tool.
     // askChat's own timeout (timeout_secs param) is the actual wire budget;
-    // 30min here mirrors askChat's default and keeps the host guard from
-    // killing mid-turn.
-    timeoutMs: 30 * 60 * 1000,
+    // the shared constant keeps this declaration and the clamp in execute()
+    // (and review's registration) one number, not three copies of `30 * 60 *
+    // 1000` that can drift from what the parameter descriptions promise.
+    timeoutMs: HOST_TOOL_TIMEOUT_MS,
     parameters: {
       type: 'object',
       properties: {
@@ -143,8 +129,8 @@ export function mountAskTool({
         reset_session: { type: 'boolean', description: '可选：清掉本工作目录记录的侧边会话（续线接到一条已过期的 daemon 会话、或想彻底开新线时用；不影响本回合）' },
         provider: { type: 'string', description: '可选：点名 AtomCode 模型档位，传它就换本次回合用的模型。名字以 daemon GET /models 的 provider 字段为准（如 "AtomGit-glm5.3-flash"），不要传裸模型 id（"glm5.3-flash"）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
         working_dir: { type: 'string', description: '可选：回合的工作目录，同时是侧边对话的会话键。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 插件配置 working_dir > 宿主 home 兜底' },
-        timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800，上限也是 1800——本工具向宿主声明的超时上限就是 30 分钟，超过它的值不会生效（宿主会先中止调用，得到的会是"已取消"而不是超时）' },
-        max_rounds: { type: 'number', description: '可选：工具调用次数上限（按 daemon SSE 的 tool_start 事件计数；一个 agent 回合可能并行发起多次工具调用，故事件数 ≥ agent 轮数——把它当轮数理解，会在更少的 agent 轮数上就熔断）。默认取插件配置，当前 ' + askMaxRounds + '；传 0 关掉本端熔断，交回 daemon 自带治理——与 atomcode_review 的 max_rounds: 0 同义）。超限时本端中止等待并返回错误，同时向 daemon 发 POST /chat/stop 请求停掉该回合（以 daemon 应答为准；回合刚开始还没拿到 session_id 时无法请求，错误文本会说明这一种情况）' },
+        timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800；上限 1800（本工具向宿主声明的超时上限就是 30 分钟），超过按 1800 计——代码里钳制，不是"传了更大的值但悄悄不生效"' },
+        max_rounds: { type: 'number', description: '可选：工具调用次数上限（按 daemon SSE 的 tool_start 事件计数；一个 agent 回合可能并行发起多次工具调用，故事件数 ≥ agent 轮数——把它当轮数理解，会在更少的 agent 轮数上就熔断）。默认取插件配置，当前 ' + askMaxRounds + '；上限 1000，超过按 1000 计（钳制在代码里，inflate 关不掉熔断）。传 0 关掉本端熔断，交回 daemon 自带治理——与 atomcode_review 的 max_rounds: 0 同义）。超限时本端中止等待并返回错误，同时向 daemon 发 POST /chat/stop 请求停掉该回合（以 daemon 应答为准；回合刚开始还没拿到 session_id 时无法请求，错误文本会说明这一种情况）' },
       },
       required: ['message'],
     },
@@ -373,8 +359,12 @@ export function mountAskTool({
       }
       const timeoutMs =
         Number.isFinite(args.timeout_secs) && args.timeout_secs > 0
-          ? Math.floor(args.timeout_secs) * 1000
-          : 30 * 60 * 1000;
+          ? // Clamped to the declared host timeout rather than trusted: the
+            // description used to promise "上限也是 1800" while the code passed
+            // any magnitude through, so an inflated value did not fail safe —
+            // it failed as a host-side cancel with no timeout to show for it.
+            Math.min(HOST_TOOL_TIMEOUT_SECS, Math.floor(args.timeout_secs)) * 1000
+          : HOST_TOOL_TIMEOUT_MS;
       // Same contract as the config field above, and the SAME resolver the review
       // path uses: an explicit 0 is "no fuse", not a missing value. See
       // resolveMaxRounds — the two tools used to disagree about that word.
@@ -540,9 +530,10 @@ export function mountReviewTool({
 
   const disposeReview = tools.register({
     name: 'atomcode_review',
-    // timeoutMs: the review CLI has its own max_duration fuse; set 30min so
-    // the host guard never kills before the CLI's own fuse.
-    timeoutMs: 30 * 60 * 1000,
+    // timeoutMs: the review CLI has its own max_duration fuse; the shared
+    // constant is the same 30min the host sees for ask, so one number governs
+    // both registrations and the clamps derived from it.
+    timeoutMs: HOST_TOOL_TIMEOUT_MS,
     description: reviewDesc,
     parameters: {
       type: 'object',
@@ -554,8 +545,8 @@ export function mountReviewTool({
         pr: { type: 'number', description: '可选：GitHub PR 号（需本机 gh CLI）' },
         diff_text: { type: 'string', description: '可选：原始 diff 文本（写临时文件走 --diff-file；适合非 git 场景/CI 产物）' },
         provider: { type: 'string', description: '可选：点名 AtomCode provider，原样透传给 review CLI 的 --provider。名字以 ~/.atomcode/config.toml 的 [providers.<name>] 条目为准（这条路径不看 daemon /models，也不是裸模型 id——别传 "glm5.3-flash"）；要换该 provider 用的模型，改它条目里的 model。留空时按顺序取：面板上选的条目 → 插件配置 review_default_provider → config.toml 的 default_provider → 自动选择（见工具描述）' },
-        max_rounds: { type: 'number', description: '可选：评审 agent 轮数熔断（默认取插件配置，通常 ' + reviewMaxRounds + '；传 0 关掉轮数熔断，交回 CLI 自己治理——与 atomcode_ask 的 max_rounds: 0 同义；墙钟熔断 max_duration_secs 仍然生效）' },
-        max_duration_secs: { type: 'number', description: '可选：墙钟保险丝秒数（默认取插件配置，通常 900）。有效上限约 1740s——进程级兜底取 maxDuration+60s，超过宿主 30min 工具超时就会先被宿主杀掉' },
+        max_rounds: { type: 'number', description: '可选：评审 agent 轮数熔断（默认取插件配置，通常 ' + reviewMaxRounds + '；上限 1000，超过按 1000 计。传 0 关掉轮数熔断，交回 CLI 自己治理——与 atomcode_ask 的 max_rounds: 0 同义；墙钟熔断 max_duration_secs 仍然生效）' },
+        max_duration_secs: { type: 'number', description: '可选：墙钟保险丝秒数（默认取插件配置，通常 900）。上限 1740s，超过按 1740s 计——进程级兜底取 maxDuration+60s，再大就越过宿主 30min 工具超时，保险丝会失效而不是变长' },
         enable_web: { type: 'boolean', description: '可选：允许评审用 web_search（默认 false，适配受限网络）' },
       },
       required: [],
@@ -744,10 +735,12 @@ export function mountReviewTool({
       // "no round cap" is not "no limit", and that knob was never part of the
       // ambiguity.
       const maxRounds = resolveMaxRounds(args.max_rounds, reviewMaxRounds);
-      const maxDurationSecs =
-        Number.isFinite(args.max_duration_secs) && args.max_duration_secs > 0
-          ? Math.floor(args.max_duration_secs)
-          : reviewMaxDurationSecs;
+      // The same clamp rule as timeout_secs, one resolver over: a wall-clock
+      // fuse above `MAX_REVIEW_DURATION_SECS` does not fail safe, it fails
+      // invisible — the process backstop (max+60s) would outlive the host's
+      // own guard, so the host kills the call and the caller sees a cancel
+      // where the description promised the CLI's fuse.
+      const maxDurationSecs = resolveDurationSecs(args.max_duration_secs, reviewMaxDurationSecs, MAX_REVIEW_DURATION_SECS);
       stats.review.calls += 1;
       const result = await runReview({
         workingDir: workDir,

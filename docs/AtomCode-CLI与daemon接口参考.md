@@ -210,7 +210,7 @@ atomcode daemon [OPTIONS]
 
 **文件系统**：`/fs/list?path=` `/fs/open` `/fs/mkdir` `/fs/search?path=`
 
-**认证头**：`Authorization: Bearer <token>`，token 在 `~/.atomcode/daemon-<port>.json` 的 `token` 字段（`--no-auth` 启动时该文件可能没有 token）。
+**认证头**：`Authorization: Bearer <token>`，token 在 `~/.atomcode/daemon-<port>.json` 的 `token` 字段（`--no-auth` 启动时该文件可能没有 token）。同一文件的 `pid` 字段另有用途：`readDaemonIdentity()` 取 `port:pid:token` 的哈希作为 daemon 指纹，会话续接据此判断一条记录的 session_id 是不是当前这个 daemon 发的（daemon 重启即判死，不用等 24h TTL）。文件缺失/无 pid 时指纹为 null，按"无法判定"处理，绝不猜。
 
 ### `/chat` 的 SSE 词表 `[实测]`
 

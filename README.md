@@ -101,12 +101,12 @@ provider（本机实测通路是本地代理），否则插件会在调用前就
 | `working_dir` | `''` | ask 回合的缺省工作目录（同时是侧边对话的会话键）。面板**不提供输入框**，只能在 patch 里改；详情页「回合边界」标出你改过没有 |
 | `review_working_dir` | `''` | **review 的缺省仓库根**。空 = review **不猜**，必须由调用传 `working_dir`（见「治理记录」） |
 | `state_path` | `''` | 会话映射文件（缺省 `~/.dsh/state/dsh-connect-atomcode/sessions.json`）。**面板选的模型档位存在同目录的 `provider.json`**，所以这一个旋钮同时决定两者的位置 |
-| `ask_max_rounds` | `25` | ask 的工具调用次数上限（按 SSE `tool_start` 事件计；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数）；`0` = 不限（交给 daemon 自带治理）。>0 时插件在 SSE 上数 `tool_start`，超限即断开并返回 `atomcode turn aborted: agent exceeded N tool rounds`，**同时向 daemon 发 `POST /chat/stop` 请求停掉该回合**（契约为实测：`session_id` 必填；daemon 回 `was not running` 也是受理，只说明回合已结束）。所以它是"别再等了 + 尽力停止"的止损，不是远程 kill——回合刚开始、还没拿到 `session_assigned` 时无 id 可发，这一种情况在错误文本里写明。面板**不提供输入框**；详情页「回合边界」标出这是默认还是你改过 |
+| `ask_max_rounds` | `25` | ask 的工具调用次数上限（按 SSE `tool_start` 事件计；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数）；`0` = 不限（交给 daemon 自带治理）。**上限 1000，超过按 1000 计**（钳制在代码里——熔断不是能被一个巨大数字关掉的东西；关它只能用 `0` 这个字面量）。>0 时插件在 SSE 上数 `tool_start`，超限即断开并返回 `atomcode turn aborted: agent exceeded N tool rounds`，**同时向 daemon 发 `POST /chat/stop` 请求停掉该回合**（契约为实测：`session_id` 必填；daemon 回 `was not running` 也是受理，只说明回合已结束）。所以它是"别再等了 + 尽力停止"的止损，不是远程 kill——回合刚开始、还没拿到 `session_assigned` 时无 id 可发，这一种情况在错误文本里写明。面板**不提供输入框**；详情页「回合边界」标出这是默认还是你改过 |
 | `session_key_prefix` | 自动探测 | 会话键前缀，隔离多 profile（web / desktop）共用同一 state 文件；空 = 按 `DSH_PROFILE`/argv 自动判定 |
 | `daemon_retry_secs` | `60` | 自动拉起**失败**后的重试冷却。`0` = 每次轮询都重试；不设则失败会永久禁用本次挂载的自动拉起 |
 | `review_no_web` | `true` | 评审关 web_search（适配代理受限网络；有外网可设 false） |
-| `review_max_rounds` | `35` | 评审 agent 轮数保险丝；`0` = 不限（桥接层省略 `--max-rounds`，交由 CLI 自身治理，与 `ask_max_rounds: 0` 同义；墙钟 `review_max_duration_secs` 仍然生效） |
-| `review_max_duration_secs` | `900` | 评审墙钟保险丝 |
+| `review_max_rounds` | `35` | 评审 agent 轮数保险丝，上限 1000 超过按 1000 计（同 ask 的钳制规则）；`0` = 不限（桥接层省略 `--max-rounds`，交由 CLI 自身治理，与 `ask_max_rounds: 0` 同义；墙钟 `review_max_duration_secs` 仍然生效） |
+| `review_max_duration_secs` | `900` | 评审墙钟保险丝，上限 1740s 超过按 1740s 计——进程级兜底取值+60s，再大就越过宿主 30min 工具超时，保险丝会失效而不是变长 |
 | `quota_refresh_secs` | `60` | CodingPlan 额度刷新间隔（秒）；`0` = 关闭额度显示（连带不发那条额外 `/command` 调用）。缓存是为了让面板 5s 轮询不变成 5s 一次 daemon 调用 |
 | `daemon_start_timeout_secs` | `30` | 拉起 daemon 后等 `/health` 应答的上限（秒），每 1.5s 探一次；`0` = 只 spawn 不等 |
 
@@ -219,6 +219,8 @@ npm test           # 离线套件由 scripts/test.mjs 自动发现（排除 *-li
 
 - `daemon-stream.test.mjs` — `askChat` 的 SSE 聚合（reply 拼接 / session / tokens 回退 / 工具配对 / provider 捕获 / roundCount）、轮数熔断、三种 abort 原因（超时 / 调用方取消 / 熔断）。
 - `chat-stop.test.mjs` — `/chat/stop` 取消通路：熔断 / 取消 / 流截断三种死法都会带 `session_id` 发停止请求，`done` 之后绝不发，无 id 时具名不猜，stop 失败照实报。
+- `sessions-ttl.test.mjs` — 会话续接存储的生死判定：过期键不再续且路过即清、`count()` 只数真能续的键、**年龄未知的旧数据必须保留**；以及 daemon 指纹判死——daemon 重启后旧 id 不再续（`prune()` 在创建时扫掉上个 daemon 的遗产）、指纹缺失/读不到/探针抛错都按"无法判定"放行，`snapshot()` 一次读同时给出面板那两个事实。
+- `knob-clamps.test.mjs` — 旋钮上限钳制（`timeout_secs` 1800 / `max_rounds` 1000 / `review_max_duration_secs` 1740，`0` 字面量永不被钳制）、配置默认值同样被钳（面板不显示代码不执行的预算），以及 `readDaemonIdentity` 指纹的稳定性/随 daemon 变化/读不到时答 null 不猜。
 - `ask-glue.test.mjs` — 会话连续性 glue：`continue` 是否 replay 正确 session、省略 `continue` 是否开新线、显式 `session_id` 是否优先、**失败回合是否不覆盖已记录会话**、working_dir 是否分键、尾斜杠是否折叠，以及 `session_key_prefix` 的 profile 自动探测/显式覆盖；外加 `reset_session`（清掉陈旧会话）与 reply 截断标记。
 - `stats-route.test.mjs` — 详情页统计路由（唯一被渲染端调用的接口）：方法门（405）、同源门（403/放行）、快照里面板会解引用的**每一个字段**、二进制来源回退链、`sessions.tracked` 实时读盘且**按 prefix 计数**、**失败后按 `daemon_retry_secs` 重试拉起**、以及额度分支（解析 / 必带 working_dir / 跨轮询缓存 / `0` 关闭 / daemon 不在时不编数字 / 文本漂移标记的置位与复位）。
 - `quota.test.mjs` — 额度文本解析器（真实抓取的载荷 + 英文 + 用尽 100% + 空/畸形输入 + 时长解析）。

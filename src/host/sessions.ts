@@ -34,7 +34,7 @@
  * is easier to reason about, but it does NOT by itself prevent the lost update
  * above: the loss is a whole-map overwrite, not a key collision.
  *
- * ## Entries expire (`ttlMs`, default 24h)
+ * ## Entries expire (`ttlMs`, default 24h) — and die with their daemon
  *
  * `updatedAt` was written by every `set()` and read NOWHERE, so the map only ever
  * grew: a daemon restart or an idle exit left ids behind that no live session
@@ -48,6 +48,17 @@
  * its age is unknown, and guessing "expired" would silently end a side
  * conversation that may still be alive. Expiry removes a convenience, never
  * correctness — the next `continue` simply opens a fresh line.
+ *
+ * The TTL is a backstop, not the mechanism. The dominant way a side conversation
+ * dies is the daemon exiting — restart, idle timeout — and a 24h wall clock
+ * cannot see that: an id recorded three hours ago from a daemon that restarted
+ * ten minutes ago passes the TTL untouched. So every entry ALSO records which
+ * daemon issued it (`readDaemonIdentity`'s fingerprint), and an entry whose
+ * daemon is not the daemon answering now is dead regardless of age. Two
+ * independent signals, one predicate (`isResumable`), and the same conservative
+ * rule for both: UNKNOWN never means dead. No recorded fingerprint (older data),
+ * or no readable identity file (daemon down, `--no-auth`), means "cannot
+ * judge" — the entry survives on the TTL alone.
  *
  * Quarantine + temp churn: a corrupt file is renamed to `<path>.corrupt-<ts>`
  * (never silently erased) and orphan temp files survive a SIGKILL between write
@@ -83,6 +94,12 @@ import { sweepStaleArtifacts, quarantineFile, writeJsonFile } from './state-file
 export interface SessionEntry {
   sessionId?: string;
   updatedAt?: number;
+  /**
+   * Fingerprint of the daemon that issued this id (see `readDaemonIdentity`).
+   * Absent on entries written before the field existed, and on turns whose
+   * daemon identity could not be read — both mean "cannot judge", never "dead".
+   */
+  daemon?: string;
 }
 
 /**
@@ -108,25 +125,44 @@ export function defaultStatePath(): string {
  * @param {string} [keyPrefix] - Optional prefix for every key (e.g. "web" or "desktop").
  *   `get()`/`set()`/`drop()` all take the logical key; the prefix is applied on disk.
  *   Pass an empty string to disable prefixing (default).
- * @param {{onError?: (error: string) => void, ttlMs?: number}} [options] -
+ * @param {{onError?: (error: string) => void, ttlMs?: number, daemonIdentity?: () => string | null}} [options] -
  *   `onError` observes every degradation (see the module note on failure
  *   semantics). It receives the new state — a message when degraded, `''` when
  *   recovered — and is called only when that message actually changes. A
  *   throwing observer is swallowed: the reporter must not be able to break the
  *   store it reports on. `ttlMs` overrides the entry lifetime
  *   (`DEFAULT_SESSION_TTL_MS`); `0` or a non-number means the default, because
- *   "no expiry" is the bug this option exists to close.
+ *   "no expiry" is the bug this option exists to close. `daemonIdentity`
+ *   reports which daemon is answering now (see the module note on expiry); it
+ *   is called at most once per read-side accessor, its throw is swallowed, and
+ *   a `null` return means "cannot judge" — never "different".
  */
 export function createSessionStore(
   path = defaultStatePath(),
   keyPrefix = '',
-  options: { onError?: (error: string) => void; ttlMs?: number } = {},
+  options: { onError?: (error: string) => void; ttlMs?: number; daemonIdentity?: () => string | null } = {},
 ) {
   const prefix = typeof keyPrefix === 'string' && keyPrefix.trim() !== '' ? keyPrefix.trim() + '::' : '';
   const ttlMs =
     typeof options.ttlMs === 'number' && Number.isFinite(options.ttlMs) && options.ttlMs > 0
       ? Math.floor(options.ttlMs)
       : DEFAULT_SESSION_TTL_MS;
+
+  /**
+   * Which daemon is answering right now, or null when that cannot be read.
+   *
+   * A throwing or absent probe is "cannot judge", NOT "different": treating an
+   * unreadable identity file as a daemon change would kill every side
+   * conversation on a host where the file is simply not there.
+   */
+  function identify(): string | null {
+    if (typeof options.daemonIdentity !== 'function') return null;
+    try {
+      return options.daemonIdentity();
+    } catch {
+      return null;
+    }
+  }
 
   /**
    * Whether an entry is too old to be resumed.
@@ -139,6 +175,22 @@ export function createSessionStore(
   function isExpired(entry: SessionEntry | null | undefined, now: number): boolean {
     if (!entry || typeof entry.updatedAt !== 'number' || !Number.isFinite(entry.updatedAt)) return false;
     return now - entry.updatedAt > ttlMs;
+  }
+
+  /**
+   * The one liveness predicate every read-side accessor answers to: an entry is
+   * resumable when it is young enough AND was issued by the daemon answering
+   * now. Both halves refuse to guess — an unknown age (no `updatedAt`) and an
+   * unknown daemon (no fingerprint, or no readable identity) both pass.
+   *
+   * `currentDaemon` is read ONCE per accessor call, not per entry: it is a file
+   * read, and a panel poll asks about every key at once.
+   */
+  function isResumable(entry: SessionEntry | null | undefined, now: number, currentDaemon: string | null): boolean {
+    if (!entry || typeof entry.sessionId !== 'string') return false;
+    if (isExpired(entry, now)) return false;
+    if (entry.daemon && currentDaemon && entry.daemon !== currentDaemon) return false;
+    return true;
   }
 
   /** @returns {number} how old an entry is in ms, or null when its age is unknown. */
@@ -222,6 +274,31 @@ export function createSessionStore(
     return prefix + outerKey;
   }
 
+  /**
+   * One disk read answering "which of this store's keys are resumable".
+   *
+   * Every read-side accessor goes through here so the liveness predicate
+   * (`isResumable`) is applied identically by all of them — `count()` used to
+   * filter expired keys with its own copy of the rule, which is how a second
+   * death signal (the daemon fingerprint) would have been honoured by `get()`
+   * and ignored by the panel.
+   *
+   * @returns {{key: string, entry: SessionEntry}[]} the live keys of THIS
+   *   store (prefix-scoped), with their entries.
+   */
+  function liveEntries(): { key: string; entry: SessionEntry }[] {
+    const map = readMap();
+    const now = Date.now();
+    const currentDaemon = identify();
+    const out: { key: string; entry: SessionEntry }[] = [];
+    for (const key of Object.keys(map)) {
+      if (prefix !== '' && !key.startsWith(prefix)) continue;
+      const entry = map[key];
+      if (isResumable(entry, now, currentDaemon)) out.push({ key, entry: entry as SessionEntry });
+    }
+    return out;
+  }
+
   const store = {
     /** @returns {string|undefined} the recorded AtomCode session for one working_dir key. */
     get(key: string): string | undefined {
@@ -229,11 +306,11 @@ export function createSessionStore(
       const internal = internalKey(key);
       const entry = map[internal];
       if (!entry || typeof entry.sessionId !== 'string') return undefined;
-      // Expired keys are dropped on the way past: `get()` is the ONLY place one
+      // Dead keys are dropped on the way past: `get()` is the ONLY place one
       // is ever observed, so leaving it behind is what let the file grow without
       // bound. The write degrades like any other (reported, swallowed) — the
       // caller gets "no session" either way.
-      if (isExpired(entry, Date.now())) {
+      if (!isResumable(entry, Date.now(), identify())) {
         delete map[internal];
         writeMap(map);
         return undefined;
@@ -249,7 +326,16 @@ export function createSessionStore(
     set(key: string, sessionId: string): boolean {
       if (typeof sessionId !== 'string' || sessionId === '') return false;
       const map = readMap();
-      map[internalKey(key)] = { sessionId, updatedAt: Date.now() };
+      // Which daemon issued this id — so a later restart can be told apart
+      // from a live session without waiting out the TTL. Omitted when the
+      // identity cannot be read: the entry then ages out on the TTL alone,
+      // which is exactly the pre-fingerprint behaviour.
+      const daemon = identify();
+      map[internalKey(key)] = {
+        sessionId,
+        updatedAt: Date.now(),
+        ...(daemon ? { daemon } : {}),
+      };
       return writeMap(map);
     },
     /**
@@ -271,35 +357,56 @@ export function createSessionStore(
      *   other profile's lines from a shared state file. With no prefix (''),
      *   all keys are this store's keys, so the count is the whole map.
      *
-     *   RESUMABLE keys only: counting an expired id reports a side conversation
-     *   the next `continue` will refuse to resume.
+     *   RESUMABLE keys only: counting an id the next `continue` will refuse to
+     *   resume reports a side conversation that does not exist.
      */
     count(): number {
-      const map = readMap();
-      const now = Date.now();
-      const keys =
-        prefix === '' ? Object.keys(map) : Object.keys(map).filter((key) => key.startsWith(prefix));
-      return keys.filter((key) => !isExpired(map[key], now)).length;
+      return liveEntries().length;
     },
     /**
-     * Drop every expired key of this store in one pass.
+     * Both session facts the panel shows, from ONE disk read.
+     *
+     * The stats route used to call `count()` and `oldestAgeMs()` back to back —
+     * two full reads and two JSON parses of the same file every 5s poll, and
+     * two independent chances to quarantine a corrupt file from a GET. They
+     * answer one question ("what is in the map right now"), so they share one
+     * read here; the single-fact accessors stay for callers that want one.
+     *
+     * @returns {{tracked: number, oldestAgeMs: number|null}}
+     */
+    snapshot(): { tracked: number; oldestAgeMs: number | null } {
+      const live = liveEntries();
+      const now = Date.now();
+      let oldest: number | null = null;
+      for (const { entry } of live) {
+        const age = ageMs(entry, now);
+        if (age == null) continue;
+        if (oldest == null || age > oldest) oldest = age;
+      }
+      return { tracked: live.length, oldestAgeMs: oldest };
+    },
+    /**
+     * Drop every dead key of this store in one pass.
      *
      * Called once at store creation, so a long-lived install reaps the ids a
      * previous daemon left behind even if nobody ever calls `continue` on them
-     * again — `get()` alone only reaps the keys someone actually asks for.
+     * again — `get()` alone only reaps the keys someone actually asks for. With
+     * the daemon fingerprint this is also the restart sweep: a host that starts
+     * against a NEW daemon reaps the old daemon's ids before the first poll.
      *
      * @returns {number} how many keys were removed.
      */
     prune(): number {
       const map = readMap();
       const now = Date.now();
-      const expired = Object.keys(map).filter(
-        (key) => (prefix === '' || key.startsWith(prefix)) && isExpired(map[key], now),
+      const currentDaemon = identify();
+      const dead = Object.keys(map).filter(
+        (key) => (prefix === '' || key.startsWith(prefix)) && !isResumable(map[key], now, currentDaemon),
       );
-      if (expired.length === 0) return 0;
-      for (const key of expired) delete map[key];
+      if (dead.length === 0) return 0;
+      for (const key of dead) delete map[key];
       writeMap(map);
-      return expired.length;
+      return dead.length;
     },
     /**
      * @returns {number|null} the age in ms of the OLDEST live key, or null when
@@ -308,17 +415,7 @@ export function createSessionStore(
      *   invisible before `updatedAt` was read at all.
      */
     oldestAgeMs(): number | null {
-      const map = readMap();
-      const now = Date.now();
-      let oldest: number | null = null;
-      for (const key of Object.keys(map)) {
-        if (prefix !== '' && !key.startsWith(prefix)) continue;
-        if (isExpired(map[key], now)) continue;
-        const age = ageMs(map[key], now);
-        if (age == null) continue;
-        if (oldest == null || age > oldest) oldest = age;
-      }
-      return oldest;
+      return store.snapshot().oldestAgeMs;
     },
   };
 

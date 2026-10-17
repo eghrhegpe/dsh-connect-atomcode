@@ -88,13 +88,15 @@ export function mountRoutes({
             return;
           }
           // Reflect the live tracked-session count on read (prefix-scoped: only this
-          // store's keys, so a sibling profile's lines never inflate it).
-          stats.sessionsTracked = sessions.count();
-          // Same read, one more fact: how stale the oldest surviving key is. A
-          // bare count cannot tell "one live line" from "nine ids a daemon that
-          // exited three days ago left behind" — which is exactly the state the
-          // count used to report as healthy.
-          stats.sessionsOldestAgeMs = sessions.oldestAgeMs();
+          // store's keys, so a sibling profile's lines never inflate it), plus how
+          // stale the oldest surviving key is — ONE read for both. A bare count
+          // cannot tell "one live line" from "nine ids a daemon that exited three
+          // days ago left behind" — which is exactly the state the count used to
+          // report as healthy. Two accessors back to back meant two full reads and
+          // two parses of the same file on every 5s poll.
+          const sessionsSnapshot = sessions.snapshot();
+          stats.sessionsTracked = sessionsSnapshot.tracked;
+          stats.sessionsOldestAgeMs = sessionsSnapshot.oldestAgeMs;
           await refreshHealth();
           // Opening the panel is itself a good moment to bring the daemon up.
           // Fire-and-forget: the start poll can run 30s, and this handler must

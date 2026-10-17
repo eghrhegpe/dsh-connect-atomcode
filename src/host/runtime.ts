@@ -34,6 +34,7 @@
 import {
   healthInfo,
   listModels,
+  readDaemonIdentity,
   runCommand,
   spawnDaemon,
 } from './daemon.ts';
@@ -218,6 +219,12 @@ export function createRuntime({
       stats.sessionsError = error;
       if (error) log(`会话续接已降级（本轮回复不受影响）：${error}`);
     },
+    // Which daemon is answering now, so a remembered id issued by a daemon
+    // that has since exited is judged dead on AGE-INDEPENDENT evidence — a
+    // restart or idle exit (~30min) is the dominant way a side conversation
+    // dies, and the 24h TTL cannot see it. Read per accessor, not cached: the
+    // whole point is noticing a restart that happened minutes ago.
+    daemonIdentity: () => readDaemonIdentity(port),
   });
 
   /** Refresh daemon liveness with a short cache (used by both ask + stats). */
