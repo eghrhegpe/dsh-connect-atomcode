@@ -294,18 +294,38 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
     ].join('\n'), 'utf8');
     const { ctx, calls } = fakeCtx();
     const mod = await import(fileUrl(BRIDGE));
+    const { setSpawnOverride } = await import(fileUrl(REVIEW));
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
     process.env.HOME = fakeHome;
     process.env.USERPROFILE = fakeHome;
     try {
+      // Stub the CLI seam. Without this the run reaches the REAL atomcode binary
+      // (this host has one on PATH, so "there is no such binary" was a hope, not
+      // a premise) — a live CLI run inside the offline gate, on a tree that is
+      // not meant to be reviewed. The stub also makes the second assertion
+      // possible: the failure must be the STUBBED CLI failing, which is what
+      // proves the configured repo satisfied the requirement without spawning it.
+      setSpawnOverride(() => {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {};
+        setImmediate(() => {
+          child.stderr.emit('data', 'stub: no review CLI ran');
+          child.emit('exit', 1);
+        });
+        return child;
+      });
       mod.apply(ctx, { state_path: statePath, auto_start: false, review_working_dir: repo });
       const review = calls.tools.find((t) => t.name === 'atomcode_review');
-      // No such binary → the run fails, but the failure must NOT be the "needs a
-      // repository" refusal: the config satisfied the repo requirement.
+      // The failure must NOT be the "needs a repository" refusal: the config
+      // satisfied the repo requirement.
       const r = await review.execute({ base: 'main' }, {});
       assert.doesNotMatch(r.error, /needs a repository/, 'the configured repo must satisfy the requirement');
+      assert.match(r.error, /stub: no review CLI ran/, 'the stubbed CLI must be what failed');
     } finally {
+      setSpawnOverride(null);
       if (savedHome !== undefined) process.env.HOME = savedHome;
       if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
       const { rmSync } = await import('node:fs');
@@ -755,6 +775,41 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     // ask_max_rounds: the client labels default-vs-authored from config.defaults, so
     // the number in the shipped patch must be the number the host falls back to.
     assert.match(owners.get('ask_max_rounds') || '', /defaults/, 'ask_max_rounds must note that the panel reads its default from the snapshot');
+  });
+
+  it('every knob cordis.patch.yml documents is READ, and every knob read is documented', () => {
+    // Two directions, one disease: a hand-maintained correspondence with nothing
+    // watching it. A key the patch documents but `readConfig` never reads is a
+    // knob the user can set with NOTHING happening (and the patch is the field
+    // documentation of record, so that is where they will set it). A key
+    // `readConfig` honours but the patch never mentions is undiscoverable. The
+    // repo's other lists of this kind have each rotted once (docs code map,
+    // probes index, the release checklist), which is why this is a tripwire
+    // rather than a repair: today the two sets agree exactly, 17 v 17.
+    const yaml = readFileSync(join(__dirname, '..', 'cordis.patch.yml'), 'utf8');
+    const documented = [
+      ...new Set([...yaml.matchAll(/^\s{8}([a-z][a-z0-9_]*):/gm)].map((m) => m[1])),
+    ].sort();
+    const source = readFileSync(join(__dirname, '..', 'src', 'host', 'config.ts'), 'utf8');
+    // `config.js` / `tsdown.config.mjs` are FILE names, not knobs — the only
+    // false positive this pattern has ever produced.
+    const FILE_SUFFIX = new Set(['js', 'mjs', 'ts', 'json', 'yml', 'yaml', 'md']);
+    const honoured = [
+      ...new Set([...source.matchAll(/config\.([a-z][a-z0-9_]*)/g)].map((m) => m[1])),
+    ]
+      .filter((k) => !FILE_SUFFIX.has(k))
+      .sort();
+
+    assert.deepStrictEqual(
+      honoured.filter((k) => !documented.includes(k)),
+      [],
+      'readConfig honours a knob cordis.patch.yml never documents — no user can discover it',
+    );
+    assert.deepStrictEqual(
+      documented.filter((k) => !honoured.includes(k)),
+      [],
+      'cordis.patch.yml documents a knob readConfig never reads — setting it does nothing',
+    );
   });
 
   it('a configured default_provider reaches POST /chat', async () => {

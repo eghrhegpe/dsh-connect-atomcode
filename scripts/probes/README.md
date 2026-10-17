@@ -15,6 +15,7 @@
 | `real-review.mjs` | `.probe-review.mjs` | ⚠️ **1 个评审回合** | 同上 + 可用的直连 provider（本地代理） |
 | `chat-stop.mjs` | （直接入库） | ✅ **零额度**（只探 422/未知 id，不停真回合） | 运行中的 daemon（token 运行时读） |
 | `approval-mode.mjs` | （直接入库） | ⚠️ **1 个 flash 档位回合/模式**（422 枚举门零额度） | 运行中的 daemon + 登录态 |
+| `probe-gate-diff.mjs` | （直接入库） | ✅ **零额度**（重建到临时目录，不碰磁盘上的 `lib/`） | 本机 `tsdown`（devDependency）+ 已构建的工作树 |
 
 `signature-gate.mjs` 之所以零额度：它用**不存在的模型名 + 畸形 body**，请求必然卡在模型门或参数门，
 到不了真正的补全。这是刻意设计的——探签名门不该花钱。
@@ -34,6 +35,11 @@
   `build / accept_edits / bypass / plan`（单测里的 `on-request` 不合法）；`build` 与 `accept_edits`
   下强制命令类工具全程零 `permission_request`，命令被自动放行。README「共享仓库改非 bypass」
   的建议据此撤回，口径裁定记录在 `docs/DECISIONS.md`。
+- `probe-gate-diff.mjs` → **`build-gate` 的 `lib/ is not STALE` 红灯在并行编辑期间怎么归因**：
+  它按 `test/build-gate.test.mjs` 的同一条路径把 host 配置重建到临时目录，打印第一段差异——
+  「你忘了 `npm run build`」与「别人的半改比本机上次构建还新」是两件事，这条命令一次分开
+  （2026-10-17 实测是后者：对方在构建后 19 秒又改了 `src/host/tools.ts`，差异直指那一处）。
+  操作纪律写在 `AGENTS.md` 的并行会话一节。
 
 细节、对照表与残留风险见 [`../../docs/AtomGit-网关与-review-通路.md`](../../docs/AtomGit-网关与-review-通路.md)。
 

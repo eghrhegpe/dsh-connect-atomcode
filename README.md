@@ -217,7 +217,10 @@ ATOMCODE_LIVE_TURNS=1 npm run test:live
 
 ```bash
 npm test           # 离线套件由 scripts/test.mjs 自动发现（排除 *-live.test.mjs），本文不抄名单
-                   # 计数自己量：npm test 2>&1 | Select-String '^ℹ tests'（写死数字会过期，见 AGENTS.md）
+                   # runner 一个套件一个进程：每个套件印在自己的 ── test/x.test.mjs 头下，
+                   # 结尾再给一张 per-suite 表；CI 里每个套件是可折叠的 ::group:: 块
+                   # 计数自己量：npm test 2>&1 | Select-String '^ℹ tests'（每个套件一行，无总聚合）
+npm run coverage   # 同一批套件 + node 内置覆盖率报告（单进程聚合，零依赖，只测量不做门禁）
 ```
 
 各套件用本机 `node:http` 起**假 daemon**（或纯函数），所以把过去只有 live 套件覆盖（而没有 daemon 就直接跳过）的路径全部变成离线可测：

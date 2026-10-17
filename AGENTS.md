@@ -157,16 +157,21 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 
 ```bash
 npm test        # 离线门禁，全部走假 daemon / 假 spawn / 纯函数，零网络零额度
+npm run coverage    # 同一批套件 + node 内置覆盖率报告（单进程聚合，零依赖，仅测量不做门禁）
 npm run test:live   # 需要本机已登录的 AtomCode；真实模型回合需再显式 ATOMCODE_LIVE_TURNS=1
 node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 ```
 
 - **本文件不写套件数与 test 数。** 上一次写死"175"之后 **13 分钟**，并行会话就往链里加了
   `review-select`，数字当场过期。要计数自己量：
-  `npm test 2>&1 | Select-String '^ℹ tests'`（一行，node:test 的聚合摘要）。
+  `npm test 2>&1 | Select-String '^ℹ tests'`（**每个套件一行**，印在它自己的
+  `── test/x.test.mjs` 头上——runner 现在是**一个套件一个进程**，所以不再有一行聚合摘要；
+  这也正合下面那句「只看自己域的增减」）。
   套件由 [`scripts/test.mjs`](scripts/test.mjs) 自动发现 `test/*.test.mjs` 且排除 `*-live.test.mjs`，
   `package.json` 里不再有硬编码的 `scripts.test` 链——**所以新套件只要落盘就跑，不会再漏挂**（这是把
   "新套件写好了但没挂进链里"这类失误从代码层消掉，而不是靠纪律）。**只看自己域的增减**，别去对总数。
+  一个进程一个套件换来的三件事：CI 日志里每个套件是一个可折叠的 `::group::` 块、失败能直接归到文件、
+  某个套件把进程搞死不会带走剩下的套件；串行**保留**了，但理由已改成时序：几个套件用的是硬编码的「这里没有服务」端口，另有一处断言压在绝对时限上（`stats-route` 用 1600ms 等一个 1s 预算），并行会把已知的串行成本换成看负载的偶发红。（早先这里写「build-gate 会原地重建 `lib/`」——**不成立**：`test/build-gate.test.mjs` 把 `outDir` 改到 `mkdtemp` 里构建，只**读**已提交的产物。串行比它当初的理由活得久。）
 - `npm test` **不消耗额度**、不联网：全部用假 daemon / 假 spawn / 纯函数。
 - `test:live` 默认也**不消耗额度**——只有 `ATOMCODE_LIVE_TURNS=1` 才会跑真实回合。
 - **动了契约/接缝文件，跑全量**：`src/**`、`cordis.patch.yml`、`package.json`。消费者不可枚举——按域裁剪会漏掉跨域契约。
@@ -244,6 +249,11 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
   用同组文件 targeted 复跑（改前后各跑一次同一小组）定性。
 - **同一个文件被两个会话改着**：优先等对方提交；必须 hunk 级提交时 `git add <文件>` 后提交索引
   （**不要** `git commit -- <路径>`，那会把工作树里对方的半改一起写入）。
+- **`lib/ is not STALE` 在并行编辑期间亮红，先归因再怀疑自己。** `build-gate` 比的是「磁盘上的
+  `lib/`」与「本机上次构建时的 `src/`」，所以**别人在你构建之后几秒又改了 `src/host/*.ts`** 也会让它红，
+  那不等于你忘了 `npm run build`。用 `node scripts/probes/probe-gate-diff.mjs` 把 host 配置重建到临时目录
+  并打印第一段差异，一条命令归因（2026-10-17 实测：对方在我上次构建后 19 秒改了 `src/host/tools.ts`，
+  探针把差异指到那一处；结论与用法写在探针头注与 `scripts/probes/README.md`）。
 
 ## 去哪查（AI 专属落点）
 
@@ -254,7 +264,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 | 何时 | 查 |
 |---|---|
 | 第一次进这个仓库 | `docs/README.md`（索引）→ `README.md`（手册）→ 本文件（纪律） |
-| 加配置字段 | `cordis.patch.yml`（**全部字段带注释，是字段的注释真源**）+ `src/host/index.ts` 的 `apply` |
+| 加配置字段 | `cordis.patch.yml`（**全部字段带注释，是字段的注释真源**）+ `src/host/index.ts` 的 `apply`；`test/wiring.test.mjs` 有一条「patch.yml 与 `readConfig` 必须一一对应」的断言（两个方向都查） |
 | 加 / 改 client 槽位 | 本文件「宿主 ABI 面」+ `test/client-id.test.mjs` |
 | 协议漂移（daemon 换版本后行为变了） | `test/protocol.test.mjs`（故意说错的假 daemon 载荷）+ `protocol` 分支（面板显示 `daemonVersion` / `quotaTextDrift`） |
 | 改测试前 | `test/` 各套件头注——**头注就是契约**，不是附件 |

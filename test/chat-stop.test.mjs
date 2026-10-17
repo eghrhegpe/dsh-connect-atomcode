@@ -159,11 +159,28 @@ describe('askChat asks the daemon to stop a cut turn', () => {
   let server;
   let port;
   let stops;
+  /**
+   * How many SSE events the fake daemon has WRITTEN for the LATEST request.
+   * The cancel case waits for the session id to be out before it aborts: a fixed
+   * 40ms used to fire before `session_assigned` ever left the daemon, so that
+   * test only "passed" by reading the PREVIOUS test's `stops` entry (same fake
+   * daemon, same session id `sess-cut`) — run on its own it threw on
+   * `stops[stops.length - 1].body`. The counter is per-request so a stream the
+   * previous test left draining cannot satisfy the wait.
+   */
+  let written;
   before(async () => {
     const f = await startFakeDaemon((req, res) => {
       // A stream that is still flowing when the fuse/cancel lands: two
-      // tool_start events (the second trips maxRounds:1) and enough padding
-      // that a 40ms-later abort arrives mid-stream, not after the end.
+      // tool_start events (the second trips maxRounds:1) and 7 events × 60ms of
+      // padding, so a cancel that waits for the session id still lands mid-stream.
+      written = { n: 0 };
+      const counter = written;
+      const originalWrite = res.write.bind(res);
+      res.write = (chunk, ...rest) => {
+        counter.n += 1;
+        return originalWrite(chunk, ...rest);
+      };
       respondSse(res, [
         ...HEAD,
         { type: 'session_assigned', session_id: 'sess-cut' },
@@ -191,18 +208,31 @@ describe('askChat asks the daemon to stop a cut turn', () => {
     assert.equal(result.ok, false, 'the fuse must fail the turn');
     assert.match(result.error, /round fuse/);
     assert.equal(stops.length, before + 1, 'one stop request');
-    assert.equal(stops[stops.length - 1].body.session_id, 'sess-cut');
+    assert.equal(stops[before].body.session_id, 'sess-cut');
     assert.match(result.error, /已请求 daemon 停止该回合：\/chat\/stop 已应答/);
   });
 
   it('caller cancel fires → /chat/stop carries the session id', async () => {
+    const before = stops.length;
+    // Undefine the counter so the wait below cannot be satisfied by the stream the
+    // PREVIOUS test left draining: the handler gives us a fresh counter when THIS
+    // request arrives.
+    written = undefined;
     const ctrl = new AbortController();
     const promise = askChat({ message: 'go', port, signal: ctrl.signal, timeoutMs: 10_000 });
-    setTimeout(() => ctrl.abort(), 40);
+    // Abort once the session id has actually left the daemon (event 3 of 7): the
+    // cancel path needs something to name, and the padding above keeps this
+    // mid-stream. Waiting on the counter — not on a fixed delay — is what makes
+    // the assertions below about THIS turn instead of the previous one's leftovers.
+    const deadline = Date.now() + 3000;
+    while ((!written || written.n < 3) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(written && written.n >= 3, 'the fake daemon must deliver the session id before the cancel');
+    ctrl.abort();
     const result = await promise;
     assert.equal(result.ok, false);
     assert.match(result.error, /canceled by caller/);
-    assert.equal(stops[stops.length - 1].body.session_id, 'sess-cut');
+    assert.equal(stops.length, before + 1, 'exactly one stop request, from THIS turn');
+    assert.equal(stops[before].body.session_id, 'sess-cut');
   });
 });
 

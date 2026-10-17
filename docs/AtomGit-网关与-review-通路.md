@@ -90,7 +90,9 @@ review CLI → http://127.0.0.1:8899/v1（标准协议，api_key 任意串）
              api-ai.gitcode.com（不验签名）← CodingPlan 额度计费
 ```
 
-三步配好（验证花费：1 次 completion + 1 个评审回合；脚本见 [`../scripts/probes/`](../scripts/probes/)）：
+三步配好（验证花费：1 次 completion + 1 个评审回合；两条通路的探针分别是
+[`../scripts/probes/real-completion.mjs`](../scripts/probes/real-completion.mjs) 与
+[`../scripts/probes/real-review.mjs`](../scripts/probes/real-review.mjs)，头注写了成本与跑法）：
 
 ```powershell
 pip install atomcode-open-api      # 或 git clone 后 pip install -e .
