@@ -38,6 +38,10 @@
  *     300s). At the ceiling the child is SIGKILLed and the suite is reported as
  *     `TIMEOUT` in the same table as every other failure — see SUITE_TIMEOUT_MS
  *     below for why a hang detector is not just tidiness.
+ *  6. Each suite child runs with `--test-force-exit`, because suites mount the
+ *     plugin and never dispose it: without the flag a suite pays for its own
+ *     intervals after the last assertion (measured 9.5s of 14.5s on
+ *     `test/stats-route.test.mjs`). See the comment at the spawn site.
  *
  * The child's stdio is INHERITED, never piped: output streams live (a suite can
  * hold a port for seconds), and piped child stdio is what a confined sandbox
@@ -153,7 +157,17 @@ for (const file of files) {
   const name = rel(file);
   console.log(inCI ? `::group::${name}` : `\n── ${name}`);
   const started = Date.now();
-  const result = spawnSync(process.execPath, ['--test', '--test-reporter=spec', file], {
+  // `--test-force-exit`: every suite MOUNTS the plugin and never disposes it, so
+  // its quota-refresh interval (and the auto-start poll behind it) keeps the event
+  // loop alive long after the last assertion. Measured 2026-10-17 on
+  // `test/stats-route.test.mjs`: 14.5s of wall clock, 9.5s of it drain AFTER the
+  // final test (5.0s with this flag, 4.1s of which is the auto-start budgets).
+  // That drain is the harness's own shape rather than a leak for the gate to wait
+  // on — a mounted plugin's timers are supposed to live for the mount's lifetime —
+  // and the flag cannot hide a failure, since each suite is judged by the exit
+  // status of a process whose tests have already run. Deliberately NOT used on the
+  // coverage path above, where the reporter still has to write its table.
+  const result = spawnSync(process.execPath, ['--test', '--test-reporter=spec', '--test-force-exit', file], {
     stdio: 'inherit',
     timeout: SUITE_TIMEOUT_MS,
     killSignal: 'SIGKILL',

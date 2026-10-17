@@ -140,6 +140,38 @@ async function waitFor(cond, what, { timeoutMs = 10_000, stepMs = 20 } = {}) {
   assert.fail(`timed out after ${timeoutMs}ms waiting for ${what}`);
 }
 
+/**
+ * Cap the host's REAL deadlines for the duration of one case.
+ *
+ * Four cases below exercise a deadline by pointing the host at a fake server
+ * that accepts the connection and never answers — so the test waits out the
+ * whole budget: the 5s health/models probe, the 3.5s `/command status` call and
+ * the 2s sidecar probe, ~21s of this suite's ~25s. Every one of those budgets
+ * reaches its socket through `AbortSignal.timeout(...)`, so capping that call
+ * keeps each observable the assertions actually look at (the host's own named
+ * reason, the null catalogue plus its reason, the booked milliseconds) while
+ * costing ~120ms instead of seconds.
+ *
+ * This is a clock stand-in, not a mock of the code under test: the same abort
+ * lands on the same fetch and takes the same branch — the reason strings still
+ * name the production budgets, because the code interpolates its constant, not
+ * the elapsed time. Kept per-case (not suite-wide) so no healthy path that
+ * legitimately needs a budget is shortened behind another test's back.
+ */
+const DEADLINE_CAP_MS = 120;
+
+async function withShortDeadlines(capMs, body) {
+  const real = AbortSignal.timeout;
+  AbortSignal.timeout = function shortTimeout(ms) {
+    return real.call(AbortSignal, Math.min(ms, capMs));
+  };
+  try {
+    return await body();
+  } finally {
+    AbortSignal.timeout = real;
+  }
+}
+
 describe('stats route — registration and gates', () => {
   const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-stats-')), 'sessions.json');
   let route;
@@ -752,8 +784,9 @@ describe('stats route — a refused review is still accounted for', () => {
   // hole. They now exit through one `refuse()`. This drives the one refusal
   // path that genuinely SPENDS time (a local sidecar that accepts the connection
   // and never answers), because that is the only shape where the assertion can
-  // tell "booked" from "left at zero". The ~2s is the probe's own budget, not a
-  // sleep: it is paid once because the second candidate URL fails instantly.
+  // tell "booked" from "left at zero". The 2s sidecar probe budget is capped to
+  // DEADLINE_CAP_MS for this case, so the booking assertion is scaled to match;
+  // the wait is paid once because the second candidate URL fails instantly.
   let server;
   let sidecarPort = 0;
 
@@ -796,18 +829,18 @@ describe('stats route — a refused review is still accounted for', () => {
       const statsRoute = routes.find((r) => r.path === STATS_PATH);
       const review = tools.find((t) => t.name === 'atomcode_review');
       assert.ok(review, 'the review tool must be registered');
-      const r = await review.execute({ working_dir: repo }, {});
+      const r = await withShortDeadlines(DEADLINE_CAP_MS, () => review.execute({ working_dir: repo }, {}));
       assert.equal(r.ok, false);
       assert.match(r.error, /is not responding/, 'the dead-sidecar refusal is the path under test');
       assert.ok(
-        r.duration_ms >= 1500,
+        r.duration_ms >= 100,
         'a refusal must report the time it really spent, not a hardcoded 0',
       );
       const { body } = await callRoute(statsRoute);
       assert.equal(body.review.calls, 1);
       assert.equal(body.review.err, 1);
       assert.ok(
-        body.review.msTotal >= 1500,
+        body.review.msTotal >= 100,
         'a refusal that waited must not leave msTotal at 0 — the average duration would be low by construction',
       );
     } finally {
@@ -1195,13 +1228,18 @@ describe('stats route — auto-start on observation', () => {
       const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wedged-')), 'sessions.json');
       const route = mountRoute({ statePath, port: wedged.address().port, extra: { auto_start: false } });
       const startedAt = Date.now();
-      const { body } = await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
+      const { body } = await withShortDeadlines(DEADLINE_CAP_MS, () =>
+        callRoute(route, { headers: { host: '127.0.0.1:3080' } }),
+      );
       const elapsed = Date.now() - startedAt;
       assert.equal(body.daemon.up, false, 'a wedged daemon is not up');
       assert.equal(body.quota.available, false);
       assert.match(body.quota.reason, /有进程在监听/, 'and the reason names the state');
-      // The probe deadline is 5s; allow CI slack but fail on a hang.
-      assert.ok(elapsed < 9000, `the route must answer within the probe deadline, took ${elapsed}ms`);
+      // The 5s probe deadline is capped by withShortDeadlines above; allow CI
+      // slack and still fail on a hang, which is the regression this case exists
+      // for. The reason string below still names the production budget, because
+      // the code interpolates its constant rather than the elapsed time.
+      assert.ok(elapsed < 2000, `the route must answer within the probe deadline, took ${elapsed}ms`);
       rmSync(dirname(statePath), { recursive: true, force: true });
     } finally {
       for (const s of sockets) s.destroy();
@@ -1235,7 +1273,9 @@ describe('stats route — auto-start on observation', () => {
       const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wedged-models-')), 'sessions.json');
       const route = mountRoute({ statePath, port: half.address().port, extra: { auto_start: false } });
       const startedAt = Date.now();
-      const { body } = await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
+      const { body } = await withShortDeadlines(DEADLINE_CAP_MS, () =>
+        callRoute(route, { headers: { host: '127.0.0.1:3080' } }),
+      );
       const elapsed = Date.now() - startedAt;
       assert.equal(body.daemon.up, true, 'the daemon IS up — only /models is wedged');
       assert.equal(body.provider.ask.catalog, null, 'the catalogue is reported unavailable, not empty');
@@ -1243,7 +1283,7 @@ describe('stats route — auto-start on observation', () => {
         body.provider.ask.catalogError.length > 0,
         'and the dropdown gets a named reason instead of a bare empty list',
       );
-      assert.ok(elapsed < 9000, `the route must answer within the probe deadline, took ${elapsed}ms`);
+      assert.ok(elapsed < 2000, `the route must answer within the probe deadline, took ${elapsed}ms`);
       rmSync(dirname(statePath), { recursive: true, force: true });
     } finally {
       for (const s of sockets) s.destroy();
@@ -1276,7 +1316,9 @@ describe('stats route — auto-start on observation', () => {
       const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wedged-quota-')), 'sessions.json');
       const route = mountRoute({ statePath, port: half.address().port, extra: { auto_start: false } });
       const startedAt = Date.now();
-      const { body } = await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
+      const { body } = await withShortDeadlines(DEADLINE_CAP_MS, () =>
+        callRoute(route, { headers: { host: '127.0.0.1:3080' } }),
+      );
       const elapsed = Date.now() - startedAt;
       assert.equal(body.daemon.up, true, 'the daemon IS up — only the quota command is wedged');
       assert.equal(body.quota.available, false);
@@ -1285,7 +1327,7 @@ describe('stats route — auto-start on observation', () => {
         /daemon 未在 .*ms 内应答 \/command status/,
         'the reason must be the host\'s own wording, not Node\'s "The operation was aborted"',
       );
-      assert.ok(elapsed < 9000, `the route must answer within the client's patience, took ${elapsed}ms`);
+      assert.ok(elapsed < 2000, `the route must answer within the client's patience, took ${elapsed}ms`);
       rmSync(dirname(statePath), { recursive: true, force: true });
     } finally {
       for (const s of sockets) s.destroy();
