@@ -44,8 +44,12 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 
 ## 工作目录与装载方式（先搞清你改的东西怎么生效）
 
-- 本目录 `~/.dsh/plugins/dsh-atomcode-bridge` 是**开发副本**；web 端以符号链接载入
+- 本目录 `~/.dsh/plugins/dsh-connect-atomcode` 是**开发副本**；web 端以 link 依赖载入
   （`~/.dsh/profiles/web/node_modules/dsh-connect-atomcode` → 本目录，见 `.package-map.json`）。
+  一键装/卸用 DSH CLI（代跑 pnpm，装完自动 reconcile `dsh.profile.bundles`，不用手改
+  profile 的 `package.json` / `pnpm-lock.yaml` / junction）：
+  `dsh plugin --profile web add link:C:\Users\zhujieling11\.dsh\plugins\dsh-connect-atomcode` 与
+  `dsh plugin --profile web remove dsh-connect-atomcode`。GUI 插件页只装 registry 包，`link:` 开发副本走 CLI。
 - **这里有一条构建纪律，和 qoder / sensenova 同款**：改 `src/` → 跑 `npm run build` →
   **源码与产物一起提交**。浏览器与 Host 执行的是磁盘上的**产物**，所以"只改源码不构建"= 改动不生效，
   "只改产物不改进源码"= 下一次构建就被抹掉。两条都由 `test/build-gate.test.mjs` 拦：
@@ -211,6 +215,19 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
    （`default_provider`/`default_model` + `POST /config/reload`）。谁把写入点挪到那个文件上，
    就是踩这条红线（`test/stats-route.test.mjs` 里"写一次 pick 后 config.toml 逐字节不变、
    `~/.atomcode` 下不得出现任何 provider 文件"就是钉它的）。
+9. **注册工具时，schema 不许带着数组型并集（`type: ['string','null']` 一类）到 `tools.register`。**
+   宿主（当前 0.2.0-rc.1）只接受单类型字符串的 `type`：并集在 register 处被 `JsonSchemaError`
+   当场拒（报错形如 `... properties.success.type must be a single type string (type arrays are not
+   supported)`），`apply()` 抛错，插件**整体不激活**——没有工具、没有路由，详情页卡片只剩
+   「统计信息加载失败：HTTP 404 + 1 异常」，GUI 上再无其他错误面（2026-10 事故：开发树带并集，
+   已发 0.4.2 的桌面 registry 副本无并集故正常，web link 开发副本 404）。
+   本插件两个工具输出里的 null 语义字段一律经 `src/host/tools.ts` 的 `hostSubsetSchema` 在 register
+   处翻译：剥掉数组型 `type` 键 → annotation-only 节点（宿主校验器明确接受"无 type 键的
+   unconstrained-JSON 形态"），null 语义留在字段 `description` 里。**不许折成单型**：宿主在调用
+   时把返回值按 `output.schema` 校验，折成单型后每个合法 null 都会抛 `ToolOutputError`。
+   `test/wiring.test.mjs` 有契约钉：注册 schema 全程无数组型 `type`，且 null 承载字段保持
+   annotation-only。新增输出字段先判值域里 null 是否合法：合法 → 源里照写并集、register 处过
+   `hostSubsetSchema`；宿主版本漂移拒收某子集时，走测试守卫，不静默吞。
 
 ## 并行会话纪律
 
@@ -250,7 +267,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 ## 已知缺口（别当成"没做"，也别当成 bug）
 
 - **没有 `docs/PITFALLS.md` 与 `docs/ARCHITECTURE.md`**——本插件没有兄弟插件那套事故史账本；
-  三条事实 + 8 条红线 + `docs/DECISIONS.md` 就是全部的判断依据。别照抄一份空的出来占位。
+  三条事实 + 红线 + `docs/DECISIONS.md` 就是全部的判断依据。别照抄一份空的出来占位。
   （事故卷宗只有一份，按主题拆在 `docs/AtomGit-网关与-review-通路.md` 里。）
 - **发版手册在 `docs/RELEASING.md`**（状态判定表 + 不可逆点 + 动作顺序 + 本仓库特有坑，含 npm 内容核验与 GitHub Release 步骤）。核心纪律：版本号**两处手改**：
   `package.json` 的 `version`
