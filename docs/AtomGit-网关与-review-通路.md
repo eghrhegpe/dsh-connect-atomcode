@@ -6,7 +6,7 @@
 > 所以拆出来。README 只留结论摘要与指针。
 >
 > **证据可复现**：产出下面这些观测的脚本在 [`../scripts/probes/`](../scripts/probes/)，
-> 含成本标注（其中两个零额度、两个各花 1 个真实回合）。第三方许可见 [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)。
+> 含成本标注（**三个零额度、三个各花 1 个真实回合**——成本表在 [`../scripts/probes/README.md`](../scripts/probes/README.md)，不在这里抄）。第三方许可见 [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)。
 
 ---
 

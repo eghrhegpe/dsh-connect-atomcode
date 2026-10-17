@@ -349,7 +349,7 @@ AtomCode error: missing base URL: pass --base-url, set $ATOMCODE_BASE_URL, or ad
 | `POST /command` `{command:"status"}` | `lib/daemon.js: runCommand()` + `lib/quota.js` —— 额度显示 |
 | `POST /chat/stop` `{session_id}` | `lib/daemon.js: stopChat()` —— **插件本体已调用**：ask 回合被熔断 / 取消 / 流截断时，请求 daemon 停掉它（此前只断本端 HTTP 流）。契约见 `scripts/probes/chat-stop.mjs`：`session_id` 必填（空 body → 422）；未知 id → 200 `"was not running"`（**200 ≠ 回合被停掉**，故 `ok` 语义是"daemon 受理了请求"）；回合刚开始还没拿到 `session_assigned` 时无 id 可发，这一种情况在错误文本里具名 |
 | `atomcode daemon --port … --no-telemetry` | `lib/daemon.js: spawnDaemon()` —— 自动拉起 |
-| `atomcode review …` | `lib/review.js` —— `atomcode_review`（含 `--base/--staged/--pr/--diff-file/--task/--provider/--max-rounds/--max-duration/--json/--no-web/--no-telemetry`） |
+| `atomcode review …` | `lib/review.js` —— `atomcode_review`（含 `--repo/--base/--staged/--pr/--diff-file/--task/--provider/--max-rounds/--max-duration/--json/--no-web/--no-telemetry`；`--repo` 给了工作目录就带） |
 | `~/.atomcode/config.toml` | `lib/review.js: checkReviewProvision()` —— review 可用性静态探针 |
 
 **没用到的**（留作未来扩展）：`/live/*`、`/fs/*`、`/sessions`、`/skills`、`/providers/discover-models`、`atomcode --output-format jsonl`（无头一次性问答，可作为 ask 的另一条实现路径）。
