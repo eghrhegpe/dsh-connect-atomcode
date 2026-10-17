@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, utimesSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, after } from 'node:test';
@@ -223,10 +223,17 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
       'model = "qwen3.8-27b"',
     ].join('\n'), 'utf8');
 
-    // Override homedir temporarily.
-    const origHome = process.env.HOME || homedir();
+    // Override homedir temporarily. BOTH variables, because `os.homedir()`
+    // reads HOME on POSIX and USERPROFILE on Windows: setting only HOME is a
+    // no-op here on Windows, so the day this block grows an assertion that
+    // actually dereferences `homedir()` it would be green on Linux and red on
+    // the machine the author runs. (Today it is belt-and-braces anyway —
+    // `checkReviewProvision` is handed the config directory explicitly.)
+    const origHome = process.env.HOME;
+    const origUserProfile = process.env.USERPROFILE;
     try {
       process.env.HOME = fakeHome;
+      process.env.USERPROFILE = fakeHome;
       // Re-import review module (has cached checkReviewProvision import, but the probe reads fresh each call).
       const { checkReviewProvision } = await import(fileUrl(REVIEW));
       const prov = checkReviewProvision(join(fakeHome, '.atomcode'));
@@ -240,7 +247,14 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
       assert.match(prov.reason, /github\.com\/baimocn\/atomcode-open-api/);
       assert.match(prov.reason, /auth\.toml/);
     } finally {
-      process.env.HOME = origHome;
+      // Put back EXACTLY what was there: assigning `undefined` writes the string
+      // "undefined" into the variable (env values are strings), so a genuinely
+      // unset HOME/USERPROFILE — the Windows default is USERPROFILE only — has
+      // to be DELETED, not "restored".
+      if (origHome === undefined) delete process.env.HOME;
+      else process.env.HOME = origHome;
+      if (origUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = origUserProfile;
       const { rmSync } = await import('node:fs');
       rmSync(fakeHome, { recursive: true, force: true });
     }
