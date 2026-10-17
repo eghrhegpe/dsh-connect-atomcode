@@ -101,10 +101,10 @@ provider（本机实测通路是本地代理），否则插件会在调用前就
 | `auto_start` | `true` | 探测不到 daemon 时 detached 拉起。**面板或额度标签一被轮询就会触发**（ask 路径也会），不再是"等第一次调工具才拉" |
 | `binary` | `''` | 二进制名/路径（空 = PATH；`ATOMCODE_BIN` 亦可） |
 | `approval_mode` | `bypass` | ask 回合内 AtomCode 侧工具审批；合法值 `build / accept_edits / bypass / plan`（其余值 daemon 422）。⚠️ 2026-10-17 实测：无人值守下**非 bypass 也自动放行 ask 类工具**，改它不形成人审门。「缺目录就拒绝」的门**与它无关**（任何 mode 下取不到目录都拒绝——旧版只在 bypass 组合触发、换 mode 即静默丢门的耦合已修）。面板**不提供输入框**，只能在 patch 里改——详情页「回合边界」会标出这是插件默认还是你改过 |
-| `default_provider` | `''` | **ask 路径**缺省的**模型档位名**（如 `AtomGit-glm5.3-flash`）。优先级：调用参数 `provider` > **详情页面板里选的档位** > 本字段 > AtomCode 自己在 `config.toml` 里的默认。**空 = 本层不插手**（再往下交给面板选择/AtomCode）。详见「怎么换模型」 |
+| `default_provider` | `''` | **ask 路径**缺省的**模型档位名**（如 `AtomGit-glm5.3-flash`）。优先级：调用参数 `provider` > **详情页面板里选的档位** > 本字段 > AtomCode 自己在 `config.toml` 里的默认。**空 = 本层不插手**（再往下交给面板选择/AtomCode）。详见「怎么换 AtomCode 用的模型」 |
 | `review_default_provider` | `''` | **review 路径**缺省的**直连条目名**（`[providers.<name>]`，如 `atomcode-local`）。⚠️ 与上一行**不是同一个命名空间**：把 `AtomGit-*` 填这里等于给 CLI 一个它认不出的计费通道。优先级同上（面板的 review 下拉是独立一格）。空 = 沿用自动选择（config.toml 的 `default_provider` 可用则用 → 唯一直连条目顶上 → 多个则要求点名，不猜） |
 | `working_dir` | `''` | ask 回合的缺省工作目录（同时是侧边对话的会话键）。空 = 交给调用参数 / 宿主会话 cwd；**这三层都取不到时，ask 会拒绝该回合（与 `approval_mode` 无关）**（不放行无人值守的工具调用跑在用户 home 里），除非调用方传 `allow_unattended: true`。面板**不提供输入框**，只能在 patch 里改；详情页「回合边界」标出你改过没有 |
-| `review_working_dir` | `''` | **review 的缺省仓库根**。空 = review **不猜**，必须由调用传 `working_dir`（见「治理记录」） |
+| `review_working_dir` | `''` | **review 的缺省仓库根**。空 = review **不猜**，必须由调用传 `working_dir`（理由见 `docs/DECISIONS.md`） |
 | `state_path` | `''` | 会话映射文件（缺省 `~/.dsh/state/dsh-connect-atomcode/sessions.json`）。**面板选的模型档位存在同目录的 `provider.json`**，所以这一个旋钮同时决定两者的位置 |
 | `ask_max_rounds` | `25` | ask 的工具调用次数上限（按 SSE `tool_start` 事件计；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数）；`0` = 不限（交给 daemon 自带治理）。**上限 1000，超过按 1000 计**（钳制在代码里——熔断不是能被一个巨大数字关掉的东西；关它只能用 `0` 这个字面量）。>0 时插件在 SSE 上数 `tool_start`，超限即断开并返回 `atomcode turn aborted: agent exceeded N tool rounds`，**同时向 daemon 发 `POST /chat/stop` 请求停掉该回合**（契约为实测：`session_id` 必填；daemon 回 `was not running` 也是受理，只说明回合已结束）。所以它是"别再等了 + 尽力停止"的止损，不是远程 kill——回合刚开始、还没拿到 `session_assigned` 时无 id 可发，这一种情况在错误文本里写明。**计数会不会被改名致盲是可以当场判定的**：回合结束时 daemon 会自报它自己的工具调用次数（`daemon_tool_calls`），与本端计数对照即知这一轮熔断是准的、还是压根没生效——两者一致就说一致，对不上就说对不上（不再用"若被改名的是这类事件…"这种模棱两可的措辞）。面板**不提供输入框**；详情页「回合边界」标出这是默认还是你改过 |
 | `session_key_prefix` | 自动探测 | 会话键前缀，隔离多 profile（web / desktop）共用同一 state 文件；空 = 按 `DSH_PROFILE`/argv 自动判定 |
