@@ -5,14 +5,35 @@ name: ci
 # This workflow makes the gate — and the type check — run on every push and
 # PR, so a forgotten `npm run build` fails here instead of shipping a bundle
 # whose lib/ and client.js no longer match src/ to GitHub direct installs.
+#
+# TWO platforms on purpose. The plugin's host is Windows while CI used to be
+# Linux-only, and in 2026-10 that asymmetry produced two red published commits
+# in a row from fixtures that encoded a Windows-only coincidence (`C:\\repo`
+# used as a state-file KEY, and a `Z:\\...` path asserted to not exist — both
+# are ordinary relative paths to POSIX). Linux still catches the larger class,
+# but the mirror image is real: assertions built from `resolve()` on POSIX are
+# equally wrong on Windows, where the dev machine runs the suite by hand and
+# would be the only one to notice. Same gate, both directions.
 on:
   push:
     branches: [master]
   pull_request:
 
+# A push that supersedes an older one on the same ref does not need the older
+# run's answer; cancel it so the queue stays short.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      # Both legs report. A Linux-only failure and a Windows-only failure are
+      # different bugs; fail-fast would hide the second behind the first.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
