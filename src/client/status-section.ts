@@ -39,7 +39,7 @@ import {
   turnBoundaryRows,
 } from './rows.ts';
 
-/** One render prop for `Row` / `Metric` / `CallStat` — see index.ts. */
+/** One render prop for `Row` / `CallStat` — see index.ts. */
 type NumProps = { num: number; label: string; color?: string };
 
 /**
@@ -57,7 +57,6 @@ export interface StatusSectionDeps {
   };
   StatusPill: (props: { up: boolean }) => ReactElement;
   Row: (props: { label: string }, children?: unknown) => ReactElement;
-  Metric: (props: NumProps) => ReactElement;
   CallStat: (props: NumProps) => ReactElement;
   /** The model dropdown row (ask + review are two namespaces — 红线 8). */
   ProviderSelectRow: (props: any) => ReactElement;
@@ -70,7 +69,7 @@ export interface StatusSectionDeps {
  * @returns {(props: any) => ReactElement} the `StatusSection` component.
  */
 export function createStatusSection(deps: StatusSectionDeps) {
-  const { h, useStats, StatusPill, Row, Metric, CallStat, ProviderSelectRow } = deps;
+  const { h, useStats, StatusPill, Row, CallStat, ProviderSelectRow } = deps;
 
   /**
    * The bundle card's one-liner (`view: 'summary'`).
@@ -192,6 +191,34 @@ export function createStatusSection(deps: StatusSectionDeps) {
             ? h('span', { style: { ...S.updated, ...S.staleReason }, title: error }, error)
             : null
         ),
+        // Live strip for a turn that is running RIGHT NOW — the only fact on
+        // this page that changes while the user reads it, so it sits directly
+        // under the header instead of inside a card. It used to be the
+        // `ask 进行中` row of the 工具调用统计 card: the one living number on
+        // the panel, parked at the bottom of the grid — the last place anyone
+        // looks mid-turn. Rendered ONLY while a turn is in flight — absent
+        // means "no turn running", the normal state, which must not be given
+        // a fabricated value (`0 次工具调用` reads as a stalled turn, not an
+        // idle bridge). Numbers come from the same 5s poll as everything
+        // else, so they can lag by up to one interval; the tooltip says so
+        // rather than letting the reader assume a live socket.
+        ask.inFlight
+          ? h(
+              'div',
+              { style: S.inFlight },
+              h('span', { style: S.inFlightDot }),
+              h(
+                'span',
+                {
+                  style: S.inFlightLabel,
+                  title:
+                    '有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失',
+                },
+                'ask 回合进行中',
+              ),
+              h('span', { style: S.inFlightText }, inFlightText(ask.inFlight))
+            )
+          : null,
         // 静默降级的显式信号：额度文本形状变了（AtomCode 升级）时必须说出来，
         // 而不是让面板看起来像"额度为 0"。
         proto.quotaTextDrift
@@ -220,10 +247,98 @@ export function createStatusSection(deps: StatusSectionDeps) {
         h(
           'div',
           { style: S.grid },
-          // Card order is by how often a user READS each one, not by how the code
-          // happens to be written: 启动情况 / 运行环境 / 回合边界 are setup facts you
-          // check once, while CodingPlan 额度 is the figure that decides whether a
-          // turn will be throttled. See the note on the 额度 card below.
+          // Card order is by what each card changes for the reader's NEXT
+          // action, not by how the code happens to be written. CodingPlan 额度
+          // LEADS: it is the figure that decides whether a turn will be
+          // throttled — the only number here that gates what you can do right
+          // now. It used to sit LAST in this list while the comment above the
+          // grid argued for exactly the opposite; the order quietly lost that
+          // argument for as long as the card existed, and a reader asking
+          // "can I keep working" had to reach the end of the panel to find
+          // out. After it: check-once setup (启动情况 / 运行环境 / 回合边界),
+          // then the rest (侧边会话 / 工具调用统计) in their previous order.
+          // CodingPlan 额度
+          h(
+            'div',
+            { style: S.card },
+            h('p', { style: S.cardTitle }, 'CodingPlan 额度'),
+            !quota.available
+              ? h('p', { style: S.error }, quota.reason || '额度不可用（daemon 未运行或命令不可用）')
+              : quotaPct == null && !quota.plan
+                ? h(
+                    'div',
+                    null,
+                    h('p', { style: S.key }, quota.reason || '未能从 status 文本中识别出额度'),
+                    quota.raw && quota.raw.usageLine
+                      ? h('p', { style: S.key }, quota.raw.usageLine)
+                      : null,
+                    quota.raw && quota.raw.planLine
+                      ? h('p', { style: S.key }, quota.raw.planLine)
+                      : null
+                  )
+                : h(
+                    'div',
+                    // No extra inner wrapper: the card itself is already a
+                    // `flex-direction: column` with `gap: 6px`. Nesting another
+                    // `gap: 8px` column made THIS card's rhythm differ from every
+                    // neighbour, so its rows sat further apart and the card grew
+                    // taller than the ones beside it.
+                    null,
+                    // ONE headline number plus one clarifying clause — not two peer
+                    // gauges. `0%` is a RATIO and `1h26m` is a DURATION; rendering
+                    // both at 18px/700 side by side asked the reader to compare two
+                    // different quantities as if they were the same kind of fact.
+                    // The countdown is supporting detail, so it follows the number
+                    // in the label line at normal weight.
+                    quotaPct == null
+                      ? h(
+                          'div',
+                          { style: S.metric },
+                          h('span', { style: S.metricLabel }, quota.reason || '额度读数不可用')
+                        )
+                      : h(
+                          'div',
+                          { style: S.metric },
+                          h(
+                            'span',
+                            { style: { ...S.metricNum, color: quotaColor(quotaPct, quota.limited) } },
+                            pctLabel(quotaPct)
+                          ),
+                          h(
+                            'span',
+                            { style: S.metricLabel },
+                            '当前时间窗口用量' +
+                              (liveResetSecs == null ? '' : ' · ' + fmtCountdown(liveResetSecs) + ' 后重置')
+                          )
+                        ),
+                    quotaPct == null
+                      ? null
+                      : h(
+                          'div',
+                          {
+                            style: {
+                              height: '6px',
+                              borderRadius: '3px',
+                              border: '1px solid var(--dsw-alias-border-l1)',
+                              overflow: 'hidden',
+                            },
+                          },
+                          h('div', {
+                            style: {
+                              height: '100%',
+                              width: barWidth(quotaPct) + '%',
+                              background: quotaColor(quotaPct, quota.limited),
+                            },
+                          })
+                        ),
+                    h(Row, { label: '套餐' }, quota.plan || '—'),
+                    h(Row, { label: '到期' }, quotaExpiry || '—'),
+                    h(Row, { label: '重置于' }, quota.resetAt || '—'),
+                    quota.limited
+                      ? h('p', { style: S.error }, '当前 ' + windowLabel(quota.planWindow) + ' 窗口已用尽，回合会被限流')
+                      : null
+                  )
+          ),
           // 启动情况
           h(
             'div',
@@ -311,16 +426,17 @@ export function createStatusSection(deps: StatusSectionDeps) {
               h(Row, { key: 'bound-' + row.label, label: row.label }, h('span', { title: row.title }, row.text))
             )
           ),
-          // 会话
+          // 侧边会话
           h(
             'div',
             { style: S.card },
             h('p', { style: S.cardTitle }, '侧边会话'),
-            h(
-              'div',
-              { style: S.metrics },
-              h(Metric, { num: (data.sessions && data.sessions.tracked) || 0, label: '已跟踪会话' })
-            ),
+            // Inline counter, not a stacked metric: the 18px/700 number over
+            // an 11px caption was a SECOND type scale inside a card whose
+            // other rows are 12.5px, and this count is plumbing — it does not
+            // earn hero typography the way the 额度 headline does. The inline
+            // form is the one the 工具调用统计 card already uses.
+            h(CallStat, { num: (data.sessions && data.sessions.tracked) || 0, label: '已跟踪会话' }),
             // How stale the oldest surviving key is. Rendered ONLY when the host
             // actually knows the age: an unknown age must not print as `0s`,
             // which reads as "just now". The count above alone could not tell
@@ -384,110 +500,16 @@ export function createStatusSection(deps: StatusSectionDeps) {
               )
             ),
             h(Row, { label: 'ask 累计 tokens' }, String(ask.tokens)),
-            // Live row, rendered ONLY while a turn is running. Absent means "no
-            // turn in flight", which is the normal state — an always-present row
-            // would have to invent a value for it, and a fabricated `0 次工具调用`
-            // beside real counters reads as a stalled turn rather than an idle
-            // bridge. Numbers come from the same 5s poll as everything else, so
-            // they can lag by up to one interval; the tooltip says so rather
-            // than letting the reader assume a live socket.
-            ask.inFlight
-              ? h(
-                  Row,
-                  { label: 'ask 进行中' },
-                  h(
-                    'span',
-                    {
-                      title:
-                        '有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失',
-                    },
-                    inFlightText(ask.inFlight),
-                  ),
-                )
-              : null,
+            // The live "a turn is running" reading moved OUT of this card to a
+            // full-width strip under the panel header (see `S.inFlight`): it is
+            // the only fact on the page that changes while the user reads it,
+            // and it sat here at the bottom of the grid — the last place anyone
+            // looks mid-turn. Its rendering rules travel with it: present ONLY
+            // while a turn is in flight, counts and names but never reply
+            // content, and the 5s-poll lag stated in the tooltip rather than
+            // left for the reader to assume a live socket.
             h(Row, { label: 'ask 平均耗时' }, fmtDuration(askAvg)),
             h(Row, { label: 'review 平均耗时' }, fmtDuration(reviewAvg))
-          ),
-          h(
-            'div',
-            { style: S.card },
-            h('p', { style: S.cardTitle }, 'CodingPlan 额度'),
-            !quota.available
-              ? h('p', { style: S.error }, quota.reason || '额度不可用（daemon 未运行或命令不可用）')
-              : quotaPct == null && !quota.plan
-                ? h(
-                    'div',
-                    null,
-                    h('p', { style: S.key }, quota.reason || '未能从 status 文本中识别出额度'),
-                    quota.raw && quota.raw.usageLine
-                      ? h('p', { style: S.key }, quota.raw.usageLine)
-                      : null,
-                    quota.raw && quota.raw.planLine
-                      ? h('p', { style: S.key }, quota.raw.planLine)
-                      : null
-                  )
-                : h(
-                    'div',
-                    // No extra inner wrapper: the card itself is already a
-                    // `flex-direction: column` with `gap: 6px`. Nesting another
-                    // `gap: 8px` column made THIS card's rhythm differ from every
-                    // neighbour, so its rows sat further apart and the card grew
-                    // taller than the ones beside it.
-                    null,
-                    // ONE headline number plus one clarifying clause — not two peer
-                    // gauges. `0%` is a RATIO and `1h26m` is a DURATION; rendering
-                    // both at 18px/700 side by side asked the reader to compare two
-                    // different quantities as if they were the same kind of fact.
-                    // The countdown is supporting detail, so it follows the number
-                    // in the label line at normal weight.
-                    quotaPct == null
-                      ? h(
-                          'div',
-                          { style: S.metric },
-                          h('span', { style: S.metricLabel }, quota.reason || '额度读数不可用')
-                        )
-                      : h(
-                          'div',
-                          { style: S.metric },
-                          h(
-                            'span',
-                            { style: { ...S.metricNum, color: quotaColor(quotaPct, quota.limited) } },
-                            pctLabel(quotaPct)
-                          ),
-                          h(
-                            'span',
-                            { style: S.metricLabel },
-                            '当前时间窗口用量' +
-                              (liveResetSecs == null ? '' : ' · ' + fmtCountdown(liveResetSecs) + ' 后重置')
-                          )
-                        ),
-                    quotaPct == null
-                      ? null
-                      : h(
-                          'div',
-                          {
-                            style: {
-                              height: '6px',
-                              borderRadius: '3px',
-                              border: '1px solid var(--dsw-alias-border-l1)',
-                              overflow: 'hidden',
-                            },
-                          },
-                          h('div', {
-                            style: {
-                              height: '100%',
-                              width: barWidth(quotaPct) + '%',
-                              background: quotaColor(quotaPct, quota.limited),
-                            },
-                          })
-                        ),
-                    h(Row, { label: '套餐' }, quota.plan || '—'),
-                    h(Row, { label: '到期' }, quotaExpiry || '—'),
-                    h(Row, { label: '重置于' }, quota.resetAt || '—'),
-                    quota.limited
-                      ? h('p', { style: S.error }, '当前 ' + windowLabel(quota.planWindow) + ' 窗口已用尽，回合会被限流')
-                      : null
-                  )
           )
         )
       );

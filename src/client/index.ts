@@ -299,6 +299,13 @@ const REGISTRATION = {
       // a disabled reason: the control still works — until the local process
       // it bills through exits.
       const warning = model.warning || '';
+      // `warning` and `override` answer two different questions — what this
+      // pick DEPENDS ON vs which layer actually won — but both are "read this
+      // before you rely on this control", so they share ONE line, separated
+      // by ` · `. Stacked, they made the card grow two lines without warning
+      // the moment a loopback endpoint was picked. `trouble` keeps a line of
+      // its own: the control is unusable, and that outranks both.
+      const advisory = [warning, override].filter((part) => part !== '').join(' · ');
       return h(
         'div',
         { style: S.provCell },
@@ -318,8 +325,7 @@ const REGISTRATION = {
           )
         ),
         trouble ? h('span', { style: S.valWarn, title: trouble }, trouble) : null,
-        warning ? h('span', { style: S.valWarn, title: warning }, warning) : null,
-        override ? h('span', { style: S.valWarn, title: override }, override) : null,
+        advisory ? h('span', { style: S.valWarn, title: advisory }, advisory) : null,
         note ? h('span', { style: S.valIdle }, note) : null
       );
     }
@@ -463,23 +469,6 @@ const REGISTRATION = {
       );
     }
 
-    function Metric({
-      num,
-      label,
-      color,
-    }: {
-      num: unknown;
-      label: string;
-      color?: string;
-    }): ReactElement {
-      return h(
-        'div',
-        { style: S.metric },
-        h('span', { style: { ...S.metricNum, color: color || 'var(--dsw-alias-label-primary)' } }, String(num)),
-        h('span', { style: S.metricLabel }, label),
-      );
-    }
-
     function CallStat({
       num,
       label,
@@ -565,7 +554,6 @@ const REGISTRATION = {
       useStats,
       StatusPill,
       Row,
-      Metric,
       CallStat,
       ProviderSelectRow,
     });

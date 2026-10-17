@@ -43,6 +43,33 @@
 			color: "var(--dsw-alias-state-error-primary)",
 			maxWidth: "40ch"
 		},
+		inFlight: {
+			display: "flex",
+			alignItems: "center",
+			gap: "8px",
+			border: "1px solid var(--dsw-alias-border-l1)",
+			background: "var(--dsw-alias-bg-layer-1)",
+			borderRadius: "8px",
+			padding: "7px 12px",
+			fontSize: "12.5px",
+			lineHeight: "18px"
+		},
+		inFlightDot: {
+			width: "6px",
+			height: "6px",
+			borderRadius: "50%",
+			background: "var(--dsw-alias-state-success-primary)",
+			flexShrink: 0
+		},
+		inFlightLabel: {
+			fontWeight: 600,
+			color: "var(--dsw-alias-label-primary)",
+			whiteSpace: "nowrap"
+		},
+		inFlightText: {
+			color: "var(--dsw-alias-label-secondary)",
+			wordBreak: "break-word"
+		},
 		grid: {
 			display: "grid",
 			gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
@@ -121,11 +148,6 @@
 			padding: "1px 8px",
 			borderRadius: "5px",
 			lineHeight: "16px"
-		},
-		metrics: {
-			display: "flex",
-			gap: "14px",
-			flexWrap: "wrap"
 		},
 		metric: {
 			display: "flex",
@@ -727,7 +749,7 @@
 	* @returns {(props: any) => ReactElement} the `StatusSection` component.
 	*/
 	function createStatusSection(deps) {
-		const { h, useStats, StatusPill, Row, Metric, CallStat, ProviderSelectRow } = deps;
+		const { h, useStats, StatusPill, Row, CallStat, ProviderSelectRow } = deps;
 		/**
 		* The bundle card's one-liner (`view: 'summary'`).
 		*
@@ -805,7 +827,22 @@
 						...S.staleReason
 					},
 					title: error
-				}, error) : null), proto.quotaTextDrift ? h("div", { style: S.notice }, "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。") : null, protoNotice ? h("div", { style: S.notice }, protoNotice) : null, cfg.reviewAvailable ? null : h("div", { style: S.notice }, "代码评审（atomcode_review）当前不可用：" + (cfg.reviewReason || "本机 AtomCode 配置没有可用的直连 provider") + "。侧边咨询（atomcode_ask）不受影响。"), h("div", { style: S.grid }, h("div", { style: S.card }, h("p", { style: {
+				}, error) : null), ask.inFlight ? h("div", { style: S.inFlight }, h("span", { style: S.inFlightDot }), h("span", {
+					style: S.inFlightLabel,
+					title: "有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失"
+				}, "ask 回合进行中"), h("span", { style: S.inFlightText }, inFlightText(ask.inFlight))) : null, proto.quotaTextDrift ? h("div", { style: S.notice }, "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。") : null, protoNotice ? h("div", { style: S.notice }, protoNotice) : null, cfg.reviewAvailable ? null : h("div", { style: S.notice }, "代码评审（atomcode_review）当前不可用：" + (cfg.reviewReason || "本机 AtomCode 配置没有可用的直连 provider") + "。侧边咨询（atomcode_ask）不受影响。"), h("div", { style: S.grid }, h("div", { style: S.card }, h("p", { style: S.cardTitle }, "CodingPlan 额度"), !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", null, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", null, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
+					...S.metricNum,
+					color: quotaColor(quotaPct, quota.limited)
+				} }, pctLabel(quotaPct)), h("span", { style: S.metricLabel }, "当前时间窗口用量" + (liveResetSecs == null ? "" : " · " + fmtCountdown(liveResetSecs) + " 后重置"))), quotaPct == null ? null : h("div", { style: {
+					height: "6px",
+					borderRadius: "3px",
+					border: "1px solid var(--dsw-alias-border-l1)",
+					overflow: "hidden"
+				} }, h("div", { style: {
+					height: "100%",
+					width: barWidth(quotaPct) + "%",
+					background: quotaColor(quotaPct, quota.limited)
+				} })), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 " + windowLabel(quota.planWindow) + " 窗口已用尽，回合会被限流") : null)), h("div", { style: S.card }, h("p", { style: {
 					...S.cardTitle,
 					display: "flex",
 					alignItems: "center",
@@ -821,10 +858,10 @@
 				}))), cfg.reviewAvailable ? null : h(Row, { label: "评审可用性" }, h("span", { style: S.error }, "不可用 — 改用 atomcode_ask"))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "回合边界"), turnBoundaryRows(cfg).map((row) => h(Row, {
 					key: "bound-" + row.label,
 					label: row.label
-				}, h("span", { title: row.title }, row.text)))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "侧边会话"), h("div", { style: S.metrics }, h(Metric, {
+				}, h("span", { title: row.title }, row.text)))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "侧边会话"), h(CallStat, {
 					num: data.sessions && data.sessions.tracked || 0,
 					label: "已跟踪会话"
-				})), data.sessions && typeof data.sessions.oldestAgeMs === "number" ? h(Row, { label: "最旧一条" }, h("span", { title: "这些会话键里最老一条的存活时长。超过插件设定的存活期的键会被丢弃，之后的 continue 会开一条新线（不会静默复用一条死会话）" }, fmtDuration(data.sessions.oldestAgeMs))) : null, h(Row, { label: "运行时长" }, fmtDuration(data.uptimeMs)), data.sessions && data.sessions.error ? h("p", { style: S.error }, "会话续接已降级（回复不受影响）：" + data.sessions.error) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "工具调用统计"), h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
+				}), data.sessions && typeof data.sessions.oldestAgeMs === "number" ? h(Row, { label: "最旧一条" }, h("span", { title: "这些会话键里最老一条的存活时长。超过插件设定的存活期的键会被丢弃，之后的 continue 会开一条新线（不会静默复用一条死会话）" }, fmtDuration(data.sessions.oldestAgeMs))) : null, h(Row, { label: "运行时长" }, fmtDuration(data.uptimeMs)), data.sessions && data.sessions.error ? h("p", { style: S.error }, "会话续接已降级（回复不受影响）：" + data.sessions.error) : null), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "工具调用统计"), h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
 					num: ask.calls,
 					label: "调用"
 				}), h(CallStat, {
@@ -842,19 +879,7 @@
 				} }, h("span", { style: S.callGroupLabel }, "atomcode_review"), h(CallStat, {
 					num: review.calls,
 					label: "调用"
-				}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), ask.inFlight ? h(Row, { label: "ask 进行中" }, h("span", { title: "有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失" }, inFlightText(ask.inFlight))) : null, h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)), h(Row, { label: "review 平均耗时" }, fmtDuration(reviewAvg))), h("div", { style: S.card }, h("p", { style: S.cardTitle }, "CodingPlan 额度"), !quota.available ? h("p", { style: S.error }, quota.reason || "额度不可用（daemon 未运行或命令不可用）") : quotaPct == null && !quota.plan ? h("div", null, h("p", { style: S.key }, quota.reason || "未能从 status 文本中识别出额度"), quota.raw && quota.raw.usageLine ? h("p", { style: S.key }, quota.raw.usageLine) : null, quota.raw && quota.raw.planLine ? h("p", { style: S.key }, quota.raw.planLine) : null) : h("div", null, quotaPct == null ? h("div", { style: S.metric }, h("span", { style: S.metricLabel }, quota.reason || "额度读数不可用")) : h("div", { style: S.metric }, h("span", { style: {
-					...S.metricNum,
-					color: quotaColor(quotaPct, quota.limited)
-				} }, pctLabel(quotaPct)), h("span", { style: S.metricLabel }, "当前时间窗口用量" + (liveResetSecs == null ? "" : " · " + fmtCountdown(liveResetSecs) + " 后重置"))), quotaPct == null ? null : h("div", { style: {
-					height: "6px",
-					borderRadius: "3px",
-					border: "1px solid var(--dsw-alias-border-l1)",
-					overflow: "hidden"
-				} }, h("div", { style: {
-					height: "100%",
-					width: barWidth(quotaPct) + "%",
-					background: quotaColor(quotaPct, quota.limited)
-				} })), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 " + windowLabel(quota.planWindow) + " 窗口已用尽，回合会被限流") : null))));
+				}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)), h(Row, { label: "review 平均耗时" }, fmtDuration(reviewAvg)))));
 			}
 			return body;
 		};
@@ -1154,6 +1179,7 @@
 				const override = model.note;
 				const trouble = model.disabled ? model.reason : "";
 				const warning = model.warning || "";
+				const advisory = [warning, override].filter((part) => part !== "").join(" · ");
 				return h("div", { style: S.provCell }, h("span", {
 					style: S.provLabel,
 					title
@@ -1173,13 +1199,10 @@
 				}, option.label))), trouble ? h("span", {
 					style: S.valWarn,
 					title: trouble
-				}, trouble) : null, warning ? h("span", {
+				}, trouble) : null, advisory ? h("span", {
 					style: S.valWarn,
-					title: warning
-				}, warning) : null, override ? h("span", {
-					style: S.valWarn,
-					title: override
-				}, override) : null, note ? h("span", { style: S.valIdle }, note) : null);
+					title: advisory
+				}, advisory) : null, note ? h("span", { style: S.valIdle }, note) : null);
 			}
 			function useStats() {
 				const [data, setData] = useState(null);
@@ -1265,12 +1288,6 @@
 			function Row({ label, children }) {
 				return h("div", { style: S.row }, h("span", { style: S.key }, label), h("span", { style: S.val }, children));
 			}
-			function Metric({ num, label, color }) {
-				return h("div", { style: S.metric }, h("span", { style: {
-					...S.metricNum,
-					color: color || "var(--dsw-alias-label-primary)"
-				} }, String(num)), h("span", { style: S.metricLabel }, label));
-			}
 			function CallStat({ num, label, color }) {
 				return h("span", { style: {
 					...S.callStat,
@@ -1328,7 +1345,6 @@
 				useStats,
 				StatusPill,
 				Row,
-				Metric,
 				CallStat,
 				ProviderSelectRow
 			});

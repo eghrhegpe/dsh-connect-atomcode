@@ -46,6 +46,37 @@ export const S = {
     borderColor: 'var(--dsw-alias-state-error-primary)',
   },
   staleReason: { color: 'var(--dsw-alias-state-error-primary)', maxWidth: '40ch' },
+  // ── 回合进行中的 live 条（grid 上方，仅回合在跑时出现） ─────────────
+  // The one line on this page that changes while the user reads it. A strip,
+  // not a card row: it sits directly under the header because during a running
+  // turn it is the first thing a reader needs — it used to be a row in the
+  // middle of the 工具调用统计 card (5th of 6), where nobody looks mid-turn.
+  // The dot is its only ornament: "live" without a second badge competing with
+  // the header's 实时 pill. Surface tokens only, so it inherits the theme.
+  inFlight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    border: '1px solid var(--dsw-alias-border-l1)',
+    background: 'var(--dsw-alias-bg-layer-1)',
+    borderRadius: '8px',
+    padding: '7px 12px',
+    fontSize: '12.5px',
+    lineHeight: '18px',
+  },
+  inFlightDot: {
+    width: '6px',
+    height: '6px',
+    borderRadius: '50%',
+    background: 'var(--dsw-alias-state-success-primary)',
+    flexShrink: 0,
+  },
+  inFlightLabel: {
+    fontWeight: 600,
+    color: 'var(--dsw-alias-label-primary)',
+    whiteSpace: 'nowrap',
+  },
+  inFlightText: { color: 'var(--dsw-alias-label-secondary)', wordBreak: 'break-word' },
   // `auto-fit` + `minmax` is what makes the cards MERGE INTO A ROW on a wide
   // window instead of marching down one per line: columns are packed until the
   // track would fall below 320px, then they wrap. The old rule was a hardcoded
@@ -121,7 +152,6 @@ export const S = {
     borderRadius: '5px',
     lineHeight: '16px',
   },
-  metrics: { display: 'flex', gap: '14px', flexWrap: 'wrap' },
   metric: { display: 'flex', flexDirection: 'column', gap: '2px' },
   metricNum: { fontSize: '18px', fontWeight: 700, lineHeight: '22px' },
   metricLabel: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' },
