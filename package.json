@@ -2,8 +2,8 @@
   "name": "dsh-connect-atomcode",
   "displayName": "DSH AtomCode Bridge",
   "icon": "./icon.svg",
-  "version": "0.4.3",
-  "description": "An independent second opinion over your code, using your locally signed-in AtomCode: `atomcode_ask` (its own tool loop, main path) and `atomcode_review` (narrow diff self-check). No API key, no model takeover; the quota spent is your own AtomGit account's.",
+  "version": "0.4.4",
+  "description": "An independent second opinion over your code, using your locally signed-in AtomCode: `atomcode_ask` (its own tool loop, main path) plus a one-click `/atomcode-review` for a diff self-check. No API key, no model takeover; the quota spent is your own AtomGit account's.",
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",

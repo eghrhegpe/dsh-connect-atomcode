@@ -11,21 +11,23 @@
 # socket (it breaks DSH's tool loop, punches through its permission model,
 # and re-feeds O(N²) tokens per turn). What the bridge offers instead:
 #   - atomcode_ask    side-conversation relay over the daemon /chat SSE,
-#                     with per-working_dir session continuity
-#   - atomcode_review  a code review run as an ordinary daemon turn, over the
-#                     SAME channel as ask (round + wall-clock fuses). It used to
-#                     spawn the CLI `review` subcommand; that path is gone — see
-#                     the note below.
+#                     with per-working_dir session continuity — the ONE tool
+#   - /atomcode-review  a slash command that runs a code review as an ordinary
+#                     daemon turn, over the SAME channel as ask (round +
+#                     wall-clock fuses). It used to spawn the CLI `review`
+#                     subcommand; that path is gone — see the note below. The
+#                     model-facing `atomcode_review` tool was retired: when the
+#                     model wants a review it calls atomcode_ask.
 #
 # Every knob is plain configuration — edit here, or override the same row id
 # in the profile's cordis.patch.yml, then reload. There is no BRIDGE-side API
 # key: the bridge authenticates with the local ~/.atomcode daemon token.
 #
-# ONE CHANNEL (2026-10): both tools now go through the daemon. The CLI path
+# ONE CHANNEL (2026-10): every entry point goes through the daemon. The CLI path
 # could not use AtomGit-gateway or account-resolved providers (it resolved only
 # direct `[providers.<name>]` entries with a plain base_url + api_key, and
 # refused the gateway outright: "signing-enforced gateway ... cannot
-# authenticate"), which made `atomcode_review` unusable on a machine that only
+# authenticate"), which made a review unusable on a machine that only
 # had the gateway — the common case, and the one this plugin exists for. A
 # review is now a prompt to the same daemon turn ask uses, and AtomCode runs
 # `git diff` itself. The cost, stated plainly: there is no structured
@@ -88,7 +90,7 @@
         # Persistent reasoning-effort default sent with every bridged /chat turn.
         # Empty = the daemon's own persistent value applies (model-dependent, see
         # GET /models `reasoning_effort`). A per-call `reasoning_effort` argument
-        # on atomcode_ask / atomcode_review overrides this for that turn only.
+        # on atomcode_ask overrides this for that turn only.
         # The daemon answers `{"ok":false,"error":"reasoning_effort not supported
         # by <provider>"}` when the level is not in the model's effort_levels —
         # the plugin passes the value through and does not pre-validate.
@@ -161,8 +163,9 @@
         #                 verbatim, and an EMPTY text is refused by the caller
         #                 (a review with no target fails fast and visibly
         #                 instead of asking AtomCode to guess).
-        # Applies to BOTH review entry points: the `/atomcode-review` composer
-        # line and the `atomcode_review` tool's `task` argument. The value is a
+        # Applies to the `/atomcode-review` composer line: it decides the brief
+        # that command sends when the user text is empty. (The model-facing
+        # `atomcode_review` tool this once also governed is retired.) The value is a
         # closed plugin-side enum; a misspelling falls back to the default and
         # is reported on the panel as a rejection.
         review_brief_mode: when-empty

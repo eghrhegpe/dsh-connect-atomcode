@@ -231,7 +231,7 @@ export const S = {
   bar: { height: 6, borderRadius: 3, background: 'var(--dsw-alias-bg-layer-1)', overflow: 'hidden', border: '1px solid var(--dsw-alias-border-l1)' },
   barFill: { height: '100%', borderRadius: 3 },
 
-  // ── 并排计数（atomcode_ask / atomcode_review） ─────────────────────────
+  // ── 工具调用计数（atomcode_ask） ───────────────────────────────────────
   callGroups: { display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'baseline' },
   callGroup: { display: 'flex', gap: 12, alignItems: 'baseline', paddingRight: 16, borderRight: '1px solid var(--dsw-alias-border-l1)' },
   callGroupLabel: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap' },

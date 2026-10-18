@@ -29,9 +29,10 @@ shell+curl+base64 管道、`.agent-presets` 目录式预设。
 - 不在 `package.json` 的 `files[]` 里，不会被 npm 打包；
 - **不是构建输入、不参与测试**。
 
-它的作用是让 `atomcode_review` 变得可用：把 CodingPlan 额度转成本地标准 OpenAI 端点（`127.0.0.1:8899`），
+它的作用是让基于 CLI 的评审通路（**已成为历史**）变得可用：把 CodingPlan 额度转成本地标准 OpenAI 端点（`127.0.0.1:8899`），
 从而让只认「标准 + 显式 `api_key`」的 review CLI 有路可走。**要不要用请读完那篇档案再决定**——
-本文件不替它背书。
+本文件不替它背书。评审 CLI 已随单通道改造删除，本插件当前的通路（`atomcode_ask` 与
+`/atomcode-review`）都走 daemon，**不需要这个本地端点**。
 
 ### ⚠️ 一条与技术无关的提示
 

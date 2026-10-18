@@ -80,9 +80,10 @@ const REVIEW_BRIEF =
  *   empty text yields `''`, which the CALLER must refuse (a review with no
  *   target and no scope is a wasted turn, so it fails fast and visibly).
  *
- * Both entry points keep their own copy of the brief text (`DEFAULT_REVIEW_TASK`
- * in `tools.ts` is the twin of `REVIEW_BRIEF` here): a review asks the same
- * thing no matter where it is started from.
+ * This is the brief text for the `/atomcode-review` command. It used to have a
+ * twin (`DEFAULT_REVIEW_TASK` in `tools.ts`) for the retired `atomcode_review`
+ * tool; the command keeps its own copy so a command-started review still asks
+ * the same thing.
  */
 export function composeReviewPrompt(extra: string, mode: ReviewBriefMode = 'when-empty'): string {
   const note = typeof extra === 'string' ? extra.trim() : '';

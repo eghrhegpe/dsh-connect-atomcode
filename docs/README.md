@@ -9,12 +9,12 @@
 
 ## 一分钟了解
 
-插件注册**两个工具**：
+插件给模型注册**一个工具**，人侧另有**一条斜杠命令**：
 
-| 工具 | 干什么 | 底层 | 本机状态 |
+| 入口 | 干什么 | 底层 | 本机状态 |
 |---|---|---|---|
-| `atomcode_ask` | 侧边咨询：一条消息进，AtomCode 执行**一个完整自主回合**（它自带工具循环），整轮回复出来 | daemon `POST /chat`（SSE） | ✅ 开箱可用 |
-| `atomcode_review` | one-shot 代码评审：未提交改动 / base 分支 / PR / diff 文本 / 自定义任务，返回 `--json` findings | CLI `atomcode review` | ⚠️ 需另配 provider，见下 |
+| `atomcode_ask`（工具） | 侧边咨询：一条消息进，AtomCode 执行**一个完整自主回合**（它自带工具循环），整轮回复出来 | daemon `POST /chat`（SSE） | ✅ 开箱可用 |
+| `/atomcode-review`（命令） | 代码评审：未提交改动 / base 分支 / PR / diff 文本 / 自定义任务。宿主侧执行，不占模型回合 | daemon `POST /chat`（SSE），与 ask 同一条 | ✅ 开箱可用 |
 
 **不需要 API Key**：ask 走本地 daemon token；网关签名内置于官方二进制。
 
@@ -26,10 +26,12 @@
 
 ## 三个已知要点
 
-1. **`atomcode_review` 与 `atomcode_ask` 现在走同一条 daemon `/chat` 通道（m01249 单通道决定）。**
+1. **代码评审与 `atomcode_ask` 走同一条 daemon `/chat` 通道（m01249 单通道决定）。**
    此前的 CLI 通路（`atomcodex`）因 AtomGit 网关签名限制已删除。历史档案（为什么 CLI 不通、
    签名门对照实验、本地代理修法）在 [`AtomGit-网关与-review-通路.md`](./AtomGit-网关与-review-通路.md)。
    代价：没有结构化 `findings[]`（报告是文字）。收益：不再有"ask 能跑而 review 不能"的分裂态。
+   **模型侧的 `atomcode_review` 工具后来也退役了**：工具表里只剩 `atomcode_ask`，评审由
+   `/atomcode-review` 命令与「锐评」按钮承担——两者都复用同一条通道，能力一个没少。
 
 2. **额度显示是从本地化文本解析出来的。**
    AtomCode 没有额度 HTTP 接口，唯一来源是 `POST /command {"command":"status"}` 返回的 `text`。

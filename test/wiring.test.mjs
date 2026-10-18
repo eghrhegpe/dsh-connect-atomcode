@@ -1,8 +1,8 @@
 /**
  * wiring.test.mjs — tools-only plugin wiring under a fake Cordis context.
  *
- * v0.3 ships no LlmAdapter: the bridge registers exactly two model tools
- * (`atomcode_ask`, `atomcode_review`) and nothing on the `llm` service.
+ * v0.3 ships no LlmAdapter: the bridge registers exactly one model tool
+ * (`atomcode_ask`) and nothing on the `llm` service.
  */
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -112,13 +112,13 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
     assert.ok(!source.includes('registerConfigurableProviders'), 'no provider directory registration');
   });
 
-  it('registers exactly two tools: atomcode_ask + atomcode_review', async () => {
+  it('registers exactly one tool: atomcode_ask', async () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wiring-')), 'sessions.json');
     const { ctx, calls } = fakeCtx();
     const mod = await import(fileUrl(BRIDGE));
     mod.apply(ctx, { state_path: statePath, auto_start: false });
-    assert.deepEqual(calls.tools.map((t) => t.name).sort(), ['atomcode_ask', 'atomcode_review']);
-    assert.equal(calls.effects, 1, 'one effect registers both disposers');
+    assert.deepEqual(calls.tools.map((t) => t.name), ['atomcode_ask']);
+    assert.equal(calls.effects, 1, 'one effect registers the disposer');
     for (const def of calls.tools) {
       assert.equal(typeof def.execute, 'function');
       assert.ok(def.output.schema, 'every tool declares an output schema');
@@ -138,7 +138,7 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
     {
       const { ctx, calls } = fakeCtx();
       mod.apply(ctx, { state_path: statePath, auto_start: false });
-      assert.deepEqual(calls.tools.map((t) => t.name).sort(), ['atomcode_ask', 'atomcode_review']);
+      assert.deepEqual(calls.tools.map((t) => t.name), ['atomcode_ask']);
     }
 
     // 2. A host WITH `commands`: the command is registered under its own name,
@@ -158,7 +158,7 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
       ctx.commands = commands;
       ctx.get = ((original) => (name) => (name === 'commands' ? commands : original(name)))(ctx.get);
       mod.apply(ctx, { state_path: statePath, auto_start: false });
-      assert.deepEqual(calls.tools.map((t) => t.name).sort(), ['atomcode_ask', 'atomcode_review']);
+      assert.deepEqual(calls.tools.map((t) => t.name), ['atomcode_ask']);
       assert.deepEqual(
         registered.map((d) => d.name),
         ['atomcode-review'],
@@ -229,14 +229,9 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
       ask.output.schema.properties.daemon_tool_calls,
       ask.output.schema.properties.daemon_rounds,
     ];
-    // Review's output is a plain report now, and the same rule applies to ITS
-    // null-carrying field: `working_dir` is null when a turn resolved no
-    // directory, so it must stay annotation-only. (`provider` is NOT one of
-    // these any more — it is a single-type string that always carries a value,
-    // because a review turn is an ask turn and ask always reports one.)
-    const review = calls.tools.find((t) => t.name === 'atomcode_review');
-    const reviewFields = [review.output.schema.properties.working_dir];
-    for (const node of [...askFields, ...reviewFields]) {
+    // (`provider` is NOT one of these — it is a single-type string that always
+    // carries a value, because a turn always reports one.)
+    for (const node of askFields) {
       assert.ok(!('type' in node), 'null-carrying field must stay annotation-only (no single-type fold)');
     }
   });
@@ -266,42 +261,13 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
     }
   });
 
-  it('atomcode_review schema carries the diff selection + fuses, and no CLI-only knobs', async () => {
-    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wiring-')), 'sessions.json');
-    const { ctx, calls } = fakeCtx();
-    const mod = await import(fileUrl(BRIDGE));
-    mod.apply(ctx, { state_path: statePath });
-    const review = calls.tools.find((t) => t.name === 'atomcode_review');
-    for (const key of ['working_dir', 'task', 'base', 'staged', 'pr', 'diff_text', 'provider', 'max_rounds', 'timeout_secs']) {
-      assert.ok(review.parameters.properties[key], `missing param ${key}`);
-    }
-    assert.deepEqual(review.parameters.required, [], 'review has no required params (working_dir has a config fallback)');
-    // The CLI's knobs must be GONE, not merely optional: `max_duration_secs` and
-    // `enable_web` were argv flags (`--max-duration`, `--no-web`) and a daemon
-    // turn takes neither. Keeping them would advertise control the plugin does
-    // not have — the same "description states an outcome the code cannot
-    // deliver" failure this suite exists to prevent.
-    for (const key of ['max_duration_secs', 'enable_web']) {
-      assert.ok(!review.parameters.properties[key], `\`${key}\` was a CLI argv flag — a daemon turn has no such knob`);
-    }
-    // Output is a report, not a findings[] document. `findings` staying here as
-    // an always-empty array would be the misleading half of the old shape.
-    for (const key of ['ok', 'report', 'truncated', 'tokens', 'usage', 'rounds', 'tools', 'working_dir', 'provider', 'error']) {
-      assert.ok(review.output.schema.properties[key], `missing output field ${key}`);
-    }
-    assert.ok(
-      !review.output.schema.properties.findings,
-      'the CLI used to return a structured `findings[]`; the daemon returns prose, so the field must not survive as a constant empty array',
-    );
-  });
-
   it('config {get()} boxes are unwrapped and malformed values degrade', async () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wiring-')), 'sessions.json');
     const { ctx, calls } = fakeCtx();
     const mod = await import(fileUrl(BRIDGE));
     const box = (v) => ({ get: () => v });
     mod.apply(ctx, { port: box(99999999), auto_start: box(true), state_path: statePath });
-    assert.equal(calls.tools.length, 2, 'mount survives garbage config');
+    assert.equal(calls.tools.length, 1, 'mount survives garbage config');
   });
 
   it('missing tools service leaves the mount quiet', async () => {
@@ -317,31 +283,6 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
     mod.apply(ctx, {}); // must not throw
   });
 
-  it('atomcode_review REFUSES rather than falling back to the host process cwd', async () => {
-    // The v0.3 hole, still live after the channel change: with neither
-    // `working_dir` on the call nor the plugin config, the turn would run in
-    // cwd = process.cwd() - the DSH launch directory - so AtomCode's own
-    // `git diff` reviews the wrong tree (or nothing) while the tool reports
-    // whatever the model said. A wrong-repo review that looks successful is
-    // worse than a refusal. It is now the SAME refusal `atomcode_ask` gives,
-    // for the same reason: one channel, one rule about cwd.
-    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-wd-')), 'sessions.json');
-    const { ctx, calls } = fakeCtx();
-    const mod = await import(fileUrl(BRIDGE));
-    // NOTE: no working_dir in this config.
-    mod.apply(ctx, { state_path: statePath, auto_start: false });
-    const review = calls.tools.find((t) => t.name === 'atomcode_review');
-    const r = await review.execute({ base: 'main' }, {});
-    assert.equal(r.ok, false);
-    // The same refusal `atomcode_ask` gives (it IS the same runner now), and it
-    // names the field, the reason and the ways forward. Pinning the wording
-    // loosely: it is a message, not a wire contract — but "拒绝" and the field
-    // name are the two things a model needs to retry correctly.
-    assert.match(r.error, /working_dir/, 'the refusal must name the missing field');
-    assert.match(r.error, /拒绝|refus/i, 'and say it refused rather than reporting a review');
-    assert.equal(r.working_dir, null, 'a refused review ran nowhere — not "ran in the host cwd"');
-    assert.doesNotMatch(r.error, /stub|CLI/, 'nothing was spawned: the refusal is before the daemon');
-  });
 });
 
 describe('lib/index.js — ask safety defaults', () => {
@@ -815,7 +756,7 @@ describe('lib/index.js — default_provider / review_default_provider (two names
 
   it('a non-string default_provider is dropped, never stringified (config is unvalidated)', async () => {
     const { ask, chats, calls } = await mountAsk({ default_provider: 42 });
-    assert.equal(calls.tools.length, 2, 'the mount survives garbage config');
+    assert.equal(calls.tools.length, 1, 'the mount survives garbage config');
     await ask.execute({ message: 'hi' }, {});
     assert.ok(!('provider' in chats[0]), 'a number must not be coerced into a provider name');
   });
@@ -832,7 +773,7 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     // the value must never reach /chat (it is a `[providers.<name>]` entry name,
     // which the daemon's profile ladder does not know).
     const { ask, chats, calls } = await mountAsk({ review_default_provider: 'atomcode-local' });
-    assert.equal(calls.tools.length, 2, 'the mount survives a knob it no longer reads');
+    assert.equal(calls.tools.length, 1, 'the mount survives a knob it no longer reads');
     const r = await ask.execute({ message: 'hi' }, {});
     assert.equal(r.ok, true, r.error);
     assert.ok(!('provider' in chats[0]), `a dead knob must not reach /chat, got ${JSON.stringify(chats[0].provider)}`);
@@ -843,10 +784,10 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     // call. AtomCode 5.x has no "provider == vendor" notion on this path; passing
     // "glm5.3-flash" instead of "AtomGit-glm5.3-flash" is the obvious wrong move.
     //
-    // Both tools now describe the SAME ladder (one channel), so both descriptions
-    // are checked here — and neither may claim an OUTCOME. A tool description is
-    // registered ONCE at mount, while the panel pick is read PER CALL, so the
-    // order of resolution is safe to state and "empty means this one" is not.
+    // The one tool describes the ladder — and it may not claim an OUTCOME. A tool
+    // description is registered ONCE at mount, while the panel pick is read PER
+    // CALL, so the order of resolution is safe to state and "empty means this
+    // one" is not.
     const dir = mkdtempSync(join(tmpdir(), 'atomcode-dp-desc2-'));
     stateDirs.push(dir);
     const { ctx, calls } = fakeCtx();
@@ -863,17 +804,6 @@ describe('lib/index.js — default_provider / review_default_provider (two names
     assert.match(ask.parameters.properties.provider.description, /GET \/models/);
     assert.match(ask.parameters.properties.provider.description, /不要传裸模型 id/);
     assert.match(ask.parameters.properties.provider.description, /面板上选的档位/);
-
-    const review = calls.tools.find((t) => t.name === 'atomcode_review');
-    assert.match(review.description, /档位名/, 'the review description must name the kind of value expected');
-    assert.match(review.description, /详情页面板上选的档位/, 'and lead with the panel pick');
-    assert.match(review.description, /不是裸模型 id/, 'the bare model id warning is the same warning');
-    assert.doesNotMatch(review.description, /留空即点名它/, 'no unconditional "empty means this one" claim');
-    assert.doesNotMatch(
-      review.description,
-      /直连条目|providers\.<name>/,
-      'the direct [providers.<name>] namespace died with the CLI and must not be taught any more',
-    );
   });
 
 });

@@ -70,7 +70,7 @@ export const APPROVAL_MODES_TEXT = APPROVAL_MODES.join(' / ');
 /**
  * The closed set the review brief injection accepts — a plugin-side enum, not a
  * daemon one, so no upstream 422 gate: it picks which prompt `runReviewCommand`
- * and `atomcode_review` send when the user text is empty.
+ * and the `/atomcode-review` command send when the user text is empty.
  *
  * `always`     — the brief is sent on every review; non-empty user text is
  *                appended after it (the pre-v1 behaviour, kept for scope-fanatics).
@@ -203,8 +203,9 @@ export function resolveMaxRounds(raw: unknown, fallback: number): number {
  * keeps ours the binding fuse with room to report rather than race the host's.
  *
  * The prose used to name `atomcode_review`'s process-level backstop here; that
- * backstop went away with the CLI. Both entry points now spend one budget
- * against one daemon turn, so this ceiling is a property of the channel.
+ * backstop went away with the CLI, and the tool itself was later retired.
+ * `/atomcode-review` now spends one budget against one daemon turn, so this
+ * ceiling is a property of the channel.
  */
 export const MAX_REVIEW_DURATION_SECS = HOST_TOOL_TIMEOUT_SECS - 60;
 
@@ -308,9 +309,9 @@ export function readConfig(rawConfig: Record<string, any>) {
   // `review_brief_mode` is a CLOSED plugin-side enum (REVIEW_BRIEF_MODES): a
   // misspelling falls back to the shipped default HERE and the raw spelling rides
   // up on `reviewBriefModeRejected`, the same fail-visible shape as approval_mode.
-  // This value decides which prompt `/atomcode-review` and `atomcode_review`
-  // send when the user text is empty (always / when-empty / never — see the
-  // enum's block comment for the semantics).
+  // This value decides which prompt `/atomcode-review` sends when the user text
+  // is empty (always / when-empty / never — see the enum's block comment for the
+  // semantics).
   const requestedBriefMode =
     typeof config.review_brief_mode === 'string' ? config.review_brief_mode.trim() : '';
   const reviewBriefModeRejected =

@@ -1,8 +1,8 @@
 # AtomGit 网关与 review 通路 —— 实测档案（历史卷宗）
 
 > **这篇现在是什么。** 它原先是 README 主体的一大节，后来是「review CLI 为什么不通 + 怎么绕」的档案。
-> 从单通道改造（2026-10）起，**review CLI 这条代码路径已被整个删除**：`atomcode_review` 与
-> `/atomcode-review` 都走 daemon 的 `runAsk`，是一次**带 diff 任务的 ask 回合**。
+> 从单通道改造（2026-10）起，**review CLI 这条代码路径已被整个删除**：`/atomcode-review` 走 daemon 的
+> `runAsk`，是一次**带 diff 任务的 ask 回合**（模型侧的 `atomcode_review` 工具后来也退役了，只留命令）。
 > 所以这一页从「怎么把 review 弄通」变成了**为什么当初弄不通、以及这个结论怎么促成了单通道决定**的证据卷宗。
 > 想装插件、想用评审的人看 [`../README.md`](../README.md)；这一页只回答「为什么原来那样」。
 >
@@ -151,7 +151,7 @@ report: { "findings": [], "text": "The `version` field in package.json is `0.4.0
 
 ## 单通道改造：把上面这一整套删掉（2026-10）
 
-**决定**：`atomcode_review` 与 `/atomcode-review` 两个入口都保留，但底下**只留 daemon 这一条通道**——
+**决定**：评审的两个入口都保留（`/atomcode-review` 命令与当时的 `atomcode_review` 工具；后者已于 2026-10-18 退役），但底下**只留 daemon 这一条通道**——
 它们与 `atomcode_ask` 共用同一个 `runAsk`；`src/host/review.ts`（CLI 包装、argv 构造、静态探针、
 自动选择、回环探活）整份删除，连同面板的第二个下拉与 `review_default_provider` /
 `review_working_dir` / `review_no_web` 三个配置字段。

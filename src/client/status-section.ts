@@ -87,9 +87,9 @@ export interface StatusSectionDeps {
   Row: (props: { label: string }, children?: unknown) => ReactElement;
   CallStat: (props: NumProps) => ReactElement;
   /**
-   * The model dropdown row. ONE row now: ask, `atomcode_review` and
-   * `/atomcode-review` all resolve through the same daemon profile ladder, so
-   * there is one knob to show (the second namespace died with the review CLI).
+   * The model dropdown row. ONE row: the `atomcode_ask` tool and the
+   * `/atomcode-review` command resolve through the same daemon profile ladder,
+   * so there is one knob to show (the second namespace died with the review CLI).
    */
   ProviderSelectRow: (props: any) => ReactElement;
   /**
@@ -275,13 +275,6 @@ export function createStatusSection(deps: StatusSectionDeps) {
         tokens: count(rawAsk.tokens),
         inFlight: rawAsk.inFlight ?? null,
       };
-      const rawReview = data.review || {};
-      const review = {
-        calls: count(rawReview.calls),
-        ok: count(rawReview.ok),
-        err: count(rawReview.err),
-        msTotal: count(rawReview.msTotal),
-      };
       const proto = data.protocol || {};
       const protoNotice = protocolDriftNotice(proto);
       const prov = data.provider || null;
@@ -292,7 +285,6 @@ export function createStatusSection(deps: StatusSectionDeps) {
       const quotaPct = typeof quota.usagePercent === 'number' ? quota.usagePercent : null;
       const quotaExpiry = [quota.expires, quota.planWindow].filter(Boolean).join(' · ');
       const askAvg = ask.calls > 0 ? Math.round(ask.msTotal / ask.calls) : 0;
-      const reviewAvg = review.calls > 0 ? Math.round(review.msTotal / review.calls) : 0;
       const binPath = bin.configured || bin.env || '自动探测（PATH）';
       const spawnNote = d.up
         ? d.spawnTried
@@ -401,10 +393,10 @@ export function createStatusSection(deps: StatusSectionDeps) {
 
       // 回合边界
       // The ask control is deliberately NOT on this page: the plugin owns no ask
-      // control any more. A review is the `/atomcode-review` command (or the
-      // model calling `atomcode_review`), and a free-form question is the model's
-      // `atomcode_ask` tool — both official, neither on a detail page that has no
-      // session to run a turn in (see ./review-handoff.ts).
+      // control any more. A review is the `/atomcode-review` command, and a
+      // free-form question is the model's `atomcode_ask` tool — both official,
+      // neither on a detail page that has no session to run a turn in (see
+      // ./review-handoff.ts).
       // Split out of the card above because these are not "runtime": they
       // are the SAFETY POSTURE and SCOPE of a bridged turn.
       // "审批模式" and "ask 轮数上限" remain patch-only (no panel edit);
@@ -464,22 +456,15 @@ export function createStatusSection(deps: StatusSectionDeps) {
           { style: S.callGroups },
           h(
             'div',
-            { style: S.callGroup },
+            { style: { ...S.callGroup, borderRight: 'none', paddingRight: 0 } },
             h('span', { style: S.callGroupLabel }, 'atomcode_ask'),
             h(CallStat, { num: ask.calls, label: '调用' }),
             h(CallStat, { num: ask.ok, label: '成功', color: ask.ok ? 'var(--dsw-alias-state-success-primary)' : undefined }),
             h(CallStat, { num: ask.err, label: '失败', color: ask.err ? 'var(--dsw-alias-state-error-primary)' : undefined })
-          ),
-          h(
-            'div',
-            { style: { ...S.callGroup, borderRight: 'none', paddingRight: 0 } },
-            h('span', { style: S.callGroupLabel }, 'atomcode_review'),
-            h(CallStat, { num: review.calls, label: '调用' })
           )
         ),
         h(Row, { label: 'ask 累计 tokens' }, String(ask.tokens)),
-        h(Row, { label: 'ask 平均耗时' }, fmtDuration(askAvg)),
-        h(Row, { label: 'review 平均耗时' }, fmtDuration(reviewAvg))
+        h(Row, { label: 'ask 平均耗时' }, fmtDuration(askAvg))
       );
 
       // Pinned page header: the panel's name on the left, the freshness cluster

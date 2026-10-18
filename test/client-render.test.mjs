@@ -370,7 +370,6 @@ describe('client render — the detail panel', () => {
       '运行时长',
       'ask 累计 tokens',
       'ask 平均耗时',
-      'review 平均耗时',
     ]) {
       assert.ok(t.includes(label), `row "${label}" must render`);
     }
@@ -464,8 +463,8 @@ describe('client render — the detail panel', () => {
   it('no longer reports a review CLI, because there is no review CLI', async () => {
     // The review route used to be a spawned process that could be "不可用 on
     // this host" for a config reason, and the panel said so in two places. That
-    // route died with the CLI: `atomcode_review` is an ask turn over the daemon
-    // now, so there is no separate availability fact to report. A stale
+    // route died with the CLI: a review is an ask turn over the daemon now, so
+    // there is no separate availability fact to report. A stale
     // `reviewAvailable`/`reviewReason` arriving from an older host must be
     // IGNORED rather than rendered — a card claiming a route is unavailable
     // while it demonstrably works is the worst of both.
@@ -1007,8 +1006,8 @@ describe('client render — the composer dock chip', () => {
 
 describe('client render — the provider dropdown write path', () => {
   // ONE control now: the branch is flat and there is a single ladder behind it
-  // (`atomcode_ask`, `atomcode_review` and `/atomcode-review` all resolve through
-  // it). The label below is what the render actually puts on the select.
+  // (`atomcode_ask` and `/atomcode-review` both resolve through it). The label
+  // below is what the render actually puts on the select.
   const CONTROL_LABEL = '默认对话模型';
   /** The snapshot every case starts from: `FULL`'s flat provider branch. */
   const FLAT = FULL;

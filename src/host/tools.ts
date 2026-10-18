@@ -1,22 +1,23 @@
 /**
- * The two tools this plugin registers — `atomcode_ask` (a full autonomous
- * daemon turn with side-conversation continuity) and `atomcode_review` (a code
- * review through the SAME daemon turn).
+ * The one tool this plugin registers — `atomcode_ask`, a full autonomous daemon
+ * turn with side-conversation continuity. A one-click review is the
+ * `/atomcode-review` slash command, which shares the runner below but lives in
+ * `command.ts`; the model-facing `atomcode_review` tool was retired so the model
+ * always reaches for the one general tool.
  *
- * BOTH GO THROUGH THE DAEMON. `atomcode_review` used to spawn the `atomcodex
- * review` CLI, which returned a structured `findings[]` document but demanded a
- * direct-provider endpoint (in practice a local sidecar on 8899) — so it went
- * dark whenever the sidecar was down while `atomcode_ask` kept working, and it
- * gave one plugin two provider namespaces. The user's call was one channel;
- * AtomCode is a full agent that can run `git diff` itself, so a review is now a
- * prompt plus a normal turn. The cost, stated plainly: no structured findings.
+ * IT GOES THROUGH THE DAEMON. The retired review tool used to spawn the
+ * `atomcodex review` CLI, which returned a structured `findings[]` document but
+ * demanded a direct-provider endpoint (in practice a local sidecar on 8899) — so
+ * it went dark whenever the sidecar was down while `atomcode_ask` kept working,
+ * and it gave one plugin two provider namespaces. The user's call was one
+ * channel: a review became a prompt plus a normal turn over the daemon. The
+ * cost, stated plainly: no structured findings, so a review reports prose.
  *
- * Extracted from `src/host/index.ts` (apply() split). They live together because
- * they share the one `tools.register` surface and the one `runtime`; each tool
- * still owns its description string end to end, which is why the `providerHint`
- * strings are built HERE next to the `register()` calls that consume them — a
- * description separated by hundreds of lines from the code it describes goes
- * quietly stale with nothing failing.
+ * Extracted from `src/host/index.ts` (apply() split). The tool owns its
+ * description string end to end, which is why the `providerHint` string is built
+ * HERE next to the `register()` call that consumes it — a description separated
+ * by hundreds of lines from the code it describes goes quietly stale with
+ * nothing failing.
  *
  * @module dsh-connect-atomcode/host/tools
  */
@@ -29,7 +30,7 @@ import {
   OUTPUT_CAP,
   resolveMaxRounds,
 } from './config.ts';
-import type { HostConfig, ReviewBriefMode } from './config.ts';
+import type { HostConfig } from './config.ts';
 import type { Runtime } from './runtime.ts';
 import { resolve } from 'node:path';
 
@@ -119,10 +120,10 @@ function hostSubsetSchema(node: any): any {
 
 /**
  * The shared ask runner — the ONE body behind every entry point into a bridged
- * AtomCode turn: the model-facing `atomcode_ask` tool, the `atomcode_review`
- * tool, and the `/atomcode-review` slash command. (The HTTP
- * `/api/atomcode-bridge/ask` route that once posted here is GONE — 方针 A,
- * 2026-10-18 — so this runner has three callers, not a route among them.)
+ * AtomCode turn: the model-facing `atomcode_ask` tool and the `/atomcode-review`
+ * slash command. (The HTTP `/api/atomcode-bridge/ask` route that once posted
+ * here is GONE — 方针 A, 2026-10-18 — so this runner has two callers, not a
+ * route among them.)
  *
  * Everything that decides WHICH turn runs lives here, so the entry points
  * cannot drift apart: the repo ladder, the 红线 8 refusal, the provider ladder,
@@ -154,8 +155,7 @@ export async function runAsk(
   // including the refusal below. It used to start after the ladder, so the
   // one early return that is NOT a failure (a refused call) had no elapsed
   // time to report and the panel's average would have been built from a
-  // subset of the calls that reached it. Same reason `refuse()` in
-  // `atomcode_review` counts calls, errors and milliseconds together.
+  // subset of the calls that reached it.
   const t0 = Date.now();
   // Resolved ONCE, before any failure path, so a refused/failed turn still
   // reports which model the bridge was asking for (`empty()` below) instead
@@ -207,8 +207,7 @@ export async function runAsk(
     elapsed_ms: Date.now() - t0,
     error,
   });
-  // 红线 8, ask side — the same rule `atomcode_review` has enforced from the
-  // start: NO resolvable directory means AtomCode's own tools run unattended
+  // 红线 8 — NO resolvable directory means AtomCode's own tools run unattended
   // inside whatever cwd the daemon was launched in, which in the default
   // launch is the user's home.
   //
@@ -239,7 +238,7 @@ export async function runAsk(
     stats.ask.msTotal += Date.now() - t0;
     return empty(
       'atomcode_ask 拒绝了本回合：取不到 working_dir，而 daemon 无人值守自动放行（[headless] auto-approved——对任何 approval_mode 都成立），AtomCode 的工具会跑在它自己的 cwd（通常是用户 home）里——' +
-        '这正是 atomcode_review 一直直接拒绝的那个情况（红线 8）。三种走法：' +
+        '这正是本插件对取不到目录的调用一直直接拒绝的那个情况（红线 8）。三种走法：' +
         '① 传 working_dir 指定本回合的目录；② 在插件配置 working_dir 里设一个默认目录；' +
         '③ 本回合确实只做通用问答、不涉及任何目录时，显式传 allow_unattended=true 表示知情同意。',
     );
@@ -495,10 +494,10 @@ export function mountAskTool({
         session_id: { type: 'string', description: '可选：显式接续某个 AtomCode 会话（优先于 continue）' },
         reset_session: { type: 'boolean', description: '可选：清掉本工作目录记录的侧边会话（续线接到一条已过期的 daemon 会话、或想彻底开新线时用；不影响本回合）' },
         provider: { type: 'string', description: '可选：点名 AtomCode 模型档位，传它就换本次回合用的模型。名字以 daemon GET /models 的 provider 字段为准（如 "AtomGit-glm5.3-flash"），不要传裸模型 id（"glm5.3-flash"）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
-        working_dir: { type: 'string', description: '回合的工作目录，同时是侧边对话的会话键。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 面板选择 > 插件配置 working_dir。以上都没有时本工具**拒绝**该回合（见 allow_unattended）——让 AtomCode 的工具在 daemon 自己的 cwd（通常是用户 home）里无人值守跑，是 atomcode_review 一直直接拒绝的那个情况' },
+        working_dir: { type: 'string', description: '回合的工作目录，同时是侧边对话的会话键。缺省优先级：调用参数 > 宿主会话 cwd（宿主尚未暴露该字段，暴露后自动填入）> 面板选择 > 插件配置 working_dir。以上都没有时本工具**拒绝**该回合（见 allow_unattended）——让 AtomCode 的工具在 daemon 自己的 cwd（通常是用户 home）里无人值守跑，是本插件一直直接拒绝的那个情况' },
         allow_unattended: { type: 'boolean', description: '可选，默认 false。上面三条都取不到目录时才需要它：那种情况下本工具默认拒绝（红线 8——无人值守的工具调用跑在一个没人指定的目录里；当前 daemon 对任何 approval_mode 都是无人值守自动放行，所以这道门与 mode 无关）。确实只做通用问答、不需要任何目录时，显式传 true 表示知情同意；能给出目录就优先给 working_dir，别用它绕开' },
         timeout_secs: { type: 'number', description: '可选：整回合超时秒数，默认 1800；上限 1800（本工具向宿主声明的超时上限就是 30 分钟），超过按 1800 计——代码里钳制，不是"传了更大的值但悄悄不生效"' },
-        max_rounds: { type: 'number', description: '可选：工具调用次数上限（按 daemon SSE 的 tool_start 事件计数；一个 agent 回合可能并行发起多次工具调用，故事件数 ≥ agent 轮数——把它当轮数理解，会在更少的 agent 轮数上就熔断）。默认取插件配置，当前 ' + askMaxRounds + '；上限 1000，超过按 1000 计（钳制在代码里，inflate 关不掉熔断）。传 0 关掉本端熔断，交回 daemon 自带治理——与 atomcode_review 的 max_rounds: 0 同义）。超限时本端中止等待并返回错误，同时向 daemon 发 POST /chat/stop 请求停掉该回合（以 daemon 应答为准；回合刚开始还没拿到 session_id 时无法请求，错误文本会说明这一种情况）' },
+        max_rounds: { type: 'number', description: '可选：工具调用次数上限（按 daemon SSE 的 tool_start 事件计数；一个 agent 回合可能并行发起多次工具调用，故事件数 ≥ agent 轮数——把它当轮数理解，会在更少的 agent 轮数上就熔断）。默认取插件配置，当前 ' + askMaxRounds + '；上限 1000，超过按 1000 计（钳制在代码里，inflate 关不掉熔断）。传 0 关掉本端熔断，交回 daemon 自带治理）。超限时本端中止等待并返回错误，同时向 daemon 发 POST /chat/stop 请求停掉该回合（以 daemon 应答为准；回合刚开始还没拿到 session_id 时无法请求，错误文本会说明这一种情况）' },
         reasoning_effort: { type: 'string', description: '可选：本回合的推理力度（per-turn override，不改 daemon 持久值）。支持的档位取决于当前模型（见 GET /models 的 effort_levels），常见值 "low"/"medium"/"high"/"xhigh"。留空 = 用 daemon 当前的持久值（或模型默认）。传了不支持的档位 daemon 会拒绝并说明哪个档位可用' },
       },
       required: ['message'],
@@ -715,350 +714,4 @@ export function mountAskTool({
   });
 
   return disposeAsk;
-}
-
-
-/**
- * The review brief `composeReviewMessage` fills in unless the caller supplies
- * their own task — which is itself decided by the plugin config
- * `review_brief_mode` (closed set `REVIEW_BRIEF_MODES`, see `config.ts`).
- *
- * It lives HERE rather than in `command.ts` because the two entry points must
- * ask for the same thing: `/atomcode-review` with no arguments and
- * `atomcode_review` with no arguments are the same request, and a second copy
- * of this paragraph would drift from the first the moment either is tuned.
- */
-const DEFAULT_REVIEW_TASK =
-  '评审当前工作区里未提交的改动（git 未提交改动；没有未提交改动时看最近一次提交）。' +
-  '自己运行 git 命令确认范围，必要时读相关文件理解上下文，然后给出评审结论：' +
-  '哪些地方有问题、为什么、怎么改。只报你确实看见的问题，不要猜。';
-
-/**
- * Turn a review request into the message one daemon turn sends.
- *
- * Ordering is the whole point: the SELECTOR (base / staged / pr / diff_text)
- * goes first because it is what makes the turn about a specific change, and the
- * task text is appended as the instruction about HOW to review it. The old CLI
- * path passed `--base` / `--staged` / `--pr` as process flags; there is no flag
- * channel through the daemon, so the selector is spelled out in the prompt and
- * the agent is told to run the git command itself.
- *
- * The TASK part obeys `mode` (`review_brief_mode`):
- * - `always` — the default task is sent on every call, and a non-empty task is
- *   appended after it (「另外：…」).
- * - `when-empty` (shipped default) — the default task is sent only when the
- *   task is empty; a non-empty task goes through verbatim, without it.
- * - `never` — the default task is never sent; a non-empty task goes through
- *   verbatim, and an empty task yields `''` when NO selector was given, which
- *   the caller refuses (a review with no target fails fast, visibly).
- */
-export function composeReviewMessage(
-  args: {
-    task?: unknown;
-    base?: unknown;
-    staged?: unknown;
-    pr?: unknown;
-    diffText?: unknown;
-  },
-  mode: ReviewBriefMode = 'when-empty',
-): string {
-  const parts: string[] = [];
-  const pr = Number(args.pr);
-  const base = typeof args.base === 'string' ? args.base.trim() : '';
-  const diffText = typeof args.diffText === 'string' ? args.diffText.trim() : '';
-  if (Number.isInteger(pr) && pr > 0) {
-    parts.push(`评审 GitHub PR #${pr}：用 \`gh pr diff ${pr}\` 取 diff 后再看。`);
-  } else if (diffText !== '') {
-    parts.push('评审下面这段 diff：', '```diff', diffText, '```');
-  } else if (base !== '') {
-    parts.push(`评审 \`${base}...HEAD\` 的改动：先运行 \`git diff ${base}...HEAD\` 取到 diff。`);
-  } else if (args.staged === true) {
-    parts.push('评审已暂存的改动：先运行 `git diff --staged` 取到 diff。');
-  }
-  const task = typeof args.task === 'string' ? args.task.trim() : '';
-  if (mode === 'always') {
-    parts.push(task === '' ? DEFAULT_REVIEW_TASK : `${DEFAULT_REVIEW_TASK}\n\n另外：${task}`);
-  } else if (mode === 'never') {
-    if (task !== '') parts.push(task);
-  } else {
-    parts.push(task === '' ? DEFAULT_REVIEW_TASK : task);
-  }
-  return parts.join('\n');
-}
-
-/**
- * The `task` parameter's description, per brief mode. A MOUNT-TIME FACT, not a
- * prediction: the description is registered once, and the mount-time
- * `review_brief_mode` value is exactly the one the next call honours (a patch
- * edit takes effect on the reload that re-mounts, which also re-registers).
- */
-function taskDesc(mode: 'always' | 'when-empty' | 'never'): string {
-  // The brief mode is resolved at execution time (panel pick > patch field), so
-  // the description describes the LADDER, not a specific value. The mount-time
-  // `mode` is still named so the model knows the current default, but the text
-  // says "当前" to signal it can change without a re-registration.
-  const ladder =
-    'brief 注入模式优先级：面板选择 > 插件配置（当前挂载时生效值：' + mode + '）。';
-  if (mode === 'always') {
-    return `可选：评审的附加要求。${ladder}当前模式（始终注入）下，不给则评未提交改动；给了也是附加在内置简报之上。面板切到 when-empty 或 never 后行为随之变化。`;
-  }
-  if (mode === 'never') {
-    return `可选：评审指令。${ladder}当前模式（不注入）下，此参数原样作为评审目标；不给它也不给任何选择器（base/staged/pr/diff_text）会被拒绝。面板切到 when-empty 或 always 后留空即自动补简报。`;
-  }
-  return `可选：评审指令。${ladder}当前模式（仅留空时注入）下，给了就以你的指令为准，内置简报不再拼接；不给则评未提交改动。面板切到 always 后简报永远附加。`;
-}
-
-/**
- * `atomcode_review` — a code review through the daemon, the same channel as
- * `atomcode_ask`.
- *
- * WHY NOT THE CLI. This tool used to spawn `atomcodex review`, which returns a
- * structured `findings[]` document — a genuinely nicer shape. But that channel
- * demanded a direct-provider endpoint (`config.toml` `[providers.<name>]`, in
- * practice a local sidecar on 8899), so the tool went dark whenever the sidecar
- * was down while `atomcode_ask` kept working, and it meant two provider
- * NAMESPACES with two different sets of legal names for one plugin. The user's
- * call: one channel. AtomCode is a full agent that can run `git diff` itself,
- * so the review is now a prompt plus a normal turn.
- *
- * WHAT IS LOST, said out loud: `findings[]`. There is no way to ask the daemon
- * for structured output (`/chat` accepts no `response_format`; the binary has
- * none of `response_format`/`json_schema`/`structured_output`/`json_object`/
- * `output_schema`), so the report is prose. That is why the output fields are
- * `report` + turn metadata rather than a findings array — an always-empty
- * `findings` field would be worse than no field at all.
- */
-export function mountReviewTool({
-  tools,
-  config,
-  runtime,
-}: {
-  tools: any;
-  config: HostConfig;
-  runtime: Runtime;
-}) {
-  const { defaultProvider } = config;
-  const { stats } = runtime;
-
-  // The provider ladder is now the ASK ladder — one namespace, one set of legal
-  // names (daemon model profiles). 红线 8 had two; the CLI branch is gone, so
-  // `review_default_provider` and the `[providers.<name>]` namespace no longer
-  // describe anything this tool does.
-  const providerNote =
-    'provider 参数收的是 AtomCode 模型档位名（daemon GET /models 的 provider 字段，如 "AtomGit-glm5.3-flash"），' +
-    '不是裸模型 id。优先级：本参数 > 详情页面板上选的档位 > 插件配置 default_provider' +
-    (defaultProvider ? `（当前 default_provider="${defaultProvider}"）` : '（当前未配 default_provider）') +
-    ' > AtomCode 自己的默认档位。与 atomcode_ask 完全同一条通道、同一套档位。';
-
-  const reviewDesc =
-    '让本机 AtomCode 对一次代码变更做代码评审，走 daemon（与 atomcode_ask 同一条通道，不需要本地代理/直连 provider）。' +
-    '默认评未提交改动；也可给 base 分支 / GitHub PR / diff 文本 / 自定义任务。' +
-    'AtomCode 用完整工具循环自己跑 git diff、读相关文件，然后给出一段**文字评审报告**（哪些地方有问题、为什么、怎么改）。' +
-    '注意：报告是文字，没有结构化的 findings 数组——daemon 不接受 response_format，拿不到 schema 约束的 JSON。要逐条可机读的结论，请让它把结论写成文件再读。' +
-    '何时用它而不是 atomcode_ask：用户已经指明评哪一块（一次未提交改动、两分支差异、某个 PR），且只需要结论、不想为此烧掉本会话上下文时。' +
-    '两者边界是"读得多与读得少"：本工具盯你指定的 diff；不确定问题在哪、需要顺着调用链追下去时用 atomcode_ask。' +
-    'working_dir 缺省优先级：调用参数 > 宿主会话 cwd > 插件配置 working_dir；都没有则直接拒绝（绝不回落宿主进程 cwd）——评某个仓库请显式传 working_dir。' +
-    providerNote +
-    '可能数分钟。';
-
-  const disposeReview = tools.register({
-    name: 'atomcode_review',
-    timeoutMs: HOST_TOOL_TIMEOUT_MS,
-    description: reviewDesc,
-    parameters: {
-      type: 'object',
-      properties: {
-        working_dir: { type: 'string', description: '仓库根目录。缺省优先级：调用参数 > 宿主会话 cwd > 面板选择 > 插件配置 working_dir；都没有则报错（绝不回落宿主进程 cwd）而不是悄悄评错仓库' },
-        task: {
-          type: 'string',
-          description: taskDesc(
-            config.reviewBriefMode === 'never' ? 'never' : config.reviewBriefMode === 'always' ? 'always' : 'when-empty',
-          ),
-        },
-        base: { type: 'string', description: '可选：base git ref，评审 <base>...HEAD；缺省评未提交改动' },
-        staged: { type: 'boolean', description: '可选：只评已暂存改动（git diff --staged）' },
-        pr: { type: 'number', description: '可选：GitHub PR 号（AtomCode 侧需能跑 gh CLI）' },
-        diff_text: { type: 'string', description: '可选：原始 diff 文本（适合非 git 场景/CI 产物）。给了它就只评这段文本' },
-        provider: { type: 'string', description: '可选：点名 AtomCode 模型档位（daemon GET /models 的 provider 字段，如 "AtomGit-glm5.3-flash"；不是裸模型 id）。留空时按顺序取：面板上选的档位 → 插件配置 default_provider → AtomCode 自己的默认' },
-        max_rounds: { type: 'number', description: '可选：工具调用次数熔断（默认取插件配置，当前 ' + config.reviewMaxRounds + '；上限 1000。传 0 关掉本端熔断，交回 daemon 自己治理）' },
-        timeout_secs: { type: 'number', description: '可选：整回合超时秒数（默认取插件配置，当前 ' + config.reviewMaxDurationSecs + '；上限 1800，超过按 1800 计）' },
-        reasoning_effort: { type: 'string', description: '可选：本回合的推理力度（per-turn override，不改 daemon 持久值）。支持的档位取决于当前模型（见 GET /models 的 effort_levels），常见值 "low"/"medium"/"high"/"xhigh"。留空 = 用 daemon 当前的持久值（或模型默认）' },
-      },
-      required: [],
-    },
-    output: {
-      schema: hostSubsetSchema({
-        type: 'object',
-        properties: {
-          ok: { type: 'boolean' },
-          report: { type: 'string', description: 'AtomCode 的评审报告正文（自由文本）。没有结构化的 findings 数组——daemon 不接受 response_format' },
-          truncated: { type: 'boolean', description: 'report 超过上限被截断（截断处有标记；必要时让它把完整报告写到文件里再读）' },
-          tokens: { type: 'number', description: '本回合消耗的 token 数' },
-          usage: {
-            type: 'object',
-            description: '本回合的用量读数。只有 daemon 报了的字段才有值，没报的为 null——「它说 0」和「它没说」不是同一件事',
-            properties: {
-              tokens: { type: 'number' },
-              tool_calls: { type: 'number' },
-              rounds: { type: 'number' },
-            },
-            required: ['tokens', 'tool_calls', 'rounds'],
-            additionalProperties: false,
-          },
-          rounds: { type: 'number', description: 'agent 轮数（tool_start 事件数，≥ 真实轮数：同一轮并行发起的调用各计一次）' },
-          tools: {
-            type: 'array',
-            description: `本回合 AtomCode 用过的工具，最多 ${TOOLS_CAP} 条（真实总数见 usage.tool_calls）。success 为 null = 并行批次内无法归因，成败未知（不是失败）`,
-            items: {
-              type: 'object',
-              properties: {
-                name: { type: 'string' },
-                success: {
-                  type: ['boolean', 'null'],
-                  description: '该次工具调用是否成功；null = 并行批次内结果无法归因，成败未知（不是失败）',
-                },
-              },
-              required: ['name', 'success'],
-              additionalProperties: false,
-            },
-          },
-          tools_truncated: { type: 'boolean', description: 'tools 数组被截断（真实总数见 usage.tool_calls）' },
-          working_dir: { type: ['string', 'null'], description: '本次评审实际在哪个目录跑的。null = 没指定（不应出现：那种情况本工具直接拒绝）' },
-          provider: { type: 'string', description: '本回合实际用的模型档位（daemon 报的实测值，或回显的请求值）' },
-          stop_reason: { type: 'string' },
-          elapsed_ms: {
-            type: 'number',
-            description: '本次评审回合的墙钟毫秒数（复用 atomcode_ask 的同一把尺）。模型据此判断"评得太久要不要换范围"；与 ask 同源，失败/拒绝回合同样计时',
-          },
-          error: { type: 'string' },
-        },
-        required: ['ok', 'report', 'truncated', 'tokens', 'usage', 'rounds', 'tools', 'tools_truncated', 'working_dir', 'provider', 'stop_reason', 'elapsed_ms', 'error'],
-        additionalProperties: false,
-      }),
-      render(_args: any, value: any) {
-        const lines = [];
-        if (value.ok) {
-          const rounds = value.rounds > 0 ? `，${value.rounds} 轮` : '';
-          lines.push(`AtomCode 评审完成（${value.tokens} tokens${rounds}）:`, '', value.report || '(空报告)', '');
-          if (value.truncated) {
-            lines.push('[注意：report 已截断，让它把完整报告写到文件里再读]', '');
-          }
-          const unattributed = Array.isArray(value.tools)
-            ? value.tools.filter((t: any) => t && t.success === null).length
-            : 0;
-          if (unattributed > 0) {
-            lines.push(
-              `[注意：tools 里有 ${unattributed} 条 success=null——daemon 并行发起的工具调用结果不带归属标识，` +
-                '本端无法判定成败（未知，不是失败），不要据此重做]',
-              '',
-            );
-          }
-          if (value.tools_truncated) {
-            lines.push(`[注意：tools 只回了前 ${TOOLS_CAP} 条，本回合工具调用不止这些（见 usage.tool_calls）]`, '');
-          }
-          const meta = [];
-          meta.push(`tokens=${value.tokens}`);
-          meta.push(`tool_calls=${value.usage && typeof value.usage.tool_calls === 'number' ? value.usage.tool_calls : 0}`);
-          if (value.rounds > 0) meta.push(`rounds=${value.rounds}`);
-          if (value.stop_reason) meta.push(`stop_reason=${value.stop_reason}`);
-          meta.push(`working_dir=${value.working_dir === null || value.working_dir === undefined ? '未指定' : value.working_dir}`);
-          meta.push(`provider=${value.provider}`);
-          if (typeof value.elapsed_ms === 'number') {
-            meta.push(`elapsed_ms=${value.elapsed_ms}`);
-          }
-          lines.push(`[${meta.join(' ')}]`);
-        } else {
-          lines.push(`AtomCode 评审失败: ${value.error}`);
-        }
-        return [{ type: 'text', text: lines.join('\n') }];
-      },
-    },
-    async execute(args: any, exec: any) {
-      const t0 = Date.now();
-      // Payload only — the accounting happens ONCE below, after runAsk returns.
-      // (An earlier draft incremented here too, which double-counted every
-      // failed review in the panel readout.)
-      const failed = (error: string) => {
-        return {
-          ok: false,
-          report: '',
-          truncated: false,
-          tokens: 0,
-          usage: { tokens: 0, tool_calls: 0, rounds: 0 },
-          rounds: 0,
-          tools: [],
-          tools_truncated: false,
-          working_dir: null,
-          provider: 'default',
-          stop_reason: '',
-          // Measured on the review's OWN t0 (execute entry), so a refused/failed
-          // review reports how long the whole call spent — the same clock the
-          // success return below uses, and the same reason ask's `empty()` does it.
-          elapsed_ms: Date.now() - t0,
-          // "no report" — never "reviewed and found nothing".
-          error,
-        };
-      };
-      // ONE runner behind both this tool and `/atomcode-review`. The repo
-      // ladder, the 红线 8 refusal, the provider ladder, the fuses and the
-      // stats accounting are `runAsk`'s; a second copy here would drift the
-      // first time any of them changes.
-      const message = composeReviewMessage(args, runtime.resolveBriefMode().mode as import('./config.ts').ReviewBriefMode);
-      if (message === '') {
-        // Only reachable in `never` mode with no task and no selector: a
-        // review with no target would ask AtomCode to guess, so refuse it
-        // here, before any turn is spent.
-        return failed(
-          'review_brief_mode 为「不注入」（never）且未给任何评审目标：请传 task（或 base/staged/pr/diff_text），' +
-            '或在 patch 里把 review_brief_mode 改回 when-empty',
-        );
-      }
-      const outcome = await runAsk(
-        {
-          message,
-          ...(typeof args.working_dir === 'string' ? { working_dir: args.working_dir } : {}),
-          ...(typeof args.provider === 'string' ? { provider: args.provider } : {}),
-          ...(Number.isFinite(args.max_rounds) ? { max_rounds: args.max_rounds } : { max_rounds: config.reviewMaxRounds }),
-          ...(Number.isFinite(args.timeout_secs) ? { timeout_secs: args.timeout_secs } : { timeout_secs: config.reviewMaxDurationSecs }),
-          ...(args.reasoning_effort ? { reasoning_effort: args.reasoning_effort } : {}),
-        },
-        exec,
-        { config, runtime },
-      );
-      stats.review.calls += 1;
-      stats.review.msTotal += Date.now() - t0;
-      if (outcome.ok) stats.review.ok += 1;
-      else stats.review.err += 1;
-      if (!outcome.ok) {
-        return failed(outcome.error);
-      }
-      const capped = capProse(outcome.reply, OUTPUT_CAP, {
-        remedy: 'ask AtomCode to write the full report to a file and read that instead',
-      });
-      return {
-        ok: true,
-        report: capped.text,
-        truncated: capped.cut,
-        tokens: outcome.tokens,
-        usage: {
-          tokens: outcome.tokens,
-          tool_calls: outcome.tool_calls,
-          rounds: outcome.round_count,
-        },
-        rounds: outcome.round_count,
-        tools: outcome.tools,
-        tools_truncated: outcome.tools_truncated === true,
-        working_dir: outcome.working_dir,
-        provider: outcome.provider,
-        stop_reason: outcome.stop_reason,
-        // The whole-call wall time (execute entry → here, incl. runAsk, the stats
-        // bookkeeping and the outer capProse). The model reads this via render
-        // below, not the raw field — see the ask render note.
-        elapsed_ms: Date.now() - t0,
-        error: outcome.error,
-      };
-    },
-  });
-
-  return disposeReview;
 }

@@ -1092,13 +1092,6 @@
 					tokens: count(rawAsk.tokens),
 					inFlight: rawAsk.inFlight ?? null
 				};
-				const rawReview = data.review || {};
-				const review = {
-					calls: count(rawReview.calls),
-					ok: count(rawReview.ok),
-					err: count(rawReview.err),
-					msTotal: count(rawReview.msTotal)
-				};
 				const proto = data.protocol || {};
 				const protoNotice = protocolDriftNotice(proto);
 				const prov = data.provider || null;
@@ -1107,7 +1100,6 @@
 				const quotaPct = typeof quota.usagePercent === "number" ? quota.usagePercent : null;
 				const quotaExpiry = [quota.expires, quota.planWindow].filter(Boolean).join(" · ");
 				const askAvg = ask.calls > 0 ? Math.round(ask.msTotal / ask.calls) : 0;
-				const reviewAvg = review.calls > 0 ? Math.round(review.msTotal / review.calls) : 0;
 				const binPath = bin.configured || bin.env || "自动探测（PATH）";
 				const spawnNote = d.up ? d.spawnTried ? "已自动拉起" : "运行中" : d.starting ? "正在拉起…" : d.spawnTried ? "自动拉起失败" : "未触发自动拉起";
 				const quotaCard = h("div", { style: {
@@ -1170,7 +1162,11 @@
 					display: "flex",
 					flexDirection: "column",
 					gap: 6
-				} }, h("div", { style: S.callGroups }, h("div", { style: S.callGroup }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
+				} }, h("div", { style: S.callGroups }, h("div", { style: {
+					...S.callGroup,
+					borderRight: "none",
+					paddingRight: 0
+				} }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
 					num: ask.calls,
 					label: "调用"
 				}), h(CallStat, {
@@ -1181,14 +1177,7 @@
 					num: ask.err,
 					label: "失败",
 					color: ask.err ? "var(--dsw-alias-state-error-primary)" : void 0
-				})), h("div", { style: {
-					...S.callGroup,
-					borderRight: "none",
-					paddingRight: 0
-				} }, h("span", { style: S.callGroupLabel }, "atomcode_review"), h(CallStat, {
-					num: review.calls,
-					label: "调用"
-				}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)), h(Row, { label: "review 平均耗时" }, fmtDuration(reviewAvg)));
+				}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)));
 				const headerBar = h("div", { style: S.headerBar }, h("div", { style: S.header }, h("h3", { style: S.title }, "运行统计"), h("div", { style: S.cluster }, h("span", { style: error ? {
 					...S.live,
 					...S.liveStale
@@ -1380,7 +1369,6 @@
 	*   · a one-click review is the `/atomcode-review` slash command — executed by
 	*     the Host, zero DSH model turns, its result written into the transcript
 	*     exactly like any other command's;
-	*   · a review the model asks for is the `atomcode_review` tool;
 	*   · a free-form question is the model's own `atomcode_ask` tool.
 	*
 	* The popover, the ask POST, the delivery POST and their styling are GONE with

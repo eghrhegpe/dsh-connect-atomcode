@@ -10,7 +10,7 @@
  *   - `./runtime.ts`   createRuntime() — the stats bag + daemon lifecycle + quota
  *   - `./stats.ts`     writeJson/sameOrigin/describeDaemonDown/createStatsBag/buildStatsBody
  *   - `./routes.ts`    mountRoutes() — the HTTP routes, disposed as one unit
- *   - `./tools.ts`     runAsk() + mountAskTool() + mountReviewTool()
+ *   - `./tools.ts`     runAsk() + mountAskTool()
  *   - `./inject.ts`    injectAtomcodeAnswer() + injectReviewContinuation() —
  *                      hands an answer / a review continuation to a session's model
  *
@@ -24,7 +24,7 @@
 import { readConfig } from './config.ts';
 import { createRuntime } from './runtime.ts';
 import { mountRoutes } from './routes.ts';
-import { mountAskTool, mountReviewTool } from './tools.ts';
+import { mountAskTool } from './tools.ts';
 import { mountReviewCommand } from './command.ts';
 
 /**
@@ -34,7 +34,7 @@ import { mountReviewCommand } from './command.ts';
  * to the client.
  */
 const PLUGIN = {
-  version: '0.4.3',
+  version: '0.4.4',
 } as const;
 
 export const name = 'atomcode-bridge';
@@ -83,7 +83,6 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
 
   // Each tool owns its own description string end to end.
   const disposeAsk = mountAskTool({ tools, config, runtime });
-  const disposeReview = mountReviewTool({ tools, config, runtime });
 
   // `webServer` is declared in `inject`, but degrade quietly if a host mounts
   // this plugin without the route service rather than failing the whole mount.
@@ -107,9 +106,9 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
   // session's model in the loop and still leave something the human sees.
   // `ctx.commands` handlers run "against the receiving agent without sending
   // the command to the model", which is the `/compact` shape. It goes through
-  // the SAME `runAsk` as `atomcode_review` (both live in `./tools.ts`), so it is
-  // a second entry point, not a second implementation — one runner, one channel,
-  // one set of fuses. Optional service: a Host without it degrades to "no
+  // the SAME `runAsk` as the `atomcode_ask` tool (both live in `./tools.ts`), so
+  // it is a second entry point, not a second implementation — one runner, one
+  // channel, one set of fuses. Optional service: a Host without it degrades to "no
   // command" rather than failing the mount.
   const commands = ctx.get ? ctx.get('commands') : ctx.commands;
   const disposeCommand = mountReviewCommand({ commands, config, runtime, log });
@@ -127,7 +126,6 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
   ctx.effect(() => {
     return () => {
       disposeAsk();
-      disposeReview();
       // One call for both routes: mountRoutes() composed them, so a route added
       // there cannot be forgotten here (which is how the four separate checks
       // that used to live on these lines let a fifth disposer go missing).

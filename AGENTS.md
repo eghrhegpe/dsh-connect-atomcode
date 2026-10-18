@@ -19,7 +19,7 @@
 | 改额度解析 / 面板渲染 | `src/host/quota.ts`（纯函数，无宿主依赖） | `test/quota.test.mjs` + `test/protocol.test.mjs`；**面板的行与文案改 `test/client-render.test.mjs`**（真渲染门禁，空态与占位符也钉在那里） | 解析不出来时**必须**回落到原文，不得编数字 |
 | 排查"为什么没生效 / 报错" | 本文件「工作目录与装载方式」 | `src/host/daemon.ts`（daemon 探测真源） | 先分清 Host 进程 vs Client 控制台 |
 | daemon 起不来 / 端口被占 | `src/host/runtime.ts` 的 `ensureDaemonStarted`（拉起/重试/单飞在那；`src/host/index.ts` 只是 `apply()` 装配点，`src/host/daemon.ts` 是它调用的传输与探测层，没有这个符号） | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
-| `atomcode_review` 报不可用 | 本文件红线 1 | 现在 review 走 daemon `/chat`（与 ask 同一条路），"不可用"= daemon 没起来或 working_dir 取不到 | 这是**运行时事实**，不是本机配置事实 |
+| **`/atomcode-review` 报不可用** | 本文件红线 1 | 现在 review 走 daemon `/chat`（与 ask 同一条路），"不可用"= daemon 没起来或 working_dir 取不到 | 这是**运行时事实**，不是本机配置事实 |
 | 加/改 client 槽位 | 本文件「宿主 ABI 面」 | `test/client-id.test.mjs`（注册契约门禁） | 改 seat 名必须同步改那条测试的断言 |
 | **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」 | host 侧 `src/host/runtime.ts` 的 `resolveProvider()` + `src/host/provider-store.ts`（`apply()` 只装配，符号都不在 `index.ts` 里）；渲染侧 `src/client/index.ts` 的 `ProviderSelectRow` + `src/client/rows.ts` 的 `providerSelectModel()` | 见**红线 8**。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点** |
 | **详情页那张卡该显示什么 / 放哪儿** | `src/client/rows.ts` 的 `turnBoundaryRows()` + `providerRows()`；`src/client/quota.ts` 的 `quotaView()`；座位在 `src/client/index.ts` 的 `apply()` 里（**改完必须 `npm run build`**） | 上面「面板的显示纪律」一段 | ①**恒定值不是信息**，patch-only 旋钮要标"你改过/插件默认"，判断来自 host 的 `config.authored`/`config.defaults`；②座位见红线 7 |
@@ -27,7 +27,7 @@
 ## 项目一句话
 
 DSH 插件：把本机已登录的 **AtomCode**（官方二进制，终端 AI 编程助手）作为**侧边工具台**接入 DeepSeek Harness。
-注册**两个工具**：`atomcode_ask`（侧边咨询，一个完整自主回合）与 `atomcode_review`（one-shot 代码评审）。
+注册**一个工具**：`atomcode_ask`（侧边咨询，一个完整自主回合）；代码评审由 `/atomcode-review` 斜杠命令承担（宿主侧执行，零模型回合）。
 Host（Node/cordis）只做五件事：注册工具（+ 一个 `/atomcode-review` 斜杠命令）、开五条路由（统计读、偏好写、回答投递 `/inject`、力度写、会话读）、管 daemon 生命周期、解析额度、持有 `provider.json` 偏好；Client（React bundle）渲染详情页统计卡片、模型下拉、输入框额度标签、每条回复下方的「锐评」按钮，以及工具行上一个**渲染 null 的插入轨**（它只为拿到 composer 的 `inputActions`）。
 
 **三条事实**（写代码前先认清你在动哪一条）：
@@ -98,7 +98,7 @@ Host（Node/cordis）只做五件事：注册工具（+ 一个 `/atomcode-review
 
 | 面 | 用途 | 坏了会怎样 |
 |---|---|---|
-| `ctx.tools`（`ctx.get('tools')`） | 注册两个工具 | `apply` 早退，插件静默不挂 |
+| `ctx.tools`（`ctx.get('tools')`） | 注册一个工具（另有一个 `/atomcode-review` 斜杠命令，走 `ctx.commands`） | `apply` 早退，插件静默不挂 |
 | `ctx.webServer.register({kind:'exact', path})` | **五条路由**：`/api/atomcode-bridge/stats`（只读快照）、`/api/atomcode-bridge/provider`（面板的模型选择写入点，写插件自己的 `provider.json`）、`/api/atomcode-bridge/inject`（把回答交给会话的模型）、`/api/atomcode-bridge/reasoning-effort`（面板的力度写入点）、`/api/atomcode-bridge/sessions`（会话列表只读）。五条都同源门禁；**HTTP wire 上两个方向都用 snake_case**（`working_dir` / `session_id` / `message_id`），只在路由里翻译一次——漏掉出站方向就是 `message_id` 静默变 `undefined` 的那种 bug。（人侧 `/ask` 是第六条，**方针 A 已删除**：评审走命令与工具，不再有插件自己的回合通道。） | 面板与 chip 永久 `null`（客户端渲染 `—`）；provider 路由没了则那个下拉**禁用并写出原因**（不是空下拉） |
 | `ctx.get('agents')` → `agent.inject(message)` | `/inject` 唯一的投递通道：**公开方法**，"Queue model-facing context for the next pre-step **without waking the driver**"（`dsh-agent` 的 `runtime-types.d.ts`）。消息的 `source.kind` 必须是 `'atomcode-bridge'`，**永不用 `'user'`**（那是机器冒充人说话） | 没有 `agents` 服务 → 具名 `agents-unavailable`；会话没活 agent → 具名 `agent-not-live`。**别改用 `steer()`/`followup()`**——它们会唤醒驱动，等于一点击就替用户开了个模型回合。另注意 `inject` **不保证送达**（pre-step 已抢走批次会错过、取消/销毁可能丢弃），所以 `ok:true` 只表示已入队，别写成"模型已读过" |
 | `ctx.get('commands')` → `register({name, description, input:{hint}, handler})` | `/atomcode-review` 斜杠命令。handler 的契约注释是 "Execute against the receiving agent **without sending the command to the model**"——这就是 `/compact` 同构的那条路：宿主直接干活，**评审本体零 LLM 调用**。它复用工具那一份 `runAsk`（daemon 通道）+ 自己的 `composeReviewPrompt`，是第二个入口不是第二份实现 | 没有 `commands` 服务 → 不注册命令，**工具照常挂载**（可选服务，别加进 `inject` 数组——那是硬依赖）。**红线（2026-10 精化，方针 A+continue）**：`followup`/`steer`/`inject` 三个原始方法在评审本体里**永不许出现**——写进去就等于一次点击偷偷花掉一个模型回合；**唯一例外是评审成功后那一条具名的「继续原任务」**，它经 `inject.ts` 的 `injectReviewContinuation`（自己按 `agent.status` 分流 idle→steer / running→inject），并在命令回复里写明结果（红线 3）。`test/wiring.test.mjs` 扫 `lib/command.js` 里三个原始方法、`test/command.test.mjs` 钉「拒绝/失败一律不投递」、`test/inject.test.mjs` 钉那条继续 |
@@ -183,11 +183,13 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 
 ## 红线（违反任一都会炸到用户机器）
 
-1. **`atomcode_review` 在 AtomGit 登录态下走的是 daemon `/chat` 通道（与 ask 同一条路），不是 CLI。**
+1. **代码评审在 AtomGit 登录态下走的是 daemon `/chat` 通道（与 `atomcode_ask` 同一条路），不是 CLI。**
    网关对推理端点强制 AtomCode 专有签名（未签名请求 → `ATOMCODE_SIG_MISSING`），
-   而 daemon `/chat` 会自动签。所以 review 现在和 ask 一样，只要 daemon 活着就能跑，
+   而 daemon `/chat` 会自动签。所以 `/atomcode-review` 和 `atomcode_ask` 一样，只要 daemon 活着就能跑，
    不依赖 `config.toml` 里有没有直连 provider。**别把 review 改回走 CLI**——那是 2026-10
    之前的事，用户明确决定单通道（m01249），代价是没有结构化 `findings[]`（报告是文字）。
+   **模型侧曾有的 `atomcode_review` 工具已退役**（用户决定：模型全部倾向调用 `atomcode_ask`，强大而通用），
+   评审能力留在 `/atomcode-review` 命令与「锐评」按钮上——别把那个工具加回来。
 2. **解析不出来的额度不许编数字。** `src/host/quota.ts` 解析失败返回 null + `reason`，面板显示原文或原因。
    "显示 0%"比"什么都不显示"危险得多。
 3. **不新增静默失败分支。** daemon 起不来、配额不可用、路由缺失，都要么给用户可见的状态，
@@ -224,7 +226,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
    supported)`），`apply()` 抛错，插件**整体不激活**——没有工具、没有路由，详情页卡片只剩
    「统计信息加载失败：HTTP 404 + 1 异常」，GUI 上再无其他错误面（2026-10 事故：开发树带并集，
    已发 0.4.2 的桌面 registry 副本无并集故正常，web link 开发副本 404）。
-   本插件两个工具输出里的 null 语义字段一律经 `src/host/tools.ts` 的 `hostSubsetSchema` 在 register
+   本插件工具输出里的 null 语义字段一律经 `src/host/tools.ts` 的 `hostSubsetSchema` 在 register
    处翻译：剥掉数组型 `type` 键 → annotation-only 节点（宿主校验器明确接受"无 type 键的
    unconstrained-JSON 形态"），null 语义留在字段 `description` 里。**不许折成单型**：宿主在调用
    时把返回值按 `output.schema` 校验，折成单型后每个合法 null 都会抛 `ToolOutputError`。

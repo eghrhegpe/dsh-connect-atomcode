@@ -77,7 +77,7 @@ help        打印帮助
 
 ## 2. `atomcode review` 完整选项（28 个）`[help]`
 
-> 这是本插件 `atomcode_review` 包装的对象。按用途分组。
+> 这是本插件早年的 `atomcode_review` 工具曾包装的对象（该工具已退役、CLI 通路已删除，留作历史参考）。按用途分组。
 
 ### 变更选择（优先级见下）
 
@@ -287,7 +287,7 @@ data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-f
 { "scope": { "kind": "range", "base": "HEAD~2", "head": "HEAD" }, "depth": "deep+verify" }
 ```
 
-**为什么这条对本仓库重要**：这个评审器跑在 **daemon 运行时**里，而 daemon 持有 AtomGit 网关签名（见 §5），所以它**不受 `atomcode_review` CLI 那道签名门限制**。红线 1 末尾"只能走 `atomcode_ask` 做侧边咨询或让 AtomCode 评审"此前只是推断，现在有执行证据：本仓库那两个提交就是让 AtomCode 经 `atomcode_ask` 用它审出来的（7 轮；末轮 `prompt 80322 / cached 73728`；Lite-体验版 5 小时窗口 2% → 13%）。
+**为什么这条对本仓库重要**：这个评审器跑在 **daemon 运行时**里，而 daemon 持有 AtomGit 网关签名（见 §5），所以它**不受 review CLI 那道签名门限制**。红线 1 末尾"只能走 `atomcode_ask` 做侧边咨询或让 AtomCode 评审"此前只是推断，现在有执行证据：本仓库那两个提交就是让 AtomCode 经 `atomcode_ask` 用它审出来的（7 轮；末轮 `prompt 80322 / cached 73728`；Lite-体验版 5 小时窗口 2% → 13%）。
 
 未实测的部分：`scope.kind` 的其他取值、`depth` 的档位表、以及它是否等价于 `atomcode review` CLI 的评审人格（两者实现不同——CLI 那份会写 `report_finding`，daemon 这份的产出直接进会话文本）。本插件不暴露它：`/chat` 的 SSE 只以 `tool_start{name}` 报出它在跑，没有独立端点可直连调用。
 
@@ -362,7 +362,7 @@ AtomCode error: missing base URL: pass --base-url, set $ATOMCODE_BASE_URL, or ad
 | `POST /command` `{command:"status"}` | `lib/daemon.js: runCommand()` + `lib/quota.js` —— 额度显示 |
 | `POST /chat/stop` `{session_id}` | `lib/daemon.js: stopChat()` —— **插件本体已调用**：ask 回合被熔断 / 取消 / 流截断时，请求 daemon 停掉它（此前只断本端 HTTP 流）。契约见 `scripts/probes/chat-stop.mjs`：`session_id` 必填（空 body → 422）；未知 id → 200 `"was not running"`（**200 ≠ 回合被停掉**，故 `ok` 语义是"daemon 受理了请求"）；回合刚开始还没拿到 `session_assigned` 时无 id 可发，这一种情况在错误文本里具名 |
 | `atomcode daemon --port … --no-telemetry` | `lib/daemon.js: spawnDaemon()` —— 自动拉起 |
-| `atomcode review …` | **已删除**（m01249 单通道决定）：`atomcode_review` 现在走 daemon `POST /chat`（与 `atomcode_ask` 同一条路），不再 spawn CLI 子进程 |
+| `atomcode review …` | **已删除**（m01249 单通道决定）：评审走 daemon `POST /chat`（与 `atomcode_ask` 同一条路），不再 spawn CLI 子进程——模型侧的 `atomcode_review` 工具后来也退役，评审入口只剩 `/atomcode-review` 命令与「锐评」按钮 |
 | `~/.atomcode/config.toml` | 不再由插件读取（`checkReviewProvision` 随 CLI 通路删除）。AtomCode 自身的默认档位仍写在这个文件里，但插件只读 daemon `GET /models` 的 `provider` 字段 |
 
 **没用到的**（留作未来扩展）：`/live/*`、`/fs/*`、`/sessions`、`/skills`、`/providers/discover-models`、`atomcode --output-format jsonl`（无头一次性问答，可作为 ask 的另一条实现路径）。

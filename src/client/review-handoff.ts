@@ -16,7 +16,6 @@
  *   · a one-click review is the `/atomcode-review` slash command — executed by
  *     the Host, zero DSH model turns, its result written into the transcript
  *     exactly like any other command's;
- *   · a review the model asks for is the `atomcode_review` tool;
  *   · a free-form question is the model's own `atomcode_ask` tool.
  *
  * The popover, the ask POST, the delivery POST and their styling are GONE with

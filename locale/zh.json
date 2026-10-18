@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "AtomCode 第二意见",
-    "description": "用本机已登录的 AtomCode 做一次独立代码审查：`atomcode_ask` 自带工具循环、自己决定读什么，是主力；`atomcode_review` 是只看一个 diff 的窄口自查。不接管模型、不需要 API key，但消耗的是你自己 AtomGit 账号的额度。"
+    "description": "用本机已登录的 AtomCode 做一次独立代码审查：`atomcode_ask` 自带工具循环、自己决定读什么，是主力；差分自查走 `/atomcode-review` 命令（未提交改动 / 分支 / PR）。不接管模型、不需要 API key，但消耗的是你自己 AtomGit 账号的额度。"
   }
 }
