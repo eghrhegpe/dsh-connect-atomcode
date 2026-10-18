@@ -19,7 +19,7 @@
 | 改额度解析 / 面板渲染 | `src/host/quota.ts`（纯函数，无宿主依赖） | `test/quota.test.mjs` + `test/protocol.test.mjs`；**面板的行与文案改 `test/client-render.test.mjs`**（真渲染门禁，空态与占位符也钉在那里） | 解析不出来时**必须**回落到原文，不得编数字 |
 | 排查"为什么没生效 / 报错" | 本文件「工作目录与装载方式」 | `src/host/daemon.ts`（daemon 探测真源） | 先分清 Host 进程 vs Client 控制台 |
 | daemon 起不来 / 端口被占 | `src/host/runtime.ts` 的 `ensureDaemonStarted`（拉起/重试/单飞在那；`src/host/index.ts` 只是 `apply()` 装配点，`src/host/daemon.ts` 是它调用的传输与探测层，没有这个符号） | `docs/AtomCode-CLI与daemon接口参考.md`（端点与启动参数） | 13459 与 AtomCode TUI 的 13456 是刻意分开的 |
-| `atomcode_review` 报不可用 | 本文件红线 1 | `src/host/review.ts` 的 `checkReviewProvision` | 这是**本机配置事实**，不是临时故障 |
+| `atomcode_review` 报不可用 | 本文件红线 1 | 现在 review 走 daemon `/chat`（与 ask 同一条路），"不可用"= daemon 没起来或 working_dir 取不到 | 这是**运行时事实**，不是本机配置事实 |
 | 加/改 client 槽位 | 本文件「宿主 ABI 面」 | `test/client-id.test.mjs`（注册契约门禁） | 改 seat 名必须同步改那条测试的断言 |
 | **换 AtomCode 用的模型 / 改默认档位** | `README.md` §「怎么换 AtomCode 用的模型」 | host 侧 `src/host/runtime.ts` 的 `resolveProvider()` + `src/host/provider-store.ts`（`apply()` 只装配，符号都不在 `index.ts` 里）；渲染侧 `src/client/index.ts` 的 `ProviderSelectRow` + `src/client/rows.ts` 的 `providerSelectModel()` | 见**红线 8**。单次换模型传调用参数 `provider` 就够；持久改默认**在面板上点** |
 | **详情页那张卡该显示什么 / 放哪儿** | `src/client/rows.ts` 的 `turnBoundaryRows()` + `providerRows()`；`src/client/quota.ts` 的 `quotaView()`；座位在 `src/client/index.ts` 的 `apply()` 里（**改完必须 `npm run build`**） | 上面「面板的显示纪律」一段 | ①**恒定值不是信息**，patch-only 旋钮要标"你改过/插件默认"，判断来自 host 的 `config.authored`/`config.defaults`；②座位见红线 7 |
@@ -28,7 +28,7 @@
 
 DSH 插件：把本机已登录的 **AtomCode**（官方二进制，终端 AI 编程助手）作为**侧边工具台**接入 DeepSeek Harness。
 注册**两个工具**：`atomcode_ask`（侧边咨询，一个完整自主回合）与 `atomcode_review`（one-shot 代码评审）。
-Host（Node/cordis）只做五件事：注册工具、开一个只读统计路由 + 一个只写插件自己 state 的偏好路由、管 daemon 生命周期、解析额度、持有 `provider.json` 偏好；Client（React bundle）渲染详情页统计卡片、模型下拉与输入框额度标签。
+Host（Node/cordis）只做五件事：注册工具（+ 一个 `/atomcode-review` 斜杠命令）、开五条路由（统计读、偏好写、回答投递 `/inject`、力度写、会话读）、管 daemon 生命周期、解析额度、持有 `provider.json` 偏好；Client（React bundle）渲染详情页统计卡片、模型下拉、输入框额度标签、每条回复下方的「锐评」按钮，以及工具行上一个**渲染 null 的插入轨**（它只为拿到 composer 的 `inputActions`）。
 
 **三条事实**（写代码前先认清你在动哪一条）：
 
@@ -38,7 +38,7 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 2. **额度是从本地化文本解析出来的，不是 API。** AtomCode 没有额度 HTTP 接口，唯一来源是
    `POST /command {"command":"status"}` 返回的 `text`。解析不出来时**绝不编数字**，原样显示原文
    （`src/host/quota.ts` 的 `reason` 字段）。这条是本插件唯一"看起来能改成读 JSON"的地方，而它不能。
-3. **三条私有无版本协议无握手可谈。** `/chat` SSE 词表、`status` 本地化文本、review CLI 的 provider 解析，
+3. **三条私有无版本协议无握手可谈。** `/chat` SSE 词表、`status` 本地化文本、`GET /models` 档位目录，
    都会随二进制升级悄悄漂移。v0.4 的答案不是握手而是**可观测降级**：静默失败必须变成
    面板上的具名诊断或 `protocol.quotaTextDrift` 信号（回归守卫 = `test/protocol.test.mjs`）。
 
@@ -58,17 +58,15 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
   · **client 半边**：真源 `src/client/*.ts` → 产物 **`client.js`（单个 IIFE，在包根）**。
     改面板 / 样式 / 额度渲染 / 座位，只改 `src/client/`。
   · **host 半边**：真源 `src/host/*.ts` → 产物 **`lib/*.js`（每个源文件一个 ESM 文件，不是单包）**。
-    `lib/` 刻意**不打包成一个文件**：`wiring` / `protocol` 这些套件要往 `lib/review.js` 里装
-    假 spawner（`setSpawnOverride`，模块级状态），而 `lib/index.js` 是 `import './review.js'` 用它的。
-    一旦把它们捆成一坨，测试装的那份就成了**没人调用的私副本**，于是真的去跑 review CLI 了——
+    `lib/` 刻意**不打包成一个文件**：`wiring` / `protocol` 这些套件要往 `lib/tools.js` 里装
+    假 daemon（`setSpawnOverride`，模块级状态），而 `lib/index.js` 是 `import './tools.js'` 用它的。
+    一旦把它们捆成一坨，测试装的那份就成了**没人调用的私副本**——
     这个坑踩过，见 `tsdown.config.mjs` 的 `host` 条目注释。
   · **`src/shared/` 是第三块，且只有一处**：`shared/loopback.ts` 是被**两半同时读**的模块
     （host 的 `index.ts` 与 client 的 `rows.ts` 各 import 一次），因为"这个 base_url 是不是本机端点"
-    是同一个事实——host 用它决定要不要探活，渲染侧用它写那句"代理一停 review 立刻断"。它在 host 侧是
-    **显式 entry**（产物 `lib/loopback.js`），在 client 侧被内联进 `client.js`。
-    ⚠️ **别把共享模块 re-export 挂在别的模块上**：`export {...} from '../shared/loopback.ts'` 写在
-    `review.ts` 里那一次，打包器把 `review.ts` 主体降级成共享 chunk、entry 被自动改名为
-    `lib/review2.js`——而 `wiring` / `protocol` 依赖 `lib/review.js` 的模块级单例（见上一条）。
+    是同一个事实。它在 host 侧是**显式 entry**（产物 `lib/loopback.js`），在 client 侧被内联进 `client.js`。
+    ⚠️ **别把共享模块 re-export 挂在别的模块上**：把 `export {...} from '../shared/loopback.ts'`
+    写在 `tools.ts` 里那一次（2026-10 之前），打包器把 `tools.ts` 主体降级成共享 chunk、entry 被自动改名。
     加共享模块 = 在 `tsdown.config.mjs` 里给它一个 entry。
   · 两半都是"改 `src/` → `npm run build` → 提交源码+产物"，都由 `build-gate` 盯着。
 - **测试一律打产物，不打 `src/`**（与 client 侧 `client-id` / `client-fns` 载入 `client.js` 同规矩）：
@@ -101,7 +99,9 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 | 面 | 用途 | 坏了会怎样 |
 |---|---|---|
 | `ctx.tools`（`ctx.get('tools')`） | 注册两个工具 | `apply` 早退，插件静默不挂 |
-| `ctx.webServer.register({kind:'exact', path})` | **两条路由**：`/api/atomcode-bridge/stats`（只读快照）与 `/api/atomcode-bridge/provider`（面板的模型选择写入点，写插件自己的 `provider.json`）。两条都同源门禁 | 面板与 chip 永久 `null`（客户端渲染 `—`）；provider 路由没了则两个下拉**禁用并写出原因**（不是空下拉） |
+| `ctx.webServer.register({kind:'exact', path})` | **五条路由**：`/api/atomcode-bridge/stats`（只读快照）、`/api/atomcode-bridge/provider`（面板的模型选择写入点，写插件自己的 `provider.json`）、`/api/atomcode-bridge/inject`（把回答交给会话的模型）、`/api/atomcode-bridge/reasoning-effort`（面板的力度写入点）、`/api/atomcode-bridge/sessions`（会话列表只读）。五条都同源门禁；**HTTP wire 上两个方向都用 snake_case**（`working_dir` / `session_id` / `message_id`），只在路由里翻译一次——漏掉出站方向就是 `message_id` 静默变 `undefined` 的那种 bug。（人侧 `/ask` 是第六条，**方针 A 已删除**：评审走命令与工具，不再有插件自己的回合通道。） | 面板与 chip 永久 `null`（客户端渲染 `—`）；provider 路由没了则那个下拉**禁用并写出原因**（不是空下拉） |
+| `ctx.get('agents')` → `agent.inject(message)` | `/inject` 唯一的投递通道：**公开方法**，"Queue model-facing context for the next pre-step **without waking the driver**"（`dsh-agent` 的 `runtime-types.d.ts`）。消息的 `source.kind` 必须是 `'atomcode-bridge'`，**永不用 `'user'`**（那是机器冒充人说话） | 没有 `agents` 服务 → 具名 `agents-unavailable`；会话没活 agent → 具名 `agent-not-live`。**别改用 `steer()`/`followup()`**——它们会唤醒驱动，等于一点击就替用户开了个模型回合。另注意 `inject` **不保证送达**（pre-step 已抢走批次会错过、取消/销毁可能丢弃），所以 `ok:true` 只表示已入队，别写成"模型已读过" |
+| `ctx.get('commands')` → `register({name, description, input:{hint}, handler})` | `/atomcode-review` 斜杠命令。handler 的契约注释是 "Execute against the receiving agent **without sending the command to the model**"——这就是 `/compact` 同构的那条路：宿主直接干活，**评审本体零 LLM 调用**。它复用工具那一份 `runAsk`（daemon 通道）+ 自己的 `composeReviewPrompt`，是第二个入口不是第二份实现 | 没有 `commands` 服务 → 不注册命令，**工具照常挂载**（可选服务，别加进 `inject` 数组——那是硬依赖）。**红线（2026-10 精化，方针 A+continue）**：`followup`/`steer`/`inject` 三个原始方法在评审本体里**永不许出现**——写进去就等于一次点击偷偷花掉一个模型回合；**唯一例外是评审成功后那一条具名的「继续原任务」**，它经 `inject.ts` 的 `injectReviewContinuation`（自己按 `agent.status` 分流 idle→steer / running→inject），并在命令回复里写明结果（红线 3）。`test/wiring.test.mjs` 扫 `lib/command.js` 里三个原始方法、`test/command.test.mjs` 钉「拒绝/失败一律不投递」、`test/inject.test.mjs` 钉那条继续 |
 | `ctx.effect(fn)` | 卸载时注销工具与路由 | **注意语义**：它执行 `fn` 当 setup，把返回值当 cleanup |
 | `ctx.logger?.warn` | 可选，全部日志都带 `[atomcode-bridge]` 前缀 | — |
 | `client` 侧 `ctx.slots.inject/register` | 两个 seat：详情页 `plugins.bundle.config`（首选，keyed）+ `plugins.detail.section`（回落）；输入框 `conversation.composer.dock`（额度读数，`order: 1`）。座位选择见红线 7 | 有 try/catch 兜底，缺 seat 只降级。**只允许一个 seat 拿走面板**——两个都注册会渲染两遍 |
@@ -113,7 +113,7 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 
 ## 面板的显示纪律（2026-10 那张卡被用户嫌弃"又丑又多字"之后写的）
 
-**元纪律：注释也是契约，而注释没有测试。** 契约注释住在 `src/`（产物 `client.js` 会被打包器抹掉函数体注释，见「工作目录与装载方式」）。`wiring.test.mjs` 有一条注释一致性测试：`default_provider` / `review_default_provider` 各只许出现一次 `Precedence:`且必须含面板；`review_working_dir` 必须写明"拒绝"而非"回落"。**改了字段行为就顺手改注释，否则那条测试会红。**（同一个套件里还有一条**版本号一致性**测试，
+**元纪律：注释也是契约，而注释没有测试。** 契约注释住在 `src/`（产物 `client.js` 会被打包器抹掉函数体注释，见「工作目录与装载方式」）。`wiring.test.mjs` 有一条注释一致性测试：`default_provider` 只许出现一次 `Precedence:` 且必须含面板。**改了字段行为就顺手改注释，否则那条测试会红。**（同一个套件里还有一条**版本号一致性**测试，
 见「已知缺口」——那条是 2026-10-16 补的。）
 数字同理：**别把会变的计数写进文档**。
 
@@ -121,12 +121,12 @@ Host（Node/cordis）只做五件事：注册工具、开一个只读统计路�
 
 1. **恒定值不是信息** → `turnBoundaryRows()` 只渲染有信息的行
 2. **同一件事不说两遍** → `来源` 已并进路径行
-3. **空态各说各的因** → `providerSelectModel()` 的 `reason` 按 slot 分（ask 说 `daemon 未列出档位`，review 说 `config.toml 里没有直连条目`）
+3. **空态说清楚** → `providerSelectModel()` 的 `reason` 只有一个（`daemon 未列出档位`），因为只有一个档位阶梯
 
 配套两条硬纪律也已实现：
 
 - **"你改过没有"必须问 host** → `turnBoundaryRows()` 用 `cfg.authored` 判定，不用渲染侧硬编码比较
-- **两个端点形状不同** → `providerSelectModel()` 的 `optionValue` 按类型展平，只取 `provider`（档位名）
+- **provider 下拉只有一个** → `providerSelectModel()` 的 `optionValue` 按类型展平，只取 `provider`（档位名）
 
 - **面板要占"描述与 rows 之间"那个座位。** 首选 `plugins.bundle.config`（keyed，渲染在描述与 rows 之间），回落 `plugins.detail.section`（list seat，渲染在 rows 之后）。座位选择见红线 7。该 seat 还带 `view: 'summary' | 'page'`：`summary` 是插件卡片的一行摘要，**只许一行**。
 - **`manifest.description` 必须是字符串，多语言靠 `locale/` 目录。** 四条机制（锚点扫描、文件名当语言 id、`{ meta: { title, description } }` 形状、`fallbackText()` 只认非空字符串）由 `test/client-id.test.mjs` 钉住。同一个字符串不要两头写：`summary` 视图只报描述说不了的东西——daemon 活没活。
@@ -183,11 +183,11 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 
 ## 红线（违反任一都会炸到用户机器）
 
-1. **`atomcode_review` 在 AtomGit 登录态下用不了，这不是 bug。** 网关对推理端点强制 AtomCode 专有签名
-   （未签名请求 → `ATOMCODE_SIG_MISSING`），而 review CLI（`atomcodex`）不会签。插件在挂载时静态探针
-   `~/.atomcode/config.toml`，把 `atomcode_review` 的**工具描述**降级成"本机不可用 + 改用 ask"，
-   让模型**调用前**就知道。修法只有一个：加一个标准 + 显式 `api_key` 的直连 provider。
-   **别把这个探针删掉或改成运行时才检查**——它是"调用前告知"而非"调用后报错"的关键。
+1. **`atomcode_review` 在 AtomGit 登录态下走的是 daemon `/chat` 通道（与 ask 同一条路），不是 CLI。**
+   网关对推理端点强制 AtomCode 专有签名（未签名请求 → `ATOMCODE_SIG_MISSING`），
+   而 daemon `/chat` 会自动签。所以 review 现在和 ask 一样，只要 daemon 活着就能跑，
+   不依赖 `config.toml` 里有没有直连 provider。**别把 review 改回走 CLI**——那是 2026-10
+   之前的事，用户明确决定单通道（m01249），代价是没有结构化 `findings[]`（报告是文字）。
 2. **解析不出来的额度不许编数字。** `src/host/quota.ts` 解析失败返回 null + `reason`，面板显示原文或原因。
    "显示 0%"比"什么都不显示"危险得多。
 3. **不新增静默失败分支。** daemon 起不来、配额不可用、路由缺失，都要么给用户可见的状态，
@@ -206,15 +206,11 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
    与宿主的 `7 轮 / 21.4M tok / 上下文圆环` 同排，`order: 1`（宿主 stats 占 0，装饰模板占 5），
    样式刻意做弱（无 pill 无边框、三级色），因为那是读数条不是工具栏。
    **挑座位前先读契约摘要，不读名字。**
-8. **模型档位的两条命名空间不许混，且插件对 `~/.atomcode/config.toml` 永远只读。** ask 走 daemon `/chat`，
-   `provider` 收的是**档位名**（= `GET /models` 的 `provider` 字段 = config 里 `[models."<名>"]` 的键
-   = `default_provider` 的值，形如 `AtomGit-glm5.3-flash`）；review 走 CLI，`--provider` 收的才是
-   `[providers.<name>]` 直连条目名（形如 `atomcode-local`）。裸模型 id（`glm5.3-flash`）两边都不认。
-   插件侧旋钮是**两个字段 + 面板两个下拉、各管一条路**：`default_provider`（ask）与
-   `review_default_provider`（review）是文件侧缺省，面板选择（`provider.json`）**优先于**它们。
-   顺序是：**调用参数 > 面板选择 > 配置字段 > 原有默认**。**留空的行为两条路不一样，别说成一句**：
-   ask 留空**连 `provider` 字段都不发**（AtomCode 自己的默认说话）；review 留空是**回落到自动选择**，
-   而自动选择几乎总会显式交出 `--provider`（config.toml 的默认命中、或唯一直连条目顶上）。
+8. **模型档位只有一条命名空间（档位名），且插件对 `~/.atomcode/config.toml` 永远只读。** ask 与 review 走同一条 daemon `/chat` 通道，`provider` 收的是**档位名**（= `GET /models` 的 `provider` 字段 = config 里 `[models."<名>"]` 的键
+   = `default_provider` 的值，形如 `AtomGit-glm5.3-flash`）。裸模型 id（`glm5.3-flash`）不认。
+   插件侧旋钮是**一个字段 + 面板一个下拉**：`default_provider` 是文件侧缺省，面板选择（`provider.json`）**优先于**它。
+   顺序是：**调用参数 > 面板选择 > 配置字段 > AtomCode 自己的默认**。
+   留空时**连 `provider` 字段都不发**（AtomCode 自己的默认说话）。
    顺带一条同源教训：**工具描述只许讲顺序，不许讲结果**——描述在挂载时注册一次，而面板选择每次调用才读，
    所以"留空即点名它"这类固定结论必然在某些状态下是假的（评审已经抓过两次）。
    边界在这儿：**面板写的是插件自己的 state 文件，这是允许的，也是这个功能的意义**；

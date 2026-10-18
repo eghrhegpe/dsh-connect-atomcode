@@ -267,7 +267,7 @@ rate_limited      {reset_at_display, reset_label, secs_until_reset, auto_resumin
 |---|---|---|---|
 | **档位名** | daemon `GET /models` 的 `provider` 字段 = `config.toml` 里 `[models."<名>"]` 的键 = `default_provider` 的值 | `Account-modelish` | `AtomGit-qwen3.8-27b` / `AtomGit-glm5.3-flash` |
 | 模型 id | 档位名对应的真实模型 | 裸名 | `qwen3.8-27b` / `glm5.3-flash` |
-| 直连条目名 | `config.toml` 的 `[providers.<名>]`，**只有 review CLI 认这个** | 任意 | `atomcode-local` |
+| 直连条目名 | `config.toml` 的 `[providers.<名>]`，**只有已删除的 review CLI 认这个**（历史） | 任意 | `atomcode-local` |
 
 实测：`default_provider` 是 `AtomGit-qwen3.8-27b` 时，发 `{"provider":"AtomGit-glm5.3-flash"}` 后 SSE 第一帧就是
 
@@ -304,9 +304,9 @@ POST /v1/chat/completions → 403 {"detail":{"code":"ATOMCODE_SIG_MISSING","mess
 
 - **推理端点强制 AtomCode 专有签名**（`ATOMCODE_SIG_MISSING`）；`/v1/models` 在未签名时可读，但受套餐范围限制。
 - provider 形状：`requires_login: true` + `has_api_key: false` + `account: "AtomGit"`（登录态渠道，无 API key）。
-- 因此 `atomcode_review` 用不了该渠道。
+- 因此（历史）`atomcode_review` 的 CLI 通路用不了该渠道——**该通路已删除**（m01249 单通道决定），review 现在走 daemon `POST /chat`，与 ask 同一条路，不再受此签名门限制。
 
-### review CLI 的完整错误原文（权威，逐字）`[help]`
+### review CLI 的完整错误原文（历史档案，逐字）`[help]`
 
 ```
 AtomCode error: provider base_url 'https://llm-api.atomgit.com/v1' is an AtomGit/gitcode
@@ -344,7 +344,7 @@ AtomCode error: missing base URL: pass --base-url, set $ATOMCODE_BASE_URL, or ad
 | `GET /v1/models`（真 token） | 403 `model is not enabled for codingplan 'Lite-beta'` | 200，**8 个模型** |
 
 - **`signing.py` 的方案（HKDF-SHA256 salt=`atomcode-signing-v1` info=`v1:` + HMAC 消息 `{method}\n{path}\n{body}\n{ts}\n{nonce}`）在 `llm-api.atomgit.com` 上不被认**——逐字段复刻仍回 `_MISSING`，daemon 真实签名掺了未知材料（二进制里有 `X-AtomCode-Client` 头与 `atomcode-signing-v1` 字符串）。别照它复刻，也别逆向。
-- `api-ai.gitcode.com`（`atomcode-open-api` 代理的默认网关）**不查签名**，同一 token 可用——这就是 review 的通路。
+- `api-ai.gitcode.com`（`atomcode-open-api` 代理的默认网关）**不查签名**，同一 token 可用——这就是（历史）review CLI 的通路。该通路已随 m01249 单通道决定删除，此段保留作证据。
 - 旧疑案"CLI 的 loopback 出站被策略代理拦"**已被推翻**：review CLI 打 `127.0.0.1:8899` 全程通畅（代理 `/health` 计到 `requests: 2`）。
 
 ---
@@ -362,7 +362,7 @@ AtomCode error: missing base URL: pass --base-url, set $ATOMCODE_BASE_URL, or ad
 | `POST /command` `{command:"status"}` | `lib/daemon.js: runCommand()` + `lib/quota.js` —— 额度显示 |
 | `POST /chat/stop` `{session_id}` | `lib/daemon.js: stopChat()` —— **插件本体已调用**：ask 回合被熔断 / 取消 / 流截断时，请求 daemon 停掉它（此前只断本端 HTTP 流）。契约见 `scripts/probes/chat-stop.mjs`：`session_id` 必填（空 body → 422）；未知 id → 200 `"was not running"`（**200 ≠ 回合被停掉**，故 `ok` 语义是"daemon 受理了请求"）；回合刚开始还没拿到 `session_assigned` 时无 id 可发，这一种情况在错误文本里具名 |
 | `atomcode daemon --port … --no-telemetry` | `lib/daemon.js: spawnDaemon()` —— 自动拉起 |
-| `atomcode review …` | `lib/review.js` —— `atomcode_review`（含 `--repo/--base/--staged/--pr/--diff-file/--task/--provider/--max-rounds/--max-duration/--json/--no-web/--no-telemetry`；`--repo` 给了工作目录就带） |
-| `~/.atomcode/config.toml` | `lib/review.js: checkReviewProvision()` —— review 可用性静态探针 |
+| `atomcode review …` | **已删除**（m01249 单通道决定）：`atomcode_review` 现在走 daemon `POST /chat`（与 `atomcode_ask` 同一条路），不再 spawn CLI 子进程 |
+| `~/.atomcode/config.toml` | 不再由插件读取（`checkReviewProvision` 随 CLI 通路删除）。AtomCode 自身的默认档位仍写在这个文件里，但插件只读 daemon `GET /models` 的 `provider` 字段 |
 
 **没用到的**（留作未来扩展）：`/live/*`、`/fs/*`、`/sessions`、`/skills`、`/providers/discover-models`、`atomcode --output-format jsonl`（无头一次性问答，可作为 ask 的另一条实现路径）。
