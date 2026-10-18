@@ -210,7 +210,12 @@ export const S = {
   valWarn: { color: 'var(--dsw-alias-state-warn-primary)', wordBreak: 'break-word', textAlign: 'right' },
   provGrid: { display: 'flex', gap: 12, fontSize: 12.5 },
   provCell: { display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 0', minWidth: 0 },
-  provLabel: { color: 'var(--dsw-alias-label-tertiary)' },
+  // The label + its control share ONE row (label left, control right). provCell
+  // stays a column so any advisory / error lines below keep their own line —
+  // inlining the control alone is what the user asked for; the advisory text
+  // still belongs under it, not crammed to the right of the dropdown.
+  provFieldRow: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
+  provLabel: { color: 'var(--dsw-alias-label-tertiary)', flexShrink: 0 },
   select: {
     font: 'inherit',
     fontSize: 12.5,

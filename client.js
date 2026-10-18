@@ -247,7 +247,16 @@
 			flex: "1 1 0",
 			minWidth: 0
 		},
-		provLabel: { color: "var(--dsw-alias-label-tertiary)" },
+		provFieldRow: {
+			display: "flex",
+			alignItems: "center",
+			gap: 8,
+			minWidth: 0
+		},
+		provLabel: {
+			color: "var(--dsw-alias-label-tertiary)",
+			flexShrink: 0
+		},
 		select: {
 			font: "inherit",
 			fontSize: 12.5,
@@ -1803,14 +1812,18 @@
 				const trouble = model.disabled ? model.reason : "";
 				const warning = model.warning || "";
 				const advisory = [warning, override].filter((part) => part !== "").join(" · ");
-				return h("div", { style: S.provCell }, h("span", {
+				return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
 					style: S.provLabel,
 					title
 				}, label), h("select", {
-					style: model.disabled || pending ? {
-						...S.select,
-						...S.selectOff
-					} : S.select,
+					style: {
+						...model.disabled || pending ? {
+							...S.select,
+							...S.selectOff
+						} : S.select,
+						flex: "1 1 auto",
+						minWidth: 0
+					},
 					value: model.value,
 					disabled: model.disabled || pending,
 					onChange,
@@ -1819,7 +1832,7 @@
 				}, model.options.map((option, index) => h("option", {
 					key: "prov-" + index,
 					value: option.value
-				}, option.label))), trouble ? h("span", {
+				}, option.label)))), trouble ? h("span", {
 					style: S.valWarn,
 					title: trouble
 				}, trouble) : null, advisory ? h("span", {
@@ -1893,14 +1906,18 @@
 					display: "flex",
 					flexDirection: "column",
 					gap: 6
-				} }, h("div", { style: S.provCell }, h("span", {
+				} }, h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
 					style: S.provLabel,
 					title: "这里的选择优先于插件配置（cordis.patch.yml）里 review_brief_mode；选「不覆盖」就回到配置值。含义：代码评审时是否自动补一段评审提示词"
 				}, "评审时自动补提示词"), h("select", {
-					style: briefPending ? {
-						...S.select,
-						...S.selectOff
-					} : S.select,
+					style: {
+						...briefPending ? {
+							...S.select,
+							...S.selectOff
+						} : S.select,
+						flex: "1 1 auto",
+						minWidth: 0
+					},
 					value: currentBrief,
 					disabled: briefPending,
 					onChange: onBriefChange,
@@ -1908,18 +1925,18 @@
 				}, h("option", { value: "" }, "不覆盖（用配置 " + (cfg && typeof cfg.reviewBriefMode === "string" ? cfg.reviewBriefMode : "默认") + "）"), briefModes.map((m) => h("option", {
 					key: m,
 					value: m
-				}, m)))), briefError ? h("span", { style: S.valWarn }, briefError) : null, h("div", { style: S.provCell }, h("span", {
+				}, m))))), briefError ? h("span", { style: S.valWarn }, briefError) : null, h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
 					style: S.provLabel,
 					title: "这里填的文件夹优先于插件配置里的默认目录；清空并保存 = 不覆盖，改回用配置值或本次会话目录。AtomCode 会在你填的这个文件夹里读文件、跑 git"
 				}, "AtomCode 干活的文件夹"), h("div", { style: {
 					display: "flex",
 					gap: 4,
-					flex: 1,
+					flex: "1 1 auto",
 					minWidth: 0
 				} }, h("input", {
 					style: {
 						...S.select,
-						flex: 1,
+						flex: "1 1 auto",
 						minWidth: 0,
 						padding: "2px 6px",
 						fontSize: 12
@@ -1935,13 +1952,15 @@
 				}), h("button", {
 					style: {
 						...S.select,
+						width: "auto",
+						flex: "0 0 auto",
 						fontSize: 11,
 						cursor: dirPending ? "wait" : "pointer",
 						whiteSpace: "nowrap"
 					},
 					disabled: dirPending || dirValue.trim() === currentDir,
 					onClick: saveDir
-				}, dirPending ? "…" : "保存"))), dirError ? h("span", { style: S.valWarn }, dirError) : null, (() => {
+				}, dirPending ? "…" : "保存")))), dirError ? h("span", { style: S.valWarn }, dirError) : null, (() => {
 					const approvalModes = [
 						"build",
 						"accept_edits",
@@ -1961,11 +1980,15 @@
 						}
 						if (typeof reload === "function") reload();
 					};
-					return h("div", { style: S.provCell }, h("span", {
+					return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
 						style: S.provLabel,
 						title: "这里的选择优先于插件配置里的 approval_mode；选「不覆盖」就回到配置值。含义：AtomCode 自动执行工具时受多大限制。注意：当前 daemon 对后台调用一律自动放行，切换这里实际不改变行为"
 					}, "AtomCode 自动执行权限"), h("select", {
-						style: S.select,
+						style: {
+							...S.select,
+							flex: "1 1 auto",
+							minWidth: 0
+						},
 						value: currentApproval,
 						disabled: briefPending,
 						onChange: onApprovalChange,
@@ -1973,7 +1996,7 @@
 					}, h("option", { value: "" }, "不覆盖（用配置 " + (cfg && typeof cfg.approvalMode === "string" ? cfg.approvalMode : "bypass") + "）"), approvalModes.map((m) => h("option", {
 						key: m,
 						value: m
-					}, m))));
+					}, m)))));
 				})(), (() => {
 					const currentRounds = cfg && typeof cfg.panelAskMaxRounds === "number" ? cfg.panelAskMaxRounds : "";
 					const [roundsValue, setRoundsValue] = useState(currentRounds === "" ? "" : String(currentRounds));
@@ -1990,21 +2013,21 @@
 						}
 						if (typeof reload === "function") reload();
 					};
-					return h("div", { style: S.provCell }, h("span", {
+					return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
 						style: S.provLabel,
 						title: "这里填的数字优先于插件配置里的 ask_max_rounds；0 = 不设上限（交给 daemon 治理）；留空 = 不覆盖。含义：一次「问 AtomCode」最多让它自己循环多少轮"
 					}, "单次咨询最多轮数"), h("div", { style: {
 						display: "flex",
 						gap: 4,
-						maxWidth: 120
+						flex: "1 1 auto",
+						minWidth: 0
 					} }, h("input", {
 						style: {
 							...S.select,
-							flex: 1,
+							flex: "1 1 auto",
 							minWidth: 0,
 							padding: "2px 6px",
-							fontSize: 12,
-							width: 60
+							fontSize: 12
 						},
 						value: roundsValue,
 						placeholder: "不覆盖（" + (cfg && typeof cfg.askMaxRounds === "number" ? cfg.askMaxRounds : "25") + "）",
@@ -2020,12 +2043,14 @@
 					}), h("button", {
 						style: {
 							...S.select,
+							width: "auto",
+							flex: "0 0 auto",
 							fontSize: 11,
 							cursor: briefPending ? "wait" : "pointer"
 						},
 						disabled: briefPending || roundsValue === (currentRounds === "" ? "" : String(currentRounds)),
 						onClick: saveRounds
-					}, "保存")));
+					}, "保存"))));
 				})());
 			}
 			function useStats() {
