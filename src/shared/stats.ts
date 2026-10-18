@@ -273,6 +273,16 @@ export interface StatsSnapshot {
   protocol?: ProtocolBranch | null;
   quota?: QuotaBranch | null;
   sessions?: SessionsBranch | null;
+  /** Counters for the one model tool. */
   ask?: ToolStats | null;
+  /**
+   * A retained snapshot key with NO writer: it counted the retired
+   * `atomcode_review` tool, and a review is now an ordinary ask turn that lands
+   * in `ask`. Nothing increments it, so it is always zero.
+   *
+   * Kept because this shape is a contract with whatever panel build is loaded:
+   * a renderer older than the retirement reads the key, and it must find a
+   * number rather than `undefined`.
+   */
   review?: ToolStats | null;
 }

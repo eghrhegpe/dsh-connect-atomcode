@@ -65,8 +65,16 @@ export interface ProviderSelectModel {
   /** Non-empty ONLY when the effective value differs from what this control shows. */
   note: string;
   /**
-   * Non-empty when the SELECTED entry points at a loopback endpoint — a local
-   * process this pick then depends on. A different sentence kind from `note`.
+   * A reserved "this pick depends on a local process" sentence — a different
+   * KIND of sentence from `note`.
+   *
+   * Nothing writes it any more: it existed for the review CLI's direct-entry
+   * list, where picking a `127.0.0.1` entry meant "this control stops working
+   * the moment that sidecar exits". That list is gone (the daemon answers
+   * `/models` with profile names, not endpoints), so `providerSelectModel`
+   * always returns `''`. The slot stays declared so a consumer keeps treating
+   * "empty" as "no warning" rather than as "unknown", and so a future producer
+   * is a data change instead of an interface change.
    */
   warning: string;
   /** The effort levels the selected model supports (empty = none / unknown). */

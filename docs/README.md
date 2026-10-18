@@ -81,7 +81,7 @@
 
 ```
 # host —— 一个源码文件对应一个 lib/*.js（apply() 拆分 God module 后的完整清单）
-src/host/index.ts           → lib/index.js           apply() 装配点：注册两个工具 + /stats + /provider 路由 +
+src/host/index.ts           → lib/index.js           apply() 装配点：注册一个工具 + /stats + /provider 路由 +
                                                        额度缓存 + daemon 拉起策略；stats body 的 version 是版本号真源之一
 src/host/config.ts          → lib/config.js          readConfig：每个配置字段的类型兜底 + detectProfileKey（多 profile 隔离）
 src/host/runtime.ts         → lib/runtime.js         挂载期状态容器：daemon / 额度 / 熔断 / 错误观察者，被 apply() 组装
@@ -92,9 +92,9 @@ src/host/inject.ts          → lib/inject.js          把一条 AtomCode 回答
                                                         跑着的用 agent.inject 挂到下一步、空闲的用 agent.steer 唤醒）：
                                                         composeInjection 的框注 + 具名拒绝 + 运行时解析宿主的 createUserMessage
 src/host/command.ts         → lib/command.js           /atomcode-review 斜杠命令：不经模型跑一次评审，与工具共用同一份
-                                                        runAsk + composeReviewMessage（宿主直接干活，零 LLM 调用）
-src/host/tools.ts           → lib/tools.js             两个工具的挂载与描述（description 里写出可用档位与优先级顺序）；
-                                                        两个入口都走 runAsk —— review 就是一次带 diff 任务的 ask 回合
+                                                        runAsk + composeReviewPrompt（宿主直接干活，零 LLM 调用）
+src/host/tools.ts           → lib/tools.js             一个工具的挂载与描述（description 里写出可用档位与优先级顺序）；
+                                                        它和 /atomcode-review 命令都走 runAsk —— 一次评审就是一次带 diff 任务的 ask 回合
 src/host/daemon.ts          → lib/daemon.js            纯 daemon HTTP 客户端（/health /models /command /chat SSE），零宿主依赖
 src/host/quota.ts           → lib/quota.js             CodingPlan 额度文本解析（纯函数，按结构而非措辞；解析失败带 reason 不编数字）
 src/host/sessions.ts        → lib/sessions.js          侧边会话映射（read-modify-write，跨 profile 键前缀隔离）

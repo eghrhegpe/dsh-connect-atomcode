@@ -361,10 +361,11 @@ export async function runAsk(
   }
   if (result.ok && result.sessionId) sessions.set(sessionKey, result.sessionId);
   // Truncation is MARKED, never silent: a silently clipped reply reads
-  // to the model like a complete answer, which is how a half-copied report
-  // becomes a confidently wrong summary. Budget and marker both come from
-  // the shared pair (OUTPUT_CAP / capProse) so this path and the review path
-  // cannot drift into two conventions.
+  // to the model like a complete answer, which is how a half-copied review
+  // becomes a confidently wrong summary. Budget and marker both come from the
+  // shared pair (OUTPUT_CAP / capProse) so the two entry points that end up in
+  // this function — `atomcode_ask` and the `/atomcode-review` command — cannot
+  // drift into two conventions.
   const capped = capProse(result.reply, OUTPUT_CAP, {
     remedy: 'ask AtomCode to write the full text to a file and read that instead',
   });

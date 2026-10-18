@@ -52,7 +52,7 @@
     "typecheck": "tsc --noEmit",
     "coverage": "node scripts/test.mjs --coverage",
     "test": "node scripts/test.mjs",
-    "test:live": "node --test test/daemon-live.test.mjs test/review-live.test.mjs"
+    "test:live": "node --test test/daemon-live.test.mjs"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",

@@ -62,6 +62,18 @@ npm tarball 的这份文件（`CHANGELOG.md` 已列入 `package.json` 的 `files
   现已删除。一次评审就是一次 `ask` 回合，服从 `ask_max_rounds`（以及每调用的
   `max_rounds` / `timeout_secs` 参数）。如果你在 patch 里写过这两行，它们不再有效，删掉即可。
 
+### 修复
+
+- **`npm run test:live` 自己就是断的**：脚本写着 `node --test test/daemon-live.test.mjs
+  test/review-live.test.mjs`，而 `review-live.test.mjs` 已随 review CLI 一起删除——那条命令会以
+  「Could not find …」失败。现在只跑存在的 `daemon-live`。评审通路**不需要**单独的 live 套件：
+  一次评审就是一次 ask 回合，`daemon-live` 的 `askChat` 用例已经覆盖同一个 `runAsk`。
+- **一批「代码删了、描述还在说它活着」的说明被改正**：`stats.review` 与面板的 `warning` 字段现在
+  都写明是**保留的契约槽位、当前没有任何写入点**（`stats.review` 恒为 0）；`README.md` 与
+  `docs/DECISIONS.md` 里把它说成"命令路径仍读它们"、把评审输出说成另有 `report` 字段的句子已改写；
+  `docs/README.md` 的代码地图里那个已经改名的 `composeReviewMessage` 也换成了真名
+  `composeReviewPrompt`。这些都不改变行为，但它们正是"读了会读错"的那种文档。
+
 ## 0.4.3 — 2026-10-17（审批模式取值把关 · 并行回合读数 · daemon 对照）
 
 ### 新增

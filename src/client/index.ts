@@ -395,17 +395,20 @@ const REGISTRATION = {
       // decoration, and it made every row two lines tall.
       const override = model.note;
       const trouble = model.disabled ? model.reason : '';
-      // The loopback dependency warning renders in the SAME style as trouble
-      // (both are "read this before you rely on this control"), but it is not
-      // a disabled reason: the control still works — until the local process
-      // it bills through exits.
+      // A capacity kept for a sentence nothing writes yet: `warning` carried
+      // the loopback dependency note ("this pick bills through a local
+      // sidecar"), and its producer died with the review CLI — see
+      // `providerSelectModel`. Should a producer return, it renders in the SAME
+      // style as trouble (both say "read this before you rely on this
+      // control") while NOT being a disabled reason: the control still works.
       const warning = model.warning || '';
       // `warning` and `override` answer two different questions — what this
       // pick DEPENDS ON vs which layer actually won — but both are "read this
       // before you rely on this control", so they share ONE line, separated
-      // by ` · `. Stacked, they made the card grow two lines without warning
-      // the moment a loopback endpoint was picked. `trouble` keeps a line of
-      // its own: the control is unusable, and that outranks both.
+      // by ` · `. Stacked, they made the card grow a second line; keeping them
+      // on one line is what stops that from coming back with the next producer.
+      // `trouble` keeps a line of its own: the control is unusable, and that
+      // outranks both.
       const advisory = [warning, override].filter((part) => part !== '').join(' · ');
       return h(
         'div',

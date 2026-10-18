@@ -15,17 +15,17 @@
 
 - **ask_max_rounds 默认 25（不再是 0）**。它是**停止等待 + 尽力停止**的止损：断客户端这条 HTTP 流，并向 daemon 发 `POST /chat/stop` 请求停掉该回合（见下条）；请求失败或回合刚开始还没拿到 session_id 时，daemon 侧回合可能继续跑完。对无人值守的 agent 而言，这个数字约束的是**用户等多久**、不是 agent 干多少（25 轮 shell/写文件/出网足以造成实质损害）——请连同 `README.md` 的安全姿态一节一起读。轮数上限 1000 在代码里钳制（见下条）：熔断不是能被一个巨大数字关掉的东西
 - **review 缺省不猜仓库**：三层目录（调用参数 > 宿主会话 cwd > 插件配置 `working_dir`）都取不到时拒绝并说明原因（与 ask 同一条门，见下方「ask 缺 working_dir 时拒绝该回合」条目）
-- **reply/report 截断时打标记 + 置 `truncated` 字段**
+- **回复被截断时打标记 + 置 `truncated` 字段**（早年 ask 的 `reply` 与 review 的 `report` 各截一次；单通道后评审就是一次 ask 回合，只剩 `reply` 一份输出，但预算常量与标记文案仍是同一处 `capProse`，不因输出只剩一份就放宽）
 - **一条档位命名空间（ask 的档位名）由工具与 `/atomcode-review` 命令共用**，写明"传裸模型 id 是错的"（m01249 决定单通道后，review 不再有自己的命名空间；模型侧第二个工具后来也退役）
 - **sessions.count() 按 prefix 统计**
 - **daemon_retry_secs（默认 60s）冷却后重试**
 - **额度正则标签收紧为 `用量|usage|quota`**
 - **面板布局**：`1180px` + `repeat(auto-fit, minmax(320px, 1fr))`
 - **i18n**：`locale/{en,zh}.json` + `files[]` 含 `locale`
-- **工具统计格式**：一组带标签，不摊平成一排（早先是 ask / review 两组，随模型侧第二个工具退役并回一组）
+- **工具统计格式**：一组带标签，不摊平成一排（早先是 ask / review 两组，随模型侧第二个工具退役并回一组；快照契约里 `review` 这个键仍在，但已无写入点、恒为 0，面板也不为它渲染行——见上文退役那条）
 - **配置字段的语义只写在 `cordis.patch.yml` 一处**（字段文档真源，`test/wiring.test.mjs` 钉着它）。`src/host/config.ts` **不复述**字段含义/空值语义/归属哪条路径，只写解析层才知道的事：`0` 为什么是显式值而不是缺失值、`authored` 为什么不能是 key-presence 判定、内置常量为什么是这个数。理由：同一份「为什么」写两处，第二处必然漂移——2026-10-17 实测，24 个字段的注释在两处逐字段重复，而只有 patch.yml 那份有测试看着
 - **profile 键的自动判定（`session_key_prefix` 为空时）**：`$DSH_PROFILE` 是权威、**过不过 allowlist**——曾因一个三词白名单把合法值丢掉、回落到猜测；argv 回退要求 `dsh` 是真调用**且** profile 词独占一个参数——曾因对拼接 argv 跑正则而跨参数边界命中（`/opt/dsh-tools/webpack.config.js` 满足过 `web` 分支）。判定不出来就返回 `''`，由挂载点具名告警（红线 3），**绝不猜**：错误的前缀会静默合并或拆错会话，比没有前缀更糟
-- **模型侧的 `atomcode_review` 工具已退役，模型只剩 `atomcode_ask` 一个工具**（用户决定，2026-10-18）。模型要评审时直接调 `atomcode_ask`（自带工具循环、自己决定读什么）；一次性的差分自查走 `/atomcode-review` 斜杠命令与每条回复下方的「锐评」按钮，两条路都在宿主侧执行、不占模型回合。理由：第二个工具与 ask 共用同一条 daemon 通道，留着它只多一份要同步的描述与 schema，而它提供的限定评审 ask 也能给。同步面：面板的工具使用卡少一组，`stats.review` 字段与 `review_*` 旋钮保留在 host 侧（命令路径仍读它们），只是不再有工具贡献计数
+- **模型侧的 `atomcode_review` 工具已退役，模型只剩 `atomcode_ask` 一个工具**（用户决定，2026-10-18）。模型要评审时直接调 `atomcode_ask`（自带工具循环、自己决定读什么）；一次性的差分自查走 `/atomcode-review` 斜杠命令与每条回复下方的「锐评」按钮，两条路都在宿主侧执行、不占模型回合。理由：第二个工具与 ask 共用同一条 daemon 通道，留着它只多一份要同步的描述与 schema，而它提供的限定评审 ask 也能给。同步面：面板的工具使用卡少一组。**`stats.review` 字段仍留在快照契约里，但已经没有写入点了**——全 `src/host/` 只有 `stats.ask.*` 有 `+=`，所以它恒为 0，面板也不再为它渲染任何一行（保字段的理由是 wire 形状不能变在一个比退役更旧的渲染端脚下，见 `src/host/stats.ts` 与 `src/shared/stats.ts` 的字段注释）。评审自己的旋钮只剩 `review_brief_mode`：`review_max_rounds` 与 `review_max_duration_secs` 两个熔断字段已随「评审跟随 ask 预算」一起删除——它们曾被解析进快照却没有任何调用点读，是典型的「看起来是活的、改什么都不发生」
 - **`atomcode_review` 现在与 `atomcode_ask` 走同一条 daemon `/chat` 通道**（m01249 决定单通道，2026-10-18 落地）。此前的 CLI 通路（`atomcodex` 二进制 + 标准 OpenAI 兼容端点）被删除：它要求 `config.toml` 里有直连 provider 条目，而 AtomGit 网关对推理端点强制 AtomCode 专有签名（未签名 → `ATOMCODE_SIG_MISSING`），导致"AtomCode 登录态下 review 不可用"的结构性死锁。代价：丢失结构化 `findings[]`（报告现在是文字）。收益：review 与 ask 共享同一条 daemon 通道，不再有"ask 能跑而 review 不能"的分裂态。工具描述已按单通道改写
 
 - **ask 回合被熔断 / 取消 / 流截断时，向 daemon 发 `POST /chat/stop`**（2026-10-17，未随版本号发布）。此前 abort 只断本端 HTTP 流，daemon 侧回合继续跑、继续烧工具调用与滚动窗口额度——这一条此前被三处注释当成既定事实描述（`streamChat` / `askChat` / `max_rounds` 参数说明），而端点一直躺在接口参考的「没用到的」清单里。契约是实测出来的（`scripts/probes/chat-stop.mjs`，无成本）：`session_id` **必填**（空 body → 422，没有"停掉正在跑的那个"这种用法）；未知 id → 200 `{"success":true,"message":"... was not running"}`——**200 不代表回合被停掉**，所以 `stopChat` 的 `ok` 语义是"daemon 受理了请求"，message 原样带回，不转述成"已停止"。回合刚开始就被切断、还没拿到 `session_assigned` 的回合没有 id 可发：这一种情况在错误文本里具名（`appendStopOutcome` 的 `sent:false` 分支），不用任何猜测兜底；`continue` 传入的 `sessionId` 作为第二来源。`done` 之后绝不发（回合已结束），daemon 自己在流内发的 `error` 事件也不发（不是我们取消的）
@@ -39,7 +39,7 @@
   - 顺带修掉的一处结构问题：`usedTools` 原本靠类型推断，`report()` 这个闭包在第一次 `push` 之前就读它，推断失败（`TS7034`）。显式标了元素类型——闭包引用会把数组类型钉在读它那一刻
 - **会话键按 daemon 身份判死，TTL 退化为兜底**（2026-10-17）。侧边对话的主要死因是 daemon 重启/空闲退出（~30min 级），而 24h 挂钟 TTL 看不见它：三小时前写的 id，daemon 十分钟前重启过，TTL 判定「还活着」，每次 `continue` 都拿它撞一次失败、烧一个回合，恢复手段（`reset_session`）只在失败文本里出现。现在 `set()` 随条目记录 daemon 指纹（`readDaemonIdentity`：`port:pid:token` 的 sha256 前 16 位——token 哈希而非原文，state 文件不是凭证库；pid 单独不够，刚释放的 pid 最容易被复用），`get()/count()/prune()` 走同一个 `isResumable`：指纹不符即死，与年龄无关。**未知永不等于死**：没有指纹字段（旧数据）、身份文件读不到（daemon 没起、`--no-auth` 不写文件）、探针抛错，都按"无法判定"放行，退化到纯 TTL 行为——误杀一条活会话是这条规则唯一不能引入的失败模式。顺带：`count()`+`oldestAgeMs()` 两次全量读合并为 `snapshot()` 一次读（5s 轮询的同文件双读双 parse），单因子入口保留给只要一个事实的调用方
 
-- **一次返回只有一份上下文预算，而且预算算的是「模型读到的东西」**（2026-10-17）。`OUTPUT_CAP` 是唯一常量，ask 与 review 两条路径共用 `capProse`。截断标记的文案也合成一处（`capProse`），只有 `remedy` 分段：被砍的回复和被砍的报告该做的事不一样，而标记本身的写法不许可调用点各自发明。标记写在返回文本**内部**：静默截断在模型眼里是一份完整答案，半个文档变成一段自信的错误总结正是这么来的。review 的 B 方案输出（m01249 单通道后）没有 `findings[]` 字段，只有 `report`（文字）+ 元数据（`tokens` / `usage` / `rounds` / `tools` / `working_dir` / `provider` / `stop_reason` / `error`），预算直接套在 `report` 上
+- **一次返回只有一份上下文预算，而且预算算的是「模型读到的东西」**（2026-10-17）。`OUTPUT_CAP` 是唯一常量，ask 与 review 两条路径共用 `capProse`。截断标记的文案也合成一处（`capProse`），只有 `remedy` 分段：被砍的回复和被砍的报告该做的事不一样，而标记本身的写法不许可调用点各自发明。标记写在返回文本**内部**：静默截断在模型眼里是一份完整答案，半个文档变成一段自信的错误总结正是这么来的。单通道之后，评审就是一次 ask 回合，返回**与 `atomcode_ask` 同一个 schema**（`reply` + 元数据 `tokens` / `usage` / `rounds` / `tools` / `working_dir` / `provider` / `stop_reason` / `error`）：没有独立的 `report` 字段，也没有 `findings[]`，预算直接套在 `reply` 上
   - 预算是**字符数**不是 token：这一侧永远看不到模型的 tokenizer，而字符数是唯一不用它也能核对的度量。它是给模型读的量（`render`），不是线上的量
 
 > 机制层的硬约束（为什么不做 provider 接管、额度为什么只能靠文本解析、三条私有无版本协议怎么办）

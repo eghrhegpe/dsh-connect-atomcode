@@ -104,7 +104,7 @@ bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行
 | `auto_start` | `true` | 探测不到 daemon 时 detached 拉起。**面板或额度标签一被轮询就会触发**（ask 路径也会），不再是"等第一次调工具才拉" |
 | `binary` | `''` | 二进制名/路径（空 = PATH；`ATOMCODE_BIN` 亦可） |
 | `approval_mode` | `bypass` | ask 回合内 AtomCode 侧工具审批；合法值 `build / accept_edits / bypass / plan`（其余值 daemon 422）。⚠️ 2026-10-17 实测：无人值守下**非 bypass 也自动放行 ask 类工具**，改它不形成人审门。「缺目录就拒绝」的门**与它无关**（任何 mode 下取不到目录都拒绝——旧版只在 bypass 组合触发、换 mode 即静默丢门的耦合已修）。面板**不提供输入框**，只能在 patch 里改——详情页「回合边界」会标出这是插件默认还是你改过 |
-| `default_provider` | `''` | **ask 与 review 共用**的缺省**模型档位名**（如 `AtomGit-glm5.3-flash`）。优先级：调用参数 `provider` > **详情页面板里选的档位** > 本字段 > AtomCode 自己在 `config.toml` 里的默认。**空 = 本层不插手**（再往下交给面板选择/AtomCode）。详见「怎么换 AtomCode 用的模型」 |
+| `default_provider` | `''` | **`atomcode_ask` 与 `/atomcode-review` 共用**的缺省**模型档位名**（如 `AtomGit-glm5.3-flash`）。优先级：调用参数 `provider` > **详情页面板里选的档位** > 本字段 > AtomCode 自己在 `config.toml` 里的默认。**空 = 本层不插手**（再往下交给面板选择/AtomCode）。详见「怎么换 AtomCode 用的模型」 |
 | `default_reasoning_effort` | `''` | 随每个 `/chat` 回合发出的**持久力度**缺省（如 `high`）。空 = 用 daemon 自己的持久值；单次调用给工具传 `reasoning_effort` 只覆盖那一回合。插件不预校验——daemon 对不在该模型 `effort_levels` 里的值回 `reasoning_effort not supported by <provider>`。面板**不提供输入框**：详情页显示选中档位支持的 levels 与 daemon 当前值，写持久值的入口是 `/reasoning-effort` 路由（包 daemon 的 `POST /live/reasoning_effort`） |
 | `working_dir` | `''` | ask 回合的缺省工作目录（同时是侧边对话的会话键；review 也读这个字段作为缺省仓库根）。空 = 交给调用参数 / 宿主会话 cwd；**三层都取不到时，ask 与 review 都会拒绝该回合（与 `approval_mode` 无关）**（不放行无人值守的工具调用跑在用户 home 里），除非调用方传 `allow_unattended: true`。面板**不提供输入框**，只能在 patch 里改；详情页「回合边界」标出你改过没有 |
 | `state_path` | `''` | 会话映射文件（缺省 `~/.dsh/state/dsh-connect-atomcode/sessions.json`）。**面板选的模型档位存在同目录的 `provider.json`**，所以这一个旋钮同时决定两者的位置 |
@@ -132,7 +132,7 @@ AtomCode 5.x 在这条路上的 "provider" **就是模型档位名**，不是厂
 |---|---|---|
 | **单次调用** | 给工具传 `provider="AtomGit-glm5.3-flash"`（用户说一句"用 glm5.3-flash 问 AtomCode"即可） | ✅ 插件一直都支持 |
 | **面板上选（推荐）** | 详情页「运行环境」卡片里一个下拉：列 `/models` 的档位。选完**立即生效**（下次调用就换），存在插件自己的 `provider.json` | ✅ 插件侧，**不用改任何配置文件** |
-| **本插件的缺省（文件侧）** | 配 `default_provider`（档位名），ask 与 review 共用 | ✅ 插件侧；面板选择**优先于**它 |
+| **本插件的缺省（文件侧）** | 配 `default_provider`（档位名），`atomcode_ask` 与 `/atomcode-review` 共用 | ✅ 插件侧；面板选择**优先于**它 |
 | **整机 AtomCode 的缺省** | 编辑 `~/.atomcode/config.toml` 的 `default_provider` + `default_model`，再 `POST /config/reload`（或等 daemon 空闲 30 分钟自杀后自然重启）；TUI 里是 `/model` | ⚠️ **AtomCode 侧**——本插件对那个文件**只读不写** |
 
 **为什么面板选择反而排在配置字段前面**：配置字段是给"愿意编辑文件的人"的静态缺省，而面板那一下是用户**刚刚做出的动作**。点击输给一行配置，这个控件就是死的——本仓库不发布死控件。两者是否打架在面板上看得见：**只有当实际生效值与你选的不同**（比如这次调用显式传了 `provider`，或落在配置字段上），那行才会写出「这次调用实际用 X（不是这里选的）」；一致时它不说话——面板上的值本来就来自面板，回报给用户自己是废话。
@@ -141,7 +141,7 @@ AtomCode 5.x 在这条路上的 "provider" **就是模型档位名**，不是厂
 
 | 下拉 | 选项来自 | 没选择时 |
 |---|---|---|
-| `默认档位` | daemon `GET /models` 的 `provider` 字段（档位名），ask 与 review 共用 | `未插手` |
+| `默认档位` | daemon `GET /models` 的 `provider` 字段（档位名），`atomcode_ask` 与 `/atomcode-review` 共用 | `未插手` |
 
 档位列表拿不到时**控件还在，但禁用并写出原因**（「daemon 未列出档位」）。长溯源（`/models`）在 hover `title` 里，不占正文。
 
@@ -190,7 +190,7 @@ data: {"type":"runtime_info","provider":"AtomGit-glm5.3-flash","model":"glm5.3-f
 |---|---|
 | `npm test` | ❌ **零消耗**。每个 test 都走假 daemon / 假 spawn / 纯函数，不碰真模型（**test 数不写死在这**：`npm test 2>&1 \| Select-String '^ℹ tests'` 自己量，理由见 `AGENTS.md`「验证」） |
 | `npm run test:live` | ❌ **默认也零消耗**。只跑只读检查（health / token / 模型目录），真实回合被跳过 |
-| `ATOMCODE_LIVE_TURNS=1 npm run test:live` | ✅ **消耗**。`daemon-live` 会打 **7 个真实模型回合**（2× `streamChat` + 5× `askChat`），`review-live` 再花 1 个评审回合 |
+| `ATOMCODE_LIVE_TURNS=1 npm run test:live` | ✅ **消耗**。`daemon-live` 会打 **7 个真实模型回合**（2× `streamChat` + 5× `askChat`） |
 
 真实回合是**逐请求**计的（CodingPlan 按 5 小时滚动窗口算次数），所以真跑回合必须显式开关：
 
@@ -217,8 +217,12 @@ npm test           # 离线套件由 scripts/test.mjs 自动发现（排除 *-li
                    # 结尾再给一张 per-suite 表；CI 里每个套件是可折叠的 ::group:: 块
                    # 计数自己量：npm test 2>&1 | Select-String '^ℹ tests'（每个套件一行，无总聚合）
 npm run coverage   # 同一批套件 + node 内置覆盖率报告（单进程**串行**聚合，零依赖，只测量不做门禁）
-                   # 串行是必需的：同进程并发时 45995 这类硬编码"死端口"与 lib/review.js 的
-                   # spawner 单例会跨套件串味，覆盖率数字会随调度变（同一棵树两次跑出过 12.82% 与 30.19%）
+                   # 串行是必需的：覆盖率在一个进程里聚合，而套件各自持有模块级状态
+                   # （假 daemon 的 spawn override、模块级 statsCache），并发跑会互相串味，
+                   # 数字随调度变（同一棵树两次跑出过 12.82% 与 30.19%）
+                   # ⚠️ 这里曾把理由写成"硬编码死端口 + lib/review.js 的 spawner 单例"：
+                   # 死端口已收进 test/dead-port.mjs（每个用点唯一偏移），review.js 也已删除。
+                   # 仍然成立的是模块级状态那半句——理由变了，所以写死理由的注释也要跟着变。
                    # ⚠️ client.js 那一行是**产物不是总和**：渲染套件每次挂载都用 cache-busting URL
                    # 重新 import 整包，V8 里是 N 个同路径脚本，node 按路径折叠后只剩"赢的那个"。
                    # 「只剩赢的那个」还说轻了：幸存实例的数字会当场说谎。渲染套件的 chip 用例
@@ -245,14 +249,14 @@ npm run coverage   # 同一批套件 + node 内置覆盖率报告（单进程**�
 - `client-render.test.mjs` — **面板真的渲染一遍**（无 jsdom、无新依赖：假 `__ModuleLoader__` + 记录式 React + 按调用顺序消费的 hook 脚本）：六张卡的行与文案、空态说清楚、一个下拉的禁用与原因、chip 文案、座位认领（keyed 与旧 list 座位）、**任何快照形状都不许出现 `undefined` / `NaN` / `[object Object]`**，以及 `useStats` 的生命周期（两个实例共享一次请求、4s 硬截止、5s 轮询、卸载不得 abort 同伴的请求）。它抓到的第一条真缺陷是 `if (error)` 把缓存快照整段丢掉——「已断开」「最后更新」与 in-flight 条在重载失败时全都不可达。**交互那一层也钉在这里**：composer dock 的 chip 点开与 portal 弹窗（bar 宽度与它印出的数字同源）、Escape 关闭且监听随组件消失、宿主 seed 表缺 `react-dom` / primitives 时的降级 chip（原生 title、不调任何 primitive hook）；以及写入路径——一次选择只 POST 到插件自己的路由且带上 slot、成功即**先采纳进缓存再重载**（否则受控下拉会弹回旧值）、被拒时把宿主的原文留在屏幕上且什么都不采纳、在途时只锁住自己那一格。
 - `protocol.test.mjs` — **漂移钉子**（v0.4 新增）：daemon 用完全陌生的 SSE 词汇应答时必须**响亮报错**（而不是含糊的 "ended before done"）、加性未知事件**不得**让健康回合失败**但也不得静默**（类型必须带出，否则轮数熔断可静默失效）、`healthInfo` 暴露 daemon 版本、额度文本改词后不编数字。
 
-Live 套件需要真环境，**缺前置条件时自述原因并跳过**（不会静默变红）：
+Live 测试需要真环境，**缺前置条件时自述原因并跳过**（不会静默变红）：
 
 ```bash
-npm run test:live  # daemon-live + review-live
+npm run test:live  # daemon-live
 ```
 
 - `daemon-live.test.mjs`：需 `13459` 上的 daemon。只读块（4 项）永远跑；**推理块（7 个真实回合）需 `ATOMCODE_LIVE_TURNS=1`**。无 daemon → skip
-- `review-live.test.mjs`：需 daemon 存活（review 现在走 daemon 通道，与 ask 同一条路）。daemon 没起来 → skip（并打印原因）
+- 评审通路**没有**单独的 live 套件：一次评审就是一次 ask 回合（`/atomcode-review` 复用同一个 `runAsk`），上面那 5 个 `askChat` 回合已经覆盖它。CLI 时代的 `review-live.test.mjs` 已随那条通路一起删除——`package.json` 的 `test:live` 也不再提它（它曾指向一个不存在的文件，于是那个命令自己就是断的）
 
 ## 许可
 

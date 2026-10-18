@@ -229,7 +229,9 @@ export interface StatsBag {
   quotaDriftSeen: boolean;
   /** A UNION across the mount, never replaced — see `askChat`. */
   protocolUnknownTypes: string[];
-  // ── counters. `ask` carries tokens; `review` has no such reading ──────────
+  // ── counters. `ask` is the one tool that reports here (and the only one
+  //    carrying a token reading); `review` is a retained wire slot with no
+  //    writer — see the field's own comment below. ──────────────────────────
   ask: {
     calls: number;
     ok: number;
@@ -265,6 +267,15 @@ export interface StatsBag {
    * answer "after this one ends, which turn — if any — is still running?".
    */
   askLive: LiveTurn[];
+  /**
+   * Always zero. It counted calls to the retired `atomcode_review` tool, and a
+   * review is now an ask turn counted in `ask` — no code path increments this.
+   * It is still built into the snapshot because the shared contract declares it
+   * (`shared/stats.ts`) and an already-loaded panel build may read it.
+   *
+   * Kept rather than deleted so the wire shape does not change under a renderer
+   * that is older than the retirement; the panel itself renders no row for it.
+   */
   review: { calls: number; ok: number; err: number; msTotal: number };
 }
 
