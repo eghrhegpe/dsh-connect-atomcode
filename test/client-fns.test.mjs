@@ -722,10 +722,9 @@ describe('providerRows — ONE provider knob, because there is one ladder', () =
   it('emits exactly one row on a bare config', () => {
     const rows = providerRows({});
     assert.equal(rows.length, 1, 'one ladder, one row');
-    assert.equal(rows[0].label, '默认档位');
-    assert.ok(rows[0].title.includes('atomcode_ask'), 'the title names the shared tool');
-    assert.ok(rows[0].title.includes('atomcode_review'), 'and the second entry point that shares it');
-    assert.ok(rows[0].title.includes('/atomcode-review'), 'and the command form');
+    assert.equal(rows[0].label, '默认对话模型');
+    assert.ok(rows[0].title.includes('问 AtomCode'), 'the title names the shared tool');
+    assert.ok(rows[0].title.includes('代码评审'), 'and the second entry point that shares it');
     assert.equal(rows[0].pinned, false);
   });
 
@@ -1050,8 +1049,8 @@ describe('turnBoundaryRows — patch-only knobs must not masquerade as live sett
 
   it('names the working directory as the session cwd when unset', () => {
     const rows = turnBoundaryRows({ defaultWorkingDir: '', ...HOST });
-    assert.equal(rows[1].text, '（会话工作目录）');
-    assert.match(rows[1].title, /working_dir 留空/);
+    assert.equal(rows[1].text, '（跟随本次会话的工作目录）');
+    assert.match(rows[1].title, /没单独指定/);
     // With `authored` present and false, a value is still our default — not authored.
     const set = turnBoundaryRows({ defaultWorkingDir: 'D:\\repo', ...HOST });
     assert.match(set[1].text, /（插件默认）/, 'unauthored must not claim authorship');
@@ -1077,7 +1076,7 @@ describe('turnBoundaryRows — patch-only knobs must not masquerade as live sett
         assert.ok(row.label && row.title, 'every row keeps its label and its hover explanation');
         assert.ok(!/已改|插件默认/.test(row.text), `no authorship claim without host evidence: ${row.text}`);
       }
-      assert.equal(rows[3].label, 'brief 注入');
+      assert.equal(rows[3].label, '评审时自动补提示词');
       assert.equal(rows[3].text, '—', 'no mode evidence on an old host: a dash, not a guess');
     }
   });
@@ -1109,8 +1108,8 @@ describe('turnBoundaryRows — patch-only knobs must not masquerade as live sett
     // The card that carries the safety posture must always explain what bypass means,
     // even for a user who never opened cordis.patch.yml.
     const rows = turnBoundaryRows({ approvalMode: 'bypass', ...HOST });
-    assert.match(rows[0].title, /approval_mode/);
-    assert.match(rows[0].title, /无人值守/);
+    assert.match(rows[0].title, /自动执行/);
+    assert.match(rows[0].title, /无需你逐次确认/);
   });
 
   it('names a REFUSED approval_mode instead of labelling the fallback as the default', () => {

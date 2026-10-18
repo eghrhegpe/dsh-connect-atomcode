@@ -176,28 +176,26 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
     v === 'changed' ? '（已改）' : v === 'default' ? '（插件默认）' : '';
   return [
     {
-      label: '审批模式',
+      label: 'AtomCode 自动执行权限',
       text:
         mode === ''
           ? '—'
           : modeRejected !== ''
-            ? `${mode}（已回落：你写的是 ${modeRejected}）`
+            ? `${mode}（已回落：你填的是 ${modeRejected}）`
             : mode + tag(verdict('approvalMode', mode, approvalDefault)),
       title:
-        'patch 字段 approval_mode；面板上没有输入框，改它要动 cordis.patch.yml。' +
-        'bypass = AtomCode 自己的工具在回合内无人值守执行（AtomCode 侧自主，与 DSH 的权限预设无关）。' +
+        '决定 AtomCode 在帮你跑工具（执行命令、改文件）时受多大限制。bypass = 全程自动执行、无需你逐次确认（出厂默认，且当前 daemon 对后台调用一律自动放行，所以切换这里实际不改变行为）；build / accept_edits / plan 是更保守的档位。' +
         (modeRejected !== ''
-          ? `你写的「${modeRejected}」不在 daemon 接受的取值里（build / accept_edits / bypass / plan），` +
-            `已回落到 ${mode}——照原样透传的话每个回合都会被 daemon 以 422 拒掉。`
+          ? `你填的「${modeRejected}」不是合法档位（只能是 build / accept_edits / bypass / plan），已回落到 ${mode}——照原样传过去每个回合都会被 daemon 以 422 拒绝。`
           : ''),
     },
     {
-      label: '工作目录',
-      text: dir === '' ? '（会话工作目录）' : dir + tag(verdict('workingDir', dir, null)),
-      title: dir === '' ? 'patch 字段 working_dir 留空 = 靠调用参数或会话工作目录' : 'patch 字段 working_dir',
+      label: 'AtomCode 干活的文件夹',
+      text: dir === '' ? '（跟随本次会话的工作目录）' : dir + tag(verdict('workingDir', dir, null)),
+      title: dir === '' ? '没单独指定 = AtomCode 在你这次会话所在的工作目录里干活' : 'AtomCode 干活所在的文件夹',
     },
     {
-      label: 'ask 轮数上限',
+      label: '单次咨询最多轮数',
       text:
         rounds === null
           ? '—'
@@ -205,22 +203,21 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
             ? String(rounds) + tag(verdict('askMaxRounds', rounds, askDefault))
             : '不限',
       title:
-        'patch 字段 ask_max_rounds。超出即停止等待（不是远端 kill：daemon 侧的回合可能仍在后台跑完）。',
+        '一次「问 AtomCode」最多让它自己循环多少轮（每轮可能调用工具、读文件）。到上限就停止等待结果（不是强行中止：daemon 那边可能还在后台跑完）。',
     },
     {
-      label: 'brief 注入',
+      label: '评审时自动补提示词',
       text:
         briefMode === ''
           ? '—'
           : briefRejected !== ''
-            ? `${briefMode}（已回落：你写的是 ${briefRejected}）`
+            ? `${briefMode}（已回落：你填的是 ${briefRejected}）`
             : briefMode + tag(verdict('reviewBriefMode', briefMode, briefDefault)),
       title:
-        'patch 字段 review_brief_mode：/atomcode-review 与 atomcode_review 在用户文本留空时，' +
-        '内置评审简报的注入方式。always = 简报总在（留空补简报，非空附加在后）；' +
-        'when-empty = 仅留空时补简报（非空按原样发送）；never = 从不注入（留空直接拒绝）。' +
+        '用「代码评审」时，如果你没写要评什么，是否自动附一段内置评审提示词。always = 总是附上（你写了也加在后面）；' +
+        'when-empty = 只有你没写时才补（你写了就原样发）；never = 从不补（你没写就直接拒绝）。' +
         (briefRejected !== ''
-          ? `你写的「${briefRejected}」不是合法取值（always / when-empty / never），已回落到 ${briefMode}。`
+          ? `你填的「${briefRejected}」不是合法取值（只能是 always / when-empty / never），已回落到 ${briefMode}。`
           : ''),
     },
   ];
@@ -261,15 +258,13 @@ export function providerRows(cfg: ConfigBranch | null | undefined): ProviderRow[
   const ask = name(src.defaultProvider);
   return [
     {
-      label: '默认档位',
+      label: '默认对话模型',
       fallback: '未插手',
       value: ask || '未插手',
       pinned: ask !== '',
       title:
-        'atomcode_ask、atomcode_review 与 /atomcode-review 共用这一条档位阶梯：' +
-        '这里选的是模型档位（GET /models 的 provider 字段，形如 AtomGit-glm5.3-flash），' +
-        '由 daemon 执行。未插手 = 连 provider 字段都不发，由 AtomCode 自己的默认决定。' +
-        '只影响不显式传 provider 的调用。',
+        '「问 AtomCode」和「代码评审」都用这一个下拉选择的对话模型（形如 AtomGit-glm5.3-flash）。' +
+        '没选 = 不指定，用 AtomCode 自己的默认模型。只影响你没单独点名模型的那些调用。',
     },
   ];
 }

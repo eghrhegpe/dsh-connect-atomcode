@@ -465,7 +465,7 @@ const REGISTRATION = {
         h(
           'div',
           { style: S.provCell },
-          h('span', { style: S.provLabel, title: '面板选择优先于插件配置（cordis.patch.yml）的 review_brief_mode；选「不覆盖」则回到配置值' }, 'brief 注入'),
+          h('span', { style: S.provLabel, title: '这里的选择优先于插件配置（cordis.patch.yml）里 review_brief_mode；选「不覆盖」就回到配置值。含义：代码评审时是否自动补一段评审提示词' }, '评审时自动补提示词'),
           h(
             'select',
             {
@@ -473,7 +473,7 @@ const REGISTRATION = {
               value: currentBrief,
               disabled: briefPending,
               onChange: onBriefChange,
-              'aria-label': 'brief 注入模式',
+              'aria-label': '评审时自动补提示词',
             },
             h('option', { value: '' }, '不覆盖（用配置 ' + (cfg && typeof cfg.reviewBriefMode === 'string' ? cfg.reviewBriefMode : '默认') + '）'),
             briefModes.map((m) => h('option', { key: m, value: m }, m))
@@ -484,7 +484,7 @@ const REGISTRATION = {
         h(
           'div',
           { style: S.provCell },
-          h('span', { style: S.provLabel, title: '面板选择优先于插件配置（cordis.patch.yml）的 working_dir；清空并保存 = 不覆盖，用配置值或会话目录' }, '工作目录'),
+          h('span', { style: S.provLabel, title: '这里填的文件夹优先于插件配置里的默认目录；清空并保存 = 不覆盖，改回用配置值或本次会话目录。AtomCode 会在你填的这个文件夹里读文件、跑 git' }, 'AtomCode 干活的文件夹'),
           h(
             'div',
             { style: { display: 'flex', gap: 4, flex: 1, minWidth: 0 } },
@@ -495,7 +495,7 @@ const REGISTRATION = {
               disabled: dirPending,
               onChange: (e: any) => setDirValue(e.target ? e.target.value : ''),
               onKeyDown: (e: any) => { if (e.key === 'Enter') saveDir(); },
-              'aria-label': '工作目录（面板覆盖）',
+              'aria-label': 'AtomCode 干活的文件夹（面板覆盖）',
             }),
             h('button', {
               style: { ...S.select, fontSize: 11, cursor: dirPending ? 'wait' : 'pointer', whiteSpace: 'nowrap' },
@@ -521,7 +521,7 @@ const REGISTRATION = {
           return h(
             'div',
             { style: S.provCell },
-            h('span', { style: S.provLabel, title: '面板选择优先于插件配置（cordis.patch.yml）的 approval_mode；选「不覆盖」则回到配置值。注意：当前 daemon 对 headless 模式自动放行所有工具，切换模式实际不改变行为' }, '审批模式'),
+            h('span', { style: S.provLabel, title: '这里的选择优先于插件配置里的 approval_mode；选「不覆盖」就回到配置值。含义：AtomCode 自动执行工具时受多大限制。注意：当前 daemon 对后台调用一律自动放行，切换这里实际不改变行为' }, 'AtomCode 自动执行权限'),
             h(
               'select',
               {
@@ -529,7 +529,7 @@ const REGISTRATION = {
                 value: currentApproval,
                 disabled: briefPending,
                 onChange: onApprovalChange,
-                'aria-label': '审批模式',
+                'aria-label': 'AtomCode 自动执行权限',
               },
               h('option', { value: '' }, '不覆盖（用配置 ' + (cfg && typeof cfg.approvalMode === 'string' ? cfg.approvalMode : 'bypass') + '）'),
               approvalModes.map((m) => h('option', { key: m, value: m }, m))
@@ -553,7 +553,7 @@ const REGISTRATION = {
           return h(
             'div',
             { style: S.provCell },
-            h('span', { style: S.provLabel, title: '面板选择优先于插件配置（cordis.patch.yml）的 ask_max_rounds；0 = 不设熔断（交回 daemon 治理）；留空 = 不覆盖' }, 'ask 轮数上限'),
+            h('span', { style: S.provLabel, title: '这里填的数字优先于插件配置里的 ask_max_rounds；0 = 不设上限（交给 daemon 治理）；留空 = 不覆盖。含义：一次「问 AtomCode」最多让它自己循环多少轮' }, '单次咨询最多轮数'),
             h(
               'div',
               { style: { display: 'flex', gap: 4, maxWidth: 120 } },
@@ -567,7 +567,7 @@ const REGISTRATION = {
                 max: 1000,
                 onChange: (e: any) => setRoundsValue(e.target ? e.target.value : ''),
                 onKeyDown: (e: any) => { if (e.key === 'Enter') saveRounds(); },
-                'aria-label': 'ask 轮数上限',
+                'aria-label': '单次咨询最多轮数',
               }),
               h('button', {
                 style: { ...S.select, fontSize: 11, cursor: briefPending ? 'wait' : 'pointer' },

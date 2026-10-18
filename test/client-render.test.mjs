@@ -484,7 +484,7 @@ describe('client render — the detail panel', () => {
     const snapshot = { ...FULL, provider: null, config: { ...FULL.config } };
     const { tree } = await renderPanel(snapshot);
     const t = text(tree);
-    assert.ok(t.includes('默认档位'), `the single control must still be on the panel: ${t}`);
+    assert.ok(t.includes('默认对话模型'), `the single control must still be on the panel: ${t}`);
     const selects = [];
     (function walk(node) {
       if (!node || typeof node !== 'object') return;
@@ -1009,7 +1009,7 @@ describe('client render — the provider dropdown write path', () => {
   // ONE control now: the branch is flat and there is a single ladder behind it
   // (`atomcode_ask`, `atomcode_review` and `/atomcode-review` all resolve through
   // it). The label below is what the render actually puts on the select.
-  const CONTROL_LABEL = '默认档位';
+  const CONTROL_LABEL = '默认对话模型';
   /** The snapshot every case starts from: `FULL`'s flat provider branch. */
   const FLAT = FULL;
   const selectOf = (tree, label) => find(tree, (n) => n.type === 'select' && n.props['aria-label'] === label);
