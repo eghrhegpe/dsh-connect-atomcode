@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "AtomCode Second Opinion",
-    "description": "An independent second opinion over your code, using your locally signed-in AtomCode: `atomcode_ask` (its own tool loop, main path) plus a one-click `/atomcode-review` for a diff self-check. No API key, no model takeover; the quota spent is your own AtomGit account's."
+    "description": "Spend your locally signed-in AtomGit's free quota on an independent code review: `atomcode_ask` is the model-side tool (its own tool loop — it decides which files to read); `/atomcode-review` is your one-click command for a diff self-check on uncommitted changes, a branch, or a PR. No API key, no model takeover."
   }
 }

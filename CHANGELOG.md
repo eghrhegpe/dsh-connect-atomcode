@@ -73,6 +73,11 @@ npm tarball 的这份文件（`CHANGELOG.md` 已列入 `package.json` 的 `files
   `docs/DECISIONS.md` 里把它说成"命令路径仍读它们"、把评审输出说成另有 `report` 字段的句子已改写；
   `docs/README.md` 的代码地图里那个已经改名的 `composeReviewMessage` 也换成了真名
   `composeReviewPrompt`。这些都不改变行为，但它们正是"读了会读错"的那种文档。
+- **面板的「工具调用统计」累计不再随重启归零**：`atomcode_ask` 的调用 / 成功 / 失败 / 用时 / tokens
+  五个计数现在落到磁盘，插件重载或 Host 重启后接着上次继续累计，而不是每次从 0 开始。
+- **额度措辞改正**：README 与插件简介里把额度说成「不是免费额度」，而 CodingPlan 实际是
+  `atomcode login` 领取的**免费限时体验版**（按 5 小时滚动窗口计量、同样限流）。说法已改正，
+  「别当无限量」的提醒保留——窗口用满就得等重置。
 
 ## 0.4.3 — 2026-10-17（审批模式取值把关 · 并行回合读数 · daemon 对照）
 
