@@ -2,7 +2,7 @@
   "name": "dsh-connect-atomcode",
   "displayName": "DSH AtomCode Bridge",
   "icon": "./icon.svg",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Spend your locally signed-in AtomGit's free quota on an independent code review: `atomcode_ask` is the model-side tool (its own tool loop — it decides which files to read); `/atomcode-review` is your one-click command for a diff self-check on uncommitted changes, a branch, or a PR. No API key, no model takeover.",
   "keywords": [
     "dsh-plugin",
