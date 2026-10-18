@@ -25,6 +25,11 @@
  * 测试不许联网，这是本仓库的规矩。
  *
  * 符号：✓ 成立　✗ 不成立　? 查不动（没网 / 没 gh / 没 git）——`?` 与 `✗` 不同，别当成缺。
+ *
+ * 一条实测坑（0.5.0）：**附注 tag 的 `rev-parse refs/tags/X` 给的是 tag 对象，不是提交**。
+ * 拿它去查 CI，`gh run list` 里永远匹配不到，于是「发布提交 CI 绿」这一格永远显示 `?`，
+ * 而同一行末尾又正确印着 master 头上那条 run 是绿的——自相矛盾但看着像"查不动"。
+ * 所以凡是「tag 指向哪个提交」的用途（展示 / 祖先判定 / CI 查询）都先 `rev-parse X^{commit}` 解引用。
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -86,9 +91,12 @@ const detail = (text) => say(`                 · ${text}`);
 const insideRepo = git(['rev-parse', '--is-inside-work-tree']);
 const gitUsable = insideRepo.ok && insideRepo.out === 'true';
 
-const tagSha = gitUsable ? git(['rev-parse', '--verify', '--quiet', `refs/tags/${TAG}`]) : { ok: false, why: 'git 不可用' };
-const tag = tagSha.ok ? 'yes' : gitUsable ? 'no' : 'unknown';
+const tagRef = gitUsable ? git(['rev-parse', '--verify', '--quiet', `refs/tags/${TAG}`]) : { ok: false, why: 'git 不可用' };
+const tag = tagRef.ok ? 'yes' : gitUsable ? 'no' : 'unknown';
 const tagType = tag === 'yes' ? git(['cat-file', '-t', TAG]).out : '';
+// `tagRef` 在附注 tag 上是 **tag 对象**（见头注的实测坑）：展示、祖先判定、CI 查询都只认提交。
+const tagCommit = tag === 'yes' ? git(['rev-parse', `${TAG}^{commit}`]) : { ok: false, out: '' };
+const tagSha = tagCommit.ok ? tagCommit : tagRef;
 
 // ── B. master 侧：版本提交是否已在 origin/master ─────────────────────────────
 const originMaster = gitUsable ? git(['rev-parse', '--verify', '--quiet', 'origin/master']) : { ok: false };
