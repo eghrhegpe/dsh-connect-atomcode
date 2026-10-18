@@ -31,10 +31,14 @@
  *
  * @module dsh-connect-atomcode/host/panel-settings-store
  */
-import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { sweepStaleArtifacts, quarantineFile, writeJsonFile } from './state-file.ts';
+import {
+  sweepStaleArtifacts,
+  readVersionedDoc,
+  writeVersionedDoc,
+  foreignVersionRefusal,
+} from './state-file.ts';
 
 /** Shape version this build writes. */
 export const PANEL_SETTINGS_VERSION = 1;
@@ -157,64 +161,38 @@ export function normalizeAskMaxRounds(raw: unknown) {
 export function createPanelSettingsStore(path: string = defaultPanelSettingsPath()) {
   sweepStaleArtifacts(path);
 
-  const blank = (error: string = ''): PanelSettingsDoc => ({
-    briefMode: null,
-    workingDir: null,
-    approvalMode: null,
-    askMaxRounds: null,
-    foreignVersion: false,
-    error,
-  });
-
-  /** Read the document from disk. Never throws. */
+  /**
+   * Read the document from disk. Never throws. The failure ladder (ENOENT /
+   * EISDIR / quarantine / version guard) is shared with `provider.json` in
+   * `state-file.ts`; what stays here is this file's own four-field projection.
+   */
   function readDoc(): PanelSettingsDoc {
-    let raw;
-    try {
-      raw = readFileSync(path, 'utf8');
-    } catch (error: any) {
-      if (error && error.code === 'ENOENT') return blank();
-      if (error && error.code === 'EISDIR') return blank('state path is a directory, not a file');
-      return blank(
-        quarantineFile(path)
-          ? 'unreadable state file was preserved aside'
-          : 'state file is unreadable and could not be preserved aside',
-      );
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return blank(quarantineFile(path) ? 'corrupt state file was preserved aside' : 'state file is not valid JSON');
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return blank('state file is not an object');
-    const version = Number.isInteger(parsed.version) ? parsed.version : 0;
-    if (!KNOWN_PANEL_SETTINGS_VERSIONS.includes(version)) {
-      return {
-        ...blank(
-          version > PANEL_SETTINGS_VERSION
-            ? `state file was written by a newer build (version ${version}, this build knows ${PANEL_SETTINGS_VERSION})`
-            : `state file version ${version} is not one this build can read`,
-        ),
-        version,
-        foreignVersion: version > PANEL_SETTINGS_VERSION,
-      };
-    }
-    const brief = normalizeBriefMode(parsed.briefMode);
-    const dir = normalizeWorkingDir(parsed.workingDir);
-    const approval = normalizeApprovalMode(parsed.approvalMode);
-    const rounds = normalizeAskMaxRounds(parsed.askMaxRounds);
-    return {
-      briefMode: brief.ok ? brief.value : null,
-      workingDir: dir.ok ? dir.value : null,
-      approvalMode: approval.ok ? approval.value : null,
-      askMaxRounds: rounds.ok ? rounds.value : null,
-      foreignVersion: false,
-      error: '',
-    };
-  }
-
-  function writeDoc(doc: Record<string, unknown>) {
-    writeJsonFile(path, doc);
+    return readVersionedDoc<PanelSettingsDoc>(path, {
+      knownVersions: KNOWN_PANEL_SETTINGS_VERSIONS,
+      currentVersion: PANEL_SETTINGS_VERSION,
+      blank: (error = ''): PanelSettingsDoc => ({
+        briefMode: null,
+        workingDir: null,
+        approvalMode: null,
+        askMaxRounds: null,
+        foreignVersion: false,
+        error,
+      }),
+      project: (doc) => {
+        const brief = normalizeBriefMode(doc.briefMode);
+        const dir = normalizeWorkingDir(doc.workingDir);
+        const approval = normalizeApprovalMode(doc.approvalMode);
+        const rounds = normalizeAskMaxRounds(doc.askMaxRounds);
+        return {
+          briefMode: brief.ok ? brief.value : null,
+          workingDir: dir.ok ? dir.value : null,
+          approvalMode: approval.ok ? approval.value : null,
+          askMaxRounds: rounds.ok ? rounds.value : null,
+          foreignVersion: false,
+          error: '',
+        };
+      },
+    });
   }
 
   return {
@@ -233,15 +211,8 @@ export function createPanelSettingsStore(path: string = defaultPanelSettingsPath
      */
     set(fields: { briefMode?: unknown; workingDir?: unknown; approvalMode?: unknown; askMaxRounds?: unknown }) {
       const current = readDoc();
-      if (current.foreignVersion) {
-        return {
-          ok: false,
-          code: 'foreign-version',
-          error:
-            current.error ||
-            `state file was written by a newer build (version ${current.version}); refusing to overwrite it`,
-        };
-      }
+      const refusal = foreignVersionRefusal(current);
+      if (refusal) return refusal;
       let newBrief = current.briefMode;
       let newDir = current.workingDir;
       let newApproval = current.approvalMode;
@@ -266,23 +237,15 @@ export function createPanelSettingsStore(path: string = defaultPanelSettingsPath
         if (!norm.ok) return { ok: false, code: 'invalid-ask-max-rounds', error: norm.error };
         newRounds = norm.value;
       }
-      const doc: Record<string, unknown> = {
+      const written = writeVersionedDoc(path, {
         version: PANEL_SETTINGS_VERSION,
         briefMode: newBrief,
         workingDir: newDir,
         approvalMode: newApproval,
         askMaxRounds: newRounds,
         updatedAt: Date.now(),
-      };
-      try {
-        writeDoc(doc);
-      } catch (error: any) {
-        return {
-          ok: false,
-          code: 'write-failed',
-          error: `could not write the state file: ${String(error && error.message ? error.message : error)}`,
-        };
-      }
+      });
+      if (!written.ok) return written;
       return { ok: true, code: '', error: '' };
     },
 

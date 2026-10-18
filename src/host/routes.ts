@@ -74,6 +74,59 @@ async function readJsonBody(request: any, limit: number = PROVIDER_BODY_LIMIT) {
 }
 
 /**
+ * Mount one exact route and hand back its disposer.
+ *
+ * Every route in this file is registered the same way, so a host without
+ * `webServer` (or without `register`) degrades all six to a no-op through ONE
+ * guard. This replaced six copies of the same ternary, one of which (`/inject`)
+ * had drifted to a bare truthiness check — the single place a host exposing
+ * `webServer` without `register` would have thrown instead of degrading.
+ * Adding a route and forgetting its disposer is impossible: the disposer is
+ * this function's return value, not a local someone must remember to call in
+ * the teardown at the bottom.
+ *
+ * @param webServer - `ctx.webServer`, or anything falsy on a host without it.
+ * @param descriptor - `{ kind: 'exact', path, handler }` for one route.
+ * @returns the disposer, never undefined.
+ */
+function mountRoute(
+  webServer: any,
+  descriptor: { kind: 'exact'; path: string; handler: (request: any, response: any) => any },
+): () => void {
+  if (!webServer || typeof webServer.register !== 'function') return () => {};
+  return webServer.register(descriptor);
+}
+
+/**
+ * Answer a cross-origin request with the one refusal every non-stats route
+ * gives. (The stats route answers 403 as `text/plain` — it is polled by tools
+ * that never parse JSON, so it keeps its own wording.)
+ *
+ * @returns true when it answered — the caller must then `return`.
+ */
+function refuseCrossOrigin(request: any, response: any): boolean {
+  if (sameOrigin(request)) return false;
+  writeJson(response, 403, { ok: false, error: 'forbidden: origin mismatch' });
+  return true;
+}
+
+/**
+ * Read the bounded JSON body, or send the 400 the caller would have written.
+ *
+ * The 400 body is `{ ok: false, error }` on all four write routes because the
+ * client treats any response without `ok: true` as a failure and renders
+ * `error`; keeping the shape in one place is what keeps it that way.
+ *
+ * @returns the parsed body, or null when the 400 already went out.
+ */
+async function readBodyOr400(request: any, response: any, limit: number = PROVIDER_BODY_LIMIT) {
+  const body = await readJsonBody(request, limit);
+  if (body.ok) return body;
+  writeJson(response, 400, { ok: false, error: body.error });
+  return null;
+}
+
+/**
  * @param {{ webServer: any; runtime: Runtime; log: (message: any) => void }} deps
  * @returns {() => void} one disposer for all routes.
  */
@@ -102,8 +155,7 @@ export function mountRoutes({
     panelSettingsStore,
   } = runtime;
 
-  const disposeStats = webServer && typeof webServer.register === 'function'
-    ? webServer.register({
+  const disposeStats = mountRoute(webServer, {
         kind: 'exact',
         path: '/api/atomcode-bridge/stats',
         handler: async (request: any, response: any) => {
@@ -159,8 +211,7 @@ export function mountRoutes({
           // (The HEAD branch above already returned; reaching here means GET.)
           writeJson(response, 200, buildStatsBody(stats, quota), { 'cache-control': 'no-store' });
         },
-      })
-    : () => {};
+      });
 
   // ── 面板的模型选择写入点（同源，读自己那份 state 文件） ───────────────────
   // This route is what makes the dropdown a control instead of a decoration: the
@@ -169,8 +220,7 @@ export function mountRoutes({
   // (红线 8: that file is another application's configuration and stays read-only
   // for us). Same-origin gated like the stats route; a bounded JSON body; the slot
   // must be one of the two namespaces, and clearing is expressed as null.
-  const disposeProvider = webServer && typeof webServer.register === 'function'
-    ? webServer.register({
+  const disposeProvider = mountRoute(webServer, {
         kind: 'exact',
         path: '/api/atomcode-bridge/provider',
         handler: async (request: any, response: any) => {
@@ -179,16 +229,10 @@ export function mountRoutes({
             return;
           }
           const method = request.method;
-          if (!sameOrigin(request)) {
-            writeJson(response, 403, { ok: false, error: 'forbidden: origin mismatch' });
-            return;
-          }
+          if (refuseCrossOrigin(request, response)) return;
           if (method === 'POST') {
-            const body = await readJsonBody(request);
-            if (!body.ok) {
-              writeJson(response, 400, { ok: false, error: body.error });
-              return;
-            }
+            const body = await readBodyOr400(request, response);
+            if (!body) return;
             const slot = body.value.slot;
             if (slot !== PROVIDER_SLOT) {
               writeJson(response, 400, {
@@ -247,8 +291,7 @@ export function mountRoutes({
           // answered with a bare provider branch would render as an error.
           writeJson(response, 200, { ok: true, ...buildStatsBody(stats, null).provider }, { 'cache-control': 'no-store' });
         },
-      })
-    : () => {};
+      });
 
   // Deliver one text to a session's model — the HTTP wire form of the delivery
   // primitive `injectAtomcodeAnswer` implements. It used to be the second half
@@ -261,8 +304,7 @@ export function mountRoutes({
   // Kept a SEPARATE route from the ask that produces the text on purpose — the
   // ask costs a real AtomCode turn and the delivery is free and local, so a
   // caller can retry delivery (session not open yet) without paying twice.
-  const disposeInject = webServer
-    ? webServer.register({
+  const disposeInject = mountRoute(webServer, {
         kind: 'exact',
         path: '/api/atomcode-bridge/inject',
         handler: async (request: any, response: any) => {
@@ -271,15 +313,9 @@ export function mountRoutes({
             response.end();
             return;
           }
-          if (!sameOrigin(request)) {
-            writeJson(response, 403, { ok: false, error: 'forbidden: origin mismatch' });
-            return;
-          }
-          const body = await readJsonBody(request, INJECT_BODY_LIMIT);
-          if (!body.ok) {
-            writeJson(response, 400, { ok: false, error: body.error });
-            return;
-          }
+          if (refuseCrossOrigin(request, response)) return;
+          const body = await readBodyOr400(request, response, INJECT_BODY_LIMIT);
+          if (!body) return;
           // `injectAtomcodeAnswer` resolves the Host's own `createUserMessage`
           // (it is a `neverBundle` external, so `require` inside that module
           // reaches the copy the Host loaded rather than a bundled duplicate).
@@ -331,16 +367,14 @@ export function mountRoutes({
             log(`delivered an AtomCode answer to session "${outcome.sessionId}" (next-step, not woken)`);
           }
         },
-      })
-    : () => {};
+      });
 
   // ── Set the persistent reasoning-effort on the daemon ─────────────────────
   // POST /api/atomcode-bridge/reasoning-effort  { effort: "low"|"medium"|... }
   // The daemon's /live/reasoning_effort endpoint sets a per-provider persistent
   // value; this route is the panel-side write point for it. A 404 from the
   // daemon (endpoint not present on this build) is reported, not swallowed.
-  const disposeReasoningEffort = webServer && typeof webServer.register === 'function'
-    ? webServer.register({
+  const disposeReasoningEffort = mountRoute(webServer, {
         kind: 'exact',
         path: '/api/atomcode-bridge/reasoning-effort',
         handler: async (request: any, response: any) => {
@@ -349,15 +383,9 @@ export function mountRoutes({
             response.end();
             return;
           }
-          if (!sameOrigin(request)) {
-            writeJson(response, 403, { ok: false, error: 'forbidden: origin mismatch' });
-            return;
-          }
-          const body = await readJsonBody(request);
-          if (!body.ok) {
-            writeJson(response, 400, { ok: false, error: body.error });
-            return;
-          }
+          if (refuseCrossOrigin(request, response)) return;
+          const body = await readBodyOr400(request, response);
+          if (!body) return;
           const effort = body.value.effort;
           if (typeof effort !== 'string' || effort.trim() === '') {
             writeJson(response, 400, { ok: false, error: 'effort is required and must be a non-empty string' });
@@ -366,23 +394,18 @@ export function mountRoutes({
           const result = await runtime.setReasoningEffort(effort.trim());
           writeJson(response, 200, result, { 'cache-control': 'no-store' });
         },
-      })
-    : () => {};
+      });
 
   // ── List the daemon's sessions ────────────────────────────────────────────
   // GET /api/atomcode-bridge/sessions
   // Returns the daemon's full session index (all projects). The panel filters
   // by working_dir on the render side; the route itself does not filter.
   // A 404 from the daemon (endpoint not present on this build) is reported.
-  const disposeSessions = webServer && typeof webServer.register === 'function'
-    ? webServer.register({
+  const disposeSessions = mountRoute(webServer, {
         kind: 'exact',
         path: '/api/atomcode-bridge/sessions',
         handler: async (_request: any, response: any) => {
-          if (!sameOrigin(_request)) {
-            writeJson(response, 403, { ok: false, error: 'forbidden: origin mismatch' });
-            return;
-          }
+          if (refuseCrossOrigin(_request, response)) return;
           try {
             const sessions = await runtime.listSessions();
             writeJson(response, 200, { ok: true, sessions }, { 'cache-control': 'no-store' });
@@ -391,8 +414,7 @@ export function mountRoutes({
             writeJson(response, 502, { ok: false, error: reason }, { 'cache-control': 'no-store' });
           }
         },
-      })
-    : () => {};
+      });
 
   // ── Panel settings write: briefMode + workingDir overrides ─────────────────
   // POST /api/atomcode-bridge/panel-settings  { briefMode?, workingDir? }
@@ -401,8 +423,7 @@ export function mountRoutes({
   // execute path, so a click takes effect on the very next turn.
   // GET answers with the current panel-settings reading + the effective values.
   const PANEL_SETTINGS_BODY_LIMIT = 2048;
-  const disposePanelSettings = webServer && typeof webServer.register === 'function'
-    ? webServer.register({
+  const disposePanelSettings = mountRoute(webServer, {
         kind: 'exact',
         path: '/api/atomcode-bridge/panel-settings',
         handler: async (request: any, response: any) => {
@@ -410,17 +431,11 @@ export function mountRoutes({
             writeJson(response, 405, { ok: false, error: 'method not allowed' }, { allow: 'GET, HEAD, POST' });
             return;
           }
-          if (!sameOrigin(request)) {
-            writeJson(response, 403, { ok: false, error: 'forbidden: origin mismatch' });
-            return;
-          }
+          if (refuseCrossOrigin(request, response)) return;
           const method = request.method;
           if (method === 'POST') {
-            const body = await readJsonBody(request, PANEL_SETTINGS_BODY_LIMIT);
-            if (!body.ok) {
-              writeJson(response, 400, { ok: false, error: body.error });
-              return;
-            }
+            const body = await readBodyOr400(request, response, PANEL_SETTINGS_BODY_LIMIT);
+            if (!body) return;
             const fields: Record<string, unknown> = {};
             if (Object.prototype.hasOwnProperty.call(body.value, 'briefMode')) {
               fields.briefMode = body.value.briefMode;
@@ -456,8 +471,7 @@ export function mountRoutes({
             ...(current.error ? { error: current.error } : {}),
           }, { 'cache-control': 'no-store' });
         },
-      })
-    : () => {};
+      });
 
   return () => {
     disposeStats();

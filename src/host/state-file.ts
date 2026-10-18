@@ -13,17 +13,27 @@
  * for every caller ("how does a file get replaced atomically-ish, and how does
  * a bad one get preserved instead of erased").
  *
- * NOT here: the SEMANTICS of any one file. What counts as a corrupt document,
- * whether a `version` field gates the write, and whether the caller reports a
- * named error or silently falls back to empty are decisions about the DATA, and
- * they differ between the two stores on purpose — `provider.json` refuses to
- * overwrite a shape written by a newer build, `sessions.json` has no version at
- * all. Abstracting the read side would turn those decisions into boolean
- * switches and flatten the one thing each file gets right. Mechanisms are
- * duplicated code; semantics are not.
+ * NOT here: the SEMANTICS of any one file — which fields exist, what each one
+ * accepts, and what the store does with a document it cannot read. `sessions.json`
+ * has no version at all and reads as a map; `provider.json` and
+ * `panel-settings.json` both carry a version guard but project DIFFERENT fields.
+ * Those projections stay in their own store.
  *
- * So this module deliberately exposes verbs, not a base class: each store keeps
- * its own `read`, and calls shared helpers for the parts where it has no opinion.
+ * The line moved once, deliberately (2026-10-18): the two VERSIONED stores had
+ * grown byte-identical read skeletons — ENOENT / EISDIR / quarantine /
+ * JSON.parse / not-an-object / version-guard — plus write paths that mapped the
+ * same failures to the same machine-readable codes. A skeleton copied twice is
+ * how the copies drift (one gains an EISDIR branch, the other a wording fix),
+ * so the skeleton itself became verbs: `readVersionedDoc`, `writeVersionedDoc`,
+ * `foreignVersionRefusal`. Each store hands them its own version list, blank
+ * shape and field projection — the parts it genuinely owns.
+ *
+ * `sessions.json` is untouched by that move: its read side really is different
+ * (no version field, a map body), and forcing it through the same helper is the
+ * flattening this module's original note warned about.
+ *
+ * So this module still exposes verbs, not a base class: a store passes functions
+ * for the parts it owns, and shares only the parts where it has no opinion.
  *
  * ## Durability contract (shared, so it is stated once)
  *
@@ -36,7 +46,7 @@
  *
  * @module dsh-connect-atomcode/state-file
  */
-import { mkdirSync, writeFileSync, renameSync, rmSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, rmSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, basename, join } from 'node:path';
 
 /** How many `<path>.corrupt-<ts>` generations to keep for inspection. */
@@ -127,4 +137,124 @@ export function writeJsonFile(path: string, value: unknown): void {
     // fallback than losing the update.
     writeFileSync(path, body, 'utf8');
   }
+}
+
+/** The read shape every versioned store shares: a named reason, plus "foreign". */
+export interface VersionedReading {
+  foreignVersion: boolean;
+  error: string;
+  /** Present only when the file carried a version this build refuses to use. */
+  version?: number;
+}
+
+/** What a store hands `readVersionedDoc`: the parts it owns. */
+export interface VersionedReadOptions<T extends VersionedReading> {
+  /** Versions this build may read and write. */
+  knownVersions: readonly number[];
+  /** Shape version this build writes (drives the "newer build" branch). */
+  currentVersion: number;
+  /** The neutral reading — every field unset, `error` as given. */
+  blank: (error?: string) => T;
+  /** Project a parsed document of a KNOWN version onto the reading shape. */
+  project: (doc: Record<string, unknown>) => T;
+}
+
+/**
+ * Read one versioned JSON state document, with the whole failure ladder in one
+ * place: ENOENT reads as blank, EISDIR is named, an unreadable or unparseable
+ * file is preserved aside rather than erased (红线 3: never a silent empty read),
+ * and a version this build does not know reads as blank + `foreignVersion` so
+ * the write side can REFUSE to overwrite a newer shape.
+ *
+ * Never throws: a bad file is a reading with a reason, not an exception.
+ *
+ * @param {string} path - the state file.
+ * @param {VersionedReadOptions} options - the store's versions, blank shape and
+ *   field projection; this module supplies the surrounding ladder.
+ */
+export function readVersionedDoc<T extends VersionedReading>(path: string, options: VersionedReadOptions<T>): T {
+  const { knownVersions, currentVersion, blank, project } = options;
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (error: any) {
+    if (error && error.code === 'ENOENT') return blank();
+    if (error && error.code === 'EISDIR') return blank('state path is a directory, not a file');
+    return blank(
+      quarantineFile(path)
+        ? 'unreadable state file was preserved aside'
+        : 'state file is unreadable and could not be preserved aside',
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return blank(quarantineFile(path) ? 'corrupt state file was preserved aside' : 'state file is not valid JSON');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return blank('state file is not an object');
+  const doc = parsed as Record<string, unknown>;
+  const version = Number.isInteger(doc.version) ? (doc.version as number) : 0;
+  if (!knownVersions.includes(version)) {
+    // Two different situations share this branch: a NEWER build wrote it (never
+    // overwrite — the user's pick would vanish on the next upgrade) and an older
+    // / unknown number we simply do not understand. Only the first is "foreign".
+    const foreignVersion = version > currentVersion;
+    return {
+      ...blank(
+        foreignVersion
+          ? `state file was written by a newer build (version ${version}, this build knows ${currentVersion})`
+          : `state file version ${version} is not one this build can read`,
+      ),
+      version,
+      foreignVersion,
+    };
+  }
+  return project(doc);
+}
+
+/** What a refused or failed write reports: a machine-readable code, not prose. */
+export interface WriteRefusal {
+  ok: false;
+  code: string;
+  error: string;
+}
+
+/**
+ * Refuse to overwrite a file written by a NEWER build. Returns `null` when the
+ * current reading is foreign-safe (the caller proceeds to write).
+ *
+ * The route layer maps `foreign-version` to a 409; matching on error TEXT is how
+ * a correct refusal gets reported as an unknown failure the day someone rewords
+ * the sentence, so the code travels separately from the sentence.
+ */
+export function foreignVersionRefusal(current: VersionedReading): WriteRefusal | null {
+  if (!current.foreignVersion) return null;
+  return {
+    ok: false,
+    code: 'foreign-version',
+    error:
+      current.error || `state file was written by a newer build (version ${current.version}); refusing to overwrite it`,
+  };
+}
+
+/**
+ * Write one versioned state document, mapping a failed write onto the shared
+ * `write-failed` code. Success reports `ok: true` with an empty code/error, so
+ * every caller can branch on the same shape.
+ */
+export function writeVersionedDoc(
+  path: string,
+  doc: Record<string, unknown>,
+): { ok: true; code: ''; error: '' } | WriteRefusal {
+  try {
+    writeJsonFile(path, doc);
+  } catch (error: any) {
+    return {
+      ok: false,
+      code: 'write-failed',
+      error: `could not write the state file: ${String(error && error.message ? error.message : error)}`,
+    };
+  }
+  return { ok: true, code: '', error: '' };
 }

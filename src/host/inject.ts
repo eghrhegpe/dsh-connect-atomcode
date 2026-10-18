@@ -226,6 +226,77 @@ export function composeContinuation(
 }
 
 /**
+ * The delivery tail both entry points share: build the message, then hand it to
+ * the driver in the phase-correct way.
+ *
+ * Callers do their own precondition ladder and their own text composition; from
+ * "there is a live agent, a message factory and a body" onward the work — and
+ * the reasoning behind it — is identical, so it lives here once. `buildText` is
+ * a function, not a string, so a throw from composing still lands in the
+ * `inject-failed` catch below (the shape both entry points already had).
+ */
+function deliverMessage(options: {
+  agent: any;
+  createUserMessage: (input: any) => any;
+  buildText: () => string;
+  /** Omitted by the continuation path, which reads the id off the agent itself. */
+  sessionId?: string;
+  /** The caller's own wording for an unexpected throw. */
+  failPrefix: string;
+}): InjectOutcome {
+  const { agent, createUserMessage, buildText, failPrefix } = options;
+  try {
+    const message = createUserMessage({
+      // `content` is `readonly ContentBlock[]`, NOT a string — the field's own
+      // doc comment says "Exact model-facing blocks". Passing a bare string here
+      // shipped once and blew up a live turn: the UI showed ~200 「未知内容块」
+      // (one per character of an unknown `type`) and the step died with
+      // `content.some is not a function`, because a string has no `.some`.
+      // `TextBlock` is exactly `{ type: 'text', text }`.
+      content: [{ type: 'text', text: buildText() }],
+      source: { kind: INJECT_SOURCE_KIND },
+    });
+    // WHICH METHOD depends on the driver's phase, and getting this wrong is
+    // silent, which is how it shipped wrong the first time: `inject()` does not
+    // wake an idle driver, so on a session nobody is running the message parked
+    // in the inbox forever and the click looked like nothing happened. The
+    // contract is explicit — "idle drivers leave it pending until follow-up or
+    // steering wakes them" — so an idle session gets `steer()`, the non-silent
+    // twin that differs from `inject()` by exactly one argument:
+    //     inject(input) { this.send(input, 'next-step', false) }
+    //     steer(input)  { this.send(input, 'next-step', true)  }
+    //
+    // The old text here argued a click "must never start a model turn". That was
+    // the wrong reading of the UI: 「送到会话」 is a request for the model to read
+    // this, so when nothing is running, starting the turn IS the verb. What stays
+    // true is the weaker promise — started ≠ read — so the outcome says which of
+    // the two happened and never claims the model saw it.
+    //
+    // `status` is the driver's own getter ('idle' | 'running'), not an inbox
+    // guess: maintenance counts as idle there, which is what we want (a
+    // maintenance phase sets `wakeRequested` and runs a turn next).
+    //
+    // An ABSENT status is read as running, i.e. the conservative direction: a
+    // message that parks is recoverable (the next turn picks it up) while an
+    // extra model turn costs money and cannot be taken back. Only a positive
+    // `'idle'` earns the wake.
+    const idle = agent.status === 'idle';
+    if (idle) agent.steer(message);
+    else agent.inject(message);
+    return {
+      ok: true,
+      messageId: String(message.id),
+      sessionId: options.sessionId !== undefined ? options.sessionId : String(agent.id ?? ''),
+      delivered: idle ? 'new-turn' : 'next-step',
+      woke: idle,
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ok: false, code: 'inject-failed', error: `${failPrefix}: ${reason}` };
+  }
+}
+
+/**
  * Hand one AtomCode answer to the agent that owns `sessionId`.
  *
  * Resolving the agent happens here rather than in the route so both callers
@@ -274,6 +345,7 @@ export function injectAtomcodeAnswer(
   if (input.text.length > INJECT_TEXT_LIMIT) {
     return { ok: false, code: 'text-too-large', error: `text is larger than ${INJECT_TEXT_LIMIT} characters` };
   }
+  const text = input.text.trim();
 
   // Same shape as the agents check: a Host whose module graph does not expose
   // `dsh-llm` cannot build the message at all, and saying so beats a TypeError
@@ -298,63 +370,17 @@ export function injectAtomcodeAnswer(
     };
   }
 
-  try {
-    const message = createUserMessage({
-      // `content` is `readonly ContentBlock[]`, NOT a string — the field's own
-      // doc comment says "Exact model-facing blocks". Passing a bare string here
-      // shipped once and blew up a live turn: the UI showed ~200 「未知内容块」
-      // (one per character of an unknown `type`) and the step died with
-      // `content.some is not a function`, because a string has no `.some`.
-      // `TextBlock` is exactly `{ type: 'text', text }`.
-      content: [
-        {
-          type: 'text',
-          text: composeInjection(input.text.trim(), {
-            model: typeof input.model === 'string' ? input.model : undefined,
-            sessionId: typeof input.atomcodeSessionId === 'string' ? input.atomcodeSessionId : undefined,
-          }),
-        },
-      ],
-      source: { kind: INJECT_SOURCE_KIND },
-    });
-    // WHICH METHOD depends on the driver's phase, and getting this wrong is
-    // silent, which is how it shipped wrong the first time: `inject()` does not
-    // wake an idle driver, so on a session nobody is running the message parked
-    // in the inbox forever and the click looked like nothing happened. The
-    // contract is explicit — "idle drivers leave it pending until follow-up or
-    // steering wakes them" — so an idle session gets `steer()`, the non-silent
-    // twin that differs from `inject()` by exactly one argument:
-    //     inject(input) { this.send(input, 'next-step', false) }
-    //     steer(input)  { this.send(input, 'next-step', true)  }
-    //
-    // The old text here argued a click "must never start a model turn". That was
-    // the wrong reading of the UI: 「送到会话」 is a request for the model to read
-    // this, so when nothing is running, starting the turn IS the verb. What stays
-    // true is the weaker promise — started ≠ read — so the outcome says which of
-    // the two happened and never claims the model saw it.
-    //
-    // `status` is the driver's own getter ('idle' | 'running'), not an inbox
-    // guess: maintenance counts as idle there, which is what we want (a
-    // maintenance phase sets `wakeRequested` and runs a turn next).
-    //
-    // An ABSENT status is read as running, i.e. the conservative direction: a
-    // message that parks is recoverable (the next turn picks it up) while an
-    // extra model turn costs money and cannot be taken back. Only a positive
-    // `'idle'` earns the wake.
-    const idle = agent.status === 'idle';
-    if (idle) agent.steer(message);
-    else agent.inject(message);
-    return {
-      ok: true,
-      messageId: String(message.id),
-      sessionId,
-      delivered: idle ? 'new-turn' : 'next-step',
-      woke: idle,
-    };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    return { ok: false, code: 'inject-failed', error: `could not inject into session "${sessionId}": ${reason}` };
-  }
+  return deliverMessage({
+    agent,
+    createUserMessage,
+    sessionId,
+    buildText: () =>
+      composeInjection(text, {
+        model: typeof input.model === 'string' ? input.model : undefined,
+        sessionId: typeof input.atomcodeSessionId === 'string' ? input.atomcodeSessionId : undefined,
+      }),
+    failPrefix: `could not inject into session "${sessionId}"`,
+  });
 }
 
 /**
@@ -410,40 +436,18 @@ export function injectReviewContinuation(
     };
   }
 
-  try {
-    const agent = deps.agent;
-    const message = createUserMessage({
-      // Same ContentBlock[] discipline as `injectAtomcodeAnswer`: a bare string
-      // here once blew up a live turn with 「未知内容块」 + `content.some is not a
-      // function`. `TextBlock` is exactly `{ type: 'text', text }`.
-      content: [
-        {
-          type: 'text',
-          text: composeContinuation(input.reviewReply.trim(), {
-            model: typeof input.model === 'string' ? input.model : undefined,
-            scope: typeof input.scope === 'string' ? input.scope : undefined,
-          }),
-        },
-      ],
-      source: { kind: INJECT_SOURCE_KIND },
-    });
-    // Same phase split as `injectAtomcodeAnswer`: an idle session gets `steer()`
-    // (wake and start the one turn that reads this), a running one gets
-    // `inject()` (attach to the turn in flight, never interrupt it). An ABSENT
-    // status is read as running — the conservative direction, because an extra
-    // wake costs money and cannot be taken back.
-    const idle = agent.status === 'idle';
-    if (idle) agent.steer(message);
-    else agent.inject(message);
-    return {
-      ok: true,
-      messageId: String(message.id),
-      sessionId: String(agent.id ?? ''),
-      delivered: idle ? 'new-turn' : 'next-step',
-      woke: idle,
-    };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    return { ok: false, code: 'inject-failed', error: `could not deliver the continuation: ${reason}` };
-  }
+  const reviewReply = input.reviewReply.trim();
+
+  return deliverMessage({
+    agent: deps.agent,
+    createUserMessage,
+    // No sessionId: the continuation names the session the review ran in, which
+    // the agent already knows.
+    buildText: () =>
+      composeContinuation(reviewReply, {
+        model: typeof input.model === 'string' ? input.model : undefined,
+        scope: typeof input.scope === 'string' ? input.scope : undefined,
+      }),
+    failPrefix: 'could not deliver the continuation',
+  });
 }

@@ -243,15 +243,23 @@ const REGISTRATION = {
       if (next) statsCache.data = next;
     }
 
-    async function postProvider(value: string) {
+    /**
+     * POST one JSON body to a bridge route and normalize the answer.
+     *
+     * All three write routes (`/provider`, `/panel-settings`, `/reasoning-effort`)
+     * answer the same shape, so the transport, the "an unparseable body is not a
+     * success" rule and the network-error wording live here once. What each
+     * caller keeps is its OWN field: `postProvider` needs the branch the route
+     * echoed back, the other two only need to know it was accepted.
+     *
+     * @returns `{ ok: true, body }` with the parsed answer, or `{ ok: false, error }`.
+     */
+    async function postJson(path: string, payload: unknown) {
       try {
-        const response = await fetch(PROVIDER_PATH, {
+        const response = await fetch(path, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          // The slot field is still sent: the route rejects anything but
-          // `ask` by name rather than guessing, and a wire field that has
-          // always been there is not worth silently dropping.
-          body: JSON.stringify({ slot: 'ask', provider: value === '' ? null : value }),
+          body: JSON.stringify(payload),
         });
         let parsed: any = null;
         try {
@@ -259,33 +267,30 @@ const REGISTRATION = {
         } catch {
           parsed = null;
         }
-        if (parsed && parsed.ok === true) return { ok: true as const, provider: parsed };
+        if (parsed && parsed.ok === true) return { ok: true as const, body: parsed };
         return { ok: false as const, error: (parsed && parsed.error) || 'HTTP ' + response.status };
       } catch (reason: any) {
         return { ok: false as const, error: reason && reason.message ? reason.message : String(reason) };
       }
     }
 
+    async function postProvider(value: string) {
+      // The slot field is still sent: the route rejects anything but `ask` by
+      // name rather than guessing, and a wire field that has always been there
+      // is not worth silently dropping.
+      const result = await postJson(PROVIDER_PATH, { slot: 'ask', provider: value === '' ? null : value });
+      if (!result.ok) return result;
+      // The route answers with the provider branch it just stored, and the panel
+      // adopts that echo instead of predicting it.
+      return { ok: true as const, provider: result.body };
+    }
+
     const PANEL_SETTINGS_PATH = '/api/atomcode-bridge/panel-settings';
     /** Write the panel's briefMode / workingDir override. One field at a time. */
     async function postPanelSettings(fields: { briefMode?: string | null; workingDir?: string | null; approvalMode?: string | null; askMaxRounds?: number | null }) {
-      try {
-        const response = await fetch(PANEL_SETTINGS_PATH, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(fields),
-        });
-        let parsed: any = null;
-        try {
-          parsed = await response.json();
-        } catch {
-          parsed = null;
-        }
-        if (parsed && parsed.ok === true) return { ok: true as const };
-        return { ok: false as const, error: (parsed && parsed.error) || 'HTTP ' + response.status };
-      } catch (reason: any) {
-        return { ok: false as const, error: reason && reason.message ? reason.message : String(reason) };
-      }
+      const result = await postJson(PANEL_SETTINGS_PATH, fields);
+      if (!result.ok) return result;
+      return { ok: true as const };
     }
 
     const REASONING_EFFORT_PATH = '/api/atomcode-bridge/reasoning-effort';
@@ -296,23 +301,9 @@ const REGISTRATION = {
      * by <provider>"}` when the level is not in the model's effort_levels.
      */
     async function postReasoningEffort(effort: string) {
-      try {
-        const response = await fetch(REASONING_EFFORT_PATH, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ effort }),
-        });
-        let parsed: any = null;
-        try {
-          parsed = await response.json();
-        } catch {
-          parsed = null;
-        }
-        if (parsed && parsed.ok === true) return { ok: true as const };
-        return { ok: false as const, error: (parsed && parsed.error) || 'HTTP ' + response.status };
-      } catch (reason: any) {
-        return { ok: false as const, error: reason && reason.message ? reason.message : String(reason) };
-      }
+      const result = await postJson(REASONING_EFFORT_PATH, { effort });
+      if (!result.ok) return result;
+      return { ok: true as const };
     }
 
     /**

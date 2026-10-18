@@ -87,6 +87,41 @@ export function readToken(port: number, home: string = homedir()) {
 }
 
 /**
+ * The headers every daemon request carries: the auth token the binary wrote at
+ * startup, merged over whatever the call site adds.
+ *
+ * `readToken` answers '' for a daemon started with `--no-auth` (or one whose
+ * file is not there yet), and in that case NO Authorization header is sent at
+ * all — an empty one is worse than none, because the daemon rejects it instead
+ * of serving the request anonymously. That rule used to be repeated at every
+ * call site; it now has one home.
+ *
+ * @param port - the daemon port, to find `daemon-<port>.json`.
+ * @param base - headers this request adds on top (usually Content-Type).
+ * @returns the header object to hand to `fetch`.
+ */
+function bearerHeaders(port: number, base: Record<string, string> = {}): Record<string, string> {
+  const token = readToken(port);
+  return token ? { ...base, Authorization: `Bearer ${token}` } : base;
+}
+
+/**
+ * The message out of a caught value, for the places that must report why a
+ * request failed rather than the fact of it.
+ *
+ * `catch` hands out `unknown`, so this is the ONE narrowing: an Error (or
+ * anything with a string `message`) reports that message, everything else is
+ * stringified. Repeating the ternary per call site is how one of them
+ * eventually reports `[object Object]`.
+ *
+ * @param error - whatever was caught.
+ * @returns the message to show the user.
+ */
+function errText(error: any): string {
+  return String(error && error.message ? error.message : error);
+}
+
+/**
  * A fingerprint of the daemon CURRENTLY serving `port`, for judging whether a
  * remembered `session_id` was issued by this daemon or by one that has since
  * exited.
@@ -216,10 +251,9 @@ export async function health(port: number = DEFAULT_PORT, signal?: AbortSignal) 
  * @returns {Promise<Array<{provider:string, model:string, is_default:boolean, provider_type:string, effort_applicable?:boolean, reasoning_effort?:string|null, effort_levels?:string[]}>>}
  */
 export async function listModels(port: number = DEFAULT_PORT, signal?: AbortSignal) {
-  const token = readToken(port);
   const res = await fetch(`${baseUrl(port)}/models`, {
     method: 'GET',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: bearerHeaders(port),
     signal,
   });
   if (!res.ok) throw new Error(`atomcode /models -> HTTP ${res.status}`);
@@ -253,10 +287,9 @@ export interface SessionEntry {
  * @returns {Promise<SessionEntry[]>}
  */
 export async function listSessions(port: number = DEFAULT_PORT, signal?: AbortSignal): Promise<SessionEntry[]> {
-  const token = readToken(port);
   const res = await fetch(`${baseUrl(port)}/sessions`, {
     method: 'GET',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: bearerHeaders(port),
     signal,
   });
   if (!res.ok) throw new Error(`atomcode /sessions -> HTTP ${res.status}`);
@@ -293,9 +326,7 @@ export interface RunCommandOptions {
  */
 export async function runCommand(opts: RunCommandOptions = {}) {
   const port = opts.port ?? DEFAULT_PORT;
-  const token = readToken(port);
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  const headers = bearerHeaders(port, { 'Content-Type': 'application/json' });
   const payload: Record<string, unknown> = { command: String(opts.command ?? '') };
   if (opts.workingDir) payload.working_dir = opts.workingDir;
   if (opts.sessionId) payload.session_id = opts.sessionId;
@@ -334,7 +365,7 @@ export async function runCommand(opts: RunCommandOptions = {}) {
     return {
       ok: false,
       kind: 'transport',
-      message: String(error && error.message ? error.message : error),
+      message: errText(error),
       text: '',
       data: null,
     };
@@ -423,15 +454,13 @@ export interface TurnProgress {
  */
 export async function* streamChat(opts: StreamChatOptions) {
   const port = opts.port ?? DEFAULT_PORT;
-  const token = readToken(port);
   const payload: Record<string, unknown> = { message: opts.message, approval_mode: opts.approvalMode ?? 'bypass' };
   if (opts.provider) payload.provider = opts.provider;
   if (opts.sessionId) payload.session_id = opts.sessionId;
   if (opts.workingDir) payload.working_dir = opts.workingDir;
   if (opts.reasoningEffort) payload.reasoning_effort = opts.reasoningEffort;
 
-  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(opts.extraHeaders || {}) };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  const headers = bearerHeaders(port, { 'Content-Type': 'application/json', ...(opts.extraHeaders || {}) });
 
   // Combine caller cancellation with an optional per-request timeout and
   // optional round-level fuse (count tool_start events). Every abort records
@@ -745,7 +774,7 @@ export async function askChat(opts: StreamChatOptions) {
       report();
     }
   } catch (error: any) {
-    streamError = String(error && error.message ? error.message : error);
+    streamError = errText(error);
   }
   // A stream that ended early leaves the daemon's turn running: abort closes
   // OUR side of the wire and nothing else. Now that the session id is known —
@@ -915,9 +944,7 @@ export async function stopChat(opts: StopChatOptions = {}): Promise<StopChatResu
     return { ok: false, sent: false, message: 'no session id yet — nothing to stop' };
   }
   const port = opts.port ?? DEFAULT_PORT;
-  const token = readToken(port);
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  const headers = bearerHeaders(port, { 'Content-Type': 'application/json' });
   try {
     const res = await fetch(`${baseUrl(port)}/chat/stop`, {
       method: 'POST',
@@ -941,7 +968,7 @@ export async function stopChat(opts: StopChatOptions = {}): Promise<StopChatResu
     return {
       ok: false,
       sent: true,
-      message: String(error && error.message ? error.message : error),
+      message: errText(error),
     };
   }
 }
@@ -994,9 +1021,7 @@ export async function setReasoningEffort(opts: {
   timeoutMs?: number;
 }): Promise<{ ok: boolean; message: string }> {
   const port = opts.port ?? DEFAULT_PORT;
-  const token = readToken(port);
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  const headers = bearerHeaders(port, { 'Content-Type': 'application/json' });
   try {
     const res = await fetch(`${baseUrl(port)}/live/reasoning_effort`, {
       method: 'POST',
@@ -1015,7 +1040,7 @@ export async function setReasoningEffort(opts: {
       return { ok: res.ok, message: res.ok ? 'ok' : `HTTP ${res.status}` };
     }
   } catch (error: any) {
-    return { ok: false, message: String(error && error.message ? error.message : error) };
+    return { ok: false, message: errText(error) };
   }
 }
 
@@ -1060,7 +1085,7 @@ export async function spawnDaemon(opts: SpawnDaemonOptions = {}) {
     // would throw inside the 'error' callback, which is itself uncaught — i.e.
     // the guard would reintroduce the very crash it exists to prevent.
     if (typeof opts.log === 'function') {
-      opts.log(`atomcode daemon spawn failed: ${String(error && error.message ? error.message : error)}`);
+      opts.log(`atomcode daemon spawn failed: ${errText(error)}`);
     }
   };
   try {

@@ -1722,15 +1722,23 @@
 				const next = snapshotWithBranch(statsCache.data, adoptedProvider.branch);
 				if (next) statsCache.data = next;
 			}
-			async function postProvider(value) {
+			/**
+			* POST one JSON body to a bridge route and normalize the answer.
+			*
+			* All three write routes (`/provider`, `/panel-settings`, `/reasoning-effort`)
+			* answer the same shape, so the transport, the "an unparseable body is not a
+			* success" rule and the network-error wording live here once. What each
+			* caller keeps is its OWN field: `postProvider` needs the branch the route
+			* echoed back, the other two only need to know it was accepted.
+			*
+			* @returns `{ ok: true, body }` with the parsed answer, or `{ ok: false, error }`.
+			*/
+			async function postJson(path, payload) {
 				try {
-					const response = await fetch(PROVIDER_PATH, {
+					const response = await fetch(path, {
 						method: "POST",
 						headers: { "content-type": "application/json" },
-						body: JSON.stringify({
-							slot: "ask",
-							provider: value === "" ? null : value
-						})
+						body: JSON.stringify(payload)
 					});
 					let parsed = null;
 					try {
@@ -1740,7 +1748,7 @@
 					}
 					if (parsed && parsed.ok === true) return {
 						ok: true,
-						provider: parsed
+						body: parsed
 					};
 					return {
 						ok: false,
@@ -1753,32 +1761,23 @@
 					};
 				}
 			}
+			async function postProvider(value) {
+				const result = await postJson(PROVIDER_PATH, {
+					slot: "ask",
+					provider: value === "" ? null : value
+				});
+				if (!result.ok) return result;
+				return {
+					ok: true,
+					provider: result.body
+				};
+			}
 			const PANEL_SETTINGS_PATH = "/api/atomcode-bridge/panel-settings";
 			/** Write the panel's briefMode / workingDir override. One field at a time. */
 			async function postPanelSettings(fields) {
-				try {
-					const response = await fetch(PANEL_SETTINGS_PATH, {
-						method: "POST",
-						headers: { "content-type": "application/json" },
-						body: JSON.stringify(fields)
-					});
-					let parsed = null;
-					try {
-						parsed = await response.json();
-					} catch {
-						parsed = null;
-					}
-					if (parsed && parsed.ok === true) return { ok: true };
-					return {
-						ok: false,
-						error: parsed && parsed.error || "HTTP " + response.status
-					};
-				} catch (reason) {
-					return {
-						ok: false,
-						error: reason && reason.message ? reason.message : String(reason)
-					};
-				}
+				const result = await postJson(PANEL_SETTINGS_PATH, fields);
+				if (!result.ok) return result;
+				return { ok: true };
 			}
 			const REASONING_EFFORT_PATH = "/api/atomcode-bridge/reasoning-effort";
 			/**
@@ -1788,29 +1787,9 @@
 			* by <provider>"}` when the level is not in the model's effort_levels.
 			*/
 			async function postReasoningEffort(effort) {
-				try {
-					const response = await fetch(REASONING_EFFORT_PATH, {
-						method: "POST",
-						headers: { "content-type": "application/json" },
-						body: JSON.stringify({ effort })
-					});
-					let parsed = null;
-					try {
-						parsed = await response.json();
-					} catch {
-						parsed = null;
-					}
-					if (parsed && parsed.ok === true) return { ok: true };
-					return {
-						ok: false,
-						error: parsed && parsed.error || "HTTP " + response.status
-					};
-				} catch (reason) {
-					return {
-						ok: false,
-						error: reason && reason.message ? reason.message : String(reason)
-					};
-				}
+				const result = await postJson(REASONING_EFFORT_PATH, { effort });
+				if (!result.ok) return result;
+				return { ok: true };
 			}
 			/**
 			* The interactive provider control: a dropdown over the ONE model ladder.

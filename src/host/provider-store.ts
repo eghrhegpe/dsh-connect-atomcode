@@ -43,10 +43,14 @@
  *
  * @module dsh-connect-atomcode/provider-store
  */
-import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { sweepStaleArtifacts, quarantineFile, writeJsonFile } from './state-file.ts';
+import {
+  sweepStaleArtifacts,
+  readVersionedDoc,
+  writeVersionedDoc,
+  foreignVersionRefusal,
+} from './state-file.ts';
 
 /** Shape version this build writes. */
 export const PROVIDER_FILE_VERSION = 1;
@@ -123,62 +127,29 @@ export function createProviderStore(path: string = defaultProviderStatePath()) {
   // copy of the same loop, and the copy is where drift hides.
   sweepStaleArtifacts(path);
 
-  const blank = (error: string = '') => ({ ask: null, foreignVersion: false, error });
-
   /**
    * The document as it sits on disk, or a neutral reading. Never throws: an
    * unparseable file is preserved aside (so a half-write is inspectable) and read
    * as "no pick" WITH a reason — the panel shows the reason rather than silently
    * claiming the user chose nothing (红线 3).
+   *
+   * The failure ladder itself lives in `state-file.ts` (shared with
+   * panel-settings.json); this store supplies only what is ITS own: the version
+   * list it accepts, the neutral shape, and how one field is projected.
    */
   function readDoc(): ProviderDoc {
-    let raw;
-    try {
-      raw = readFileSync(path, 'utf8');
-    } catch (error: any) {
-      if (error && error.code === 'ENOENT') return blank();
-      if (error && error.code === 'EISDIR') return blank('state path is a directory, not a file');
-      return blank(
-        quarantineFile(path)
-          ? 'unreadable state file was preserved aside'
-          : 'state file is unreadable and could not be preserved aside',
-      );
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return blank(
-        quarantineFile(path)
-          ? 'corrupt state file was preserved aside'
-          : 'state file is not valid JSON',
-      );
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return blank('state file is not an object');
-    const version = Number.isInteger(parsed.version) ? parsed.version : 0;
-    if (!KNOWN_PROVIDER_VERSIONS.includes(version)) {
-      // Two different situations share this branch: a NEWER build wrote it (never
-      // overwrite — the user's pick would vanish on the next upgrade) and an older
-      ///unknown number we simply do not understand. Only the first is "foreign".
-      return {
-        ...blank(
-          version > PROVIDER_FILE_VERSION
-            ? `state file was written by a newer build of this plugin (version ${version}, this build knows ${PROVIDER_FILE_VERSION})`
-            : `state file version ${version} is not one this build can read`,
-        ),
-        version,
-        foreignVersion: version > PROVIDER_FILE_VERSION,
-      };
-    }
-    const clean = (v: unknown) => {
-      const n = normalizeProviderName(v);
-      return n.ok ? n.value : null;
-    };
-    return { ask: clean(parsed.ask), foreignVersion: false, error: '' };
-  }
-
-  function writeDoc(doc: Record<string, unknown>) {
-    writeJsonFile(path, doc);
+    return readVersionedDoc<ProviderDoc>(path, {
+      knownVersions: KNOWN_PROVIDER_VERSIONS,
+      currentVersion: PROVIDER_FILE_VERSION,
+      blank: (error = '') => ({ ask: null, foreignVersion: false, error }),
+      project: (doc) => {
+        const clean = (v: unknown) => {
+          const n = normalizeProviderName(v);
+          return n.ok ? n.value : null;
+        };
+        return { ask: clean(doc.ask), foreignVersion: false, error: '' };
+      },
+    });
   }
 
   return {
@@ -214,25 +185,14 @@ export function createProviderStore(path: string = defaultProviderStatePath()) {
       const normalized = normalizeProviderName(name);
       if (!normalized.ok) return { ok: false, value: null, code: 'invalid-name', error: normalized.error };
       const current = readDoc();
-      if (current.foreignVersion) {
-        return {
-          ok: false,
-          value: null,
-          code: 'foreign-version',
-          error: current.error || `state file was written by a newer build of this plugin (version ${current.version}); refusing to overwrite it`,
-        };
-      }
-      const doc: Record<string, unknown> = { version: PROVIDER_FILE_VERSION, ask: normalized.value, updatedAt: Date.now() };
-      try {
-        writeDoc(doc);
-      } catch (error: any) {
-        return {
-          ok: false,
-          value: null,
-          code: 'write-failed',
-          error: `could not write the state file: ${String(error && error.message ? error.message : error)}`,
-        };
-      }
+      const refusal = foreignVersionRefusal(current);
+      if (refusal) return { ...refusal, value: null };
+      const written = writeVersionedDoc(path, {
+        version: PROVIDER_FILE_VERSION,
+        ask: normalized.value,
+        updatedAt: Date.now(),
+      });
+      if (!written.ok) return { ok: false, value: null, code: written.code, error: written.error };
       return { ok: true, value: normalized.value, code: '', error: '' };
     },
     /** @returns {string} where the state lives (the panel names it). */
