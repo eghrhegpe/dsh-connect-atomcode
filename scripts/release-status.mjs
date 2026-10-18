@@ -277,8 +277,16 @@ if (complete) {
   state = 'S3 已 npm';
   next = '只走 §9：`gh release create` 补建 Release（务必带 `--verify-tag`）。';
 } else if (facts.tag && !facts.npm) {
+  // S2 有两种子状态，建议不一样：Release 可能是「已建好」（先建后发，0.5.1 那次就是这样）或
+  // 「待补」。别一律让人最后去补 Release——那会让人去建一个已经存在的 Release（`gh release create`
+  // 撞名会报 already_exists，白跑一趟）。
   state = 'S2 已 tag';
-  next = '走 §7/§8/§9：先请人 `npm publish`，再做 §8 内容核验，最后补 Release。';
+  next = facts.release
+    ? '走 §7/§8：先请人 `npm publish`（§7 五项证据），再做 §8 内容核验——Release 已在，不用再补。'
+    : '走 §7/§8/§9：先请人 `npm publish`，再做 §8 内容核验，最后补 Release。';
+} else if (facts.tag && facts.npm && facts.release && !facts.master) {
+  state = '只差推送 master';
+  next = '四个事实已成立，只差「版本提交在 origin/master」（§7 证据②）：`git push origin master`（别补 publish、别重建 Release）。';
 } else if (!facts.tag && facts.npm) {
   state = 'S2′ 顺序颠倒：已 npm、未 tag';
   next = '先按 §8 核验「npm 上那一版 == 哪个提交的构建产物」，再把 tag 指到**被核验过的那个提交**（不是当时 HEAD），最后补 Release；不要重新 publish。';
