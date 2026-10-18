@@ -78,8 +78,6 @@ function sandboxDeps({ defaultWorkingDir = '', reviewBriefMode = 'when-empty', l
       defaultWorkingDir,
       askMaxRounds: 25,
       defaultProvider: '',
-      reviewMaxRounds: 35,
-      reviewMaxDurationSecs: 900,
       reviewBriefMode,
       baseUrl: 'http://127.0.0.1:0',
     },

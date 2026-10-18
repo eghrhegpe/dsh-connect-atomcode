@@ -111,9 +111,7 @@ bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行
 | `ask_max_rounds` | `25` | ask 的工具调用次数上限（按 SSE `tool_start` 事件计；一次 agent 回合可能含多次并行工具调用，故事件数 ≤ agent 轮数）；`0` = 不限（交给 daemon 自带治理）。**上限 1000，超过按 1000 计**（钳制在代码里——熔断不是能被一个巨大数字关掉的东西；关它只能用 `0` 这个字面量）。>0 时插件在 SSE 上数 `tool_start`，超限即断开并返回 `atomcode turn aborted: agent exceeded N tool rounds`，**同时向 daemon 发 `POST /chat/stop` 请求停掉该回合**（契约为实测：`session_id` 必填；daemon 回 `was not running` 也是受理，只说明回合已结束）。所以它是"别再等了 + 尽力停止"的止损，不是远程 kill——回合刚开始、还没拿到 `session_assigned` 时无 id 可发，这一种情况在错误文本里写明。**计数会不会被改名致盲是可以当场判定的**：回合结束时 daemon 会自报它自己的工具调用次数（`daemon_tool_calls`），与本端计数对照即知这一轮熔断是准的、还是压根没生效——两者一致就说一致，对不上就说对不上（不再用"若被改名的是这类事件…"这种模棱两可的措辞）。面板**不提供输入框**；详情页「回合边界」标出这是默认还是你改过 |
 | `session_key_prefix` | 自动探测 | 会话键前缀，隔离多 profile（web / desktop）共用同一 state 文件；空 = 按 `DSH_PROFILE`/argv 自动判定 |
 | `daemon_retry_secs` | `60` | 自动拉起**失败**后的重试冷却。`0` = 每次轮询都重试；不设则失败会永久禁用本次挂载的自动拉起 |
-| `review_brief_mode` | `when-empty` | **两个评审入口共用**的内置评审简报注入方式：`always` = 简报总在（留空补简报，非空附加在后）；`when-empty` = 只在留空时补简报（非空按原样发）；`never` = 从不注入（留空直接拒绝，必须写明评审目标）。闭集，拼错回落默认值并在面板上报出被拒的拼法 |
-| `review_max_rounds` | `35` | 评审 agent 轮数保险丝（现在 review 是一次 ask 回合，轮数约束的是该回合的工具调用次数），上限 1000 超过按 1000 计；`0` = 不限（交给 daemon 自带治理） |
-| `review_max_duration_secs` | `900` | 评审墙钟保险丝（现在 review 是一次 ask 回合，墙钟约束的是该回合的最大耗时），上限 1740s 超过按 1740s 计 |
+| `review_brief_mode` | `when-empty` | **`/atomcode-review` 命令**的内置评审简报注入方式：`always` = 简报总在（留空补简报，非空附加在后）；`when-empty` = 只在留空时补简报（非空按原样发）；`never` = 从不注入（留空直接拒绝，必须写明评审目标）。闭集，拼错回落默认值并在面板上报出被拒的拼法 |
 | `quota_refresh_secs` | `60` | CodingPlan 额度刷新间隔（秒）；`0` = 关闭额度显示（连带不发那条额外 `/command` 调用）。缓存是为了让面板 5s 轮询不变成 5s 一次 daemon 调用 |
 | `daemon_start_timeout_secs` | `30` | 拉起 daemon 后等 `/health` 应答的上限（秒），每 1.5s 探一次；`0` = 只 spawn 不等 |
 
@@ -237,7 +235,7 @@ npm run coverage   # 同一批套件 + node 内置覆盖率报告（单进程**�
 - `daemon-stream.test.mjs` — `askChat` 的 SSE 聚合（reply 拼接 / session / tokens 回退 / 工具配对 / provider 捕获 / roundCount）、轮数熔断、三种 abort 原因（超时 / 调用方取消 / 熔断），以及 **daemon 自报计数与本端计数的隔离**（读 `done.tool_calls` / 回落 `done.stats.tool_calls` / 缺字段答 null 而不是拿本端数顶替 / 报 0 与没报不是同一件事 / 两种拼写不一致时以顶层为准）。
 - `chat-stop.test.mjs` — `/chat/stop` 取消通路：熔断 / 取消 / 流截断三种死法都会带 `session_id` 发停止请求，`done` 之后绝不发，无 id 时具名不猜，stop 失败照实报。
 - `sessions-ttl.test.mjs` — 会话续接存储的生死判定：过期键不再续且路过即清、`count()` 只数真能续的键、**年龄未知的旧数据必须保留**；以及 daemon 指纹判死——daemon 重启后旧 id 不再续（`prune()` 在创建时扫掉上个 daemon 的遗产）、指纹缺失/读不到/探针抛错都按"无法判定"放行，`snapshot()` 一次读同时给出面板那两个事实。
-- `knob-clamps.test.mjs` — 旋钮上限钳制（`timeout_secs` 1800 / `max_rounds` 1000 / `review_max_duration_secs` 1740，`0` 字面量永不被钳制）、配置默认值同样被钳（面板不显示代码不执行的预算），以及 `readDaemonIdentity` 指纹的稳定性/随 daemon 变化/读不到时答 null 不猜。
+- `knob-clamps.test.mjs` — 旋钮上限钳制（`timeout_secs` 1800 / `max_rounds` 1000，`0` 字面量永不被钳制）、配置默认值同样被钳（面板不显示代码不执行的预算），以及 `readDaemonIdentity` 指纹的稳定性/随 daemon 变化/读不到时答 null 不猜。
 - `output-budget.test.mjs` — **一次返回只有一份上下文预算**：`OUTPUT_CAP` 是唯一常量、只有 `atomcode_ask` 一个工具、截断标记只有一句（含 `; remedy` 尾巴）、截断时标记具名。
 - `in-flight.test.mjs` — **回合进行中的读数**（`askChat` 的 `onProgress` 在回合结束前就报数、坏掉的观察者不能弄死一条活回合、快照里 `ask.inFlight` 有则报无则 null、**被拒的回合从不自称在跑**、以及「一条回合结束时不得抹掉另一条还在跑的回合那一行」）。
 - `ask-glue.test.mjs` — 会话连续性 glue：`continue` 是否 replay 正确 session、省略 `continue` 是否开新线、显式 `session_id` 是否优先、**失败回合是否不覆盖已记录会话**、working_dir 是否分键、尾斜杠是否折叠，以及 `session_key_prefix` 的 profile 自动探测/显式覆盖；外加 `reset_session`（清掉陈旧会话）、reply 截断标记，以及**缺目录时的拒绝**（无目录在碰 daemon 前就拒、门与 `approval_mode` 无关——非 bypass 一样被拒、`allow_unattended` 是唯一的知情通道、配置目录与宿主会话 cwd 都能自行补齐、被拒的调用照样计入面板的 err）。

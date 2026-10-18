@@ -172,8 +172,9 @@ report: { "findings": [], "text": "The `version` field in package.json is `0.4.0
 
 **现在的行为**：`composeReviewMessage` 把「选哪段 diff」（`pr` / `diff_text` / `base` / `staged` /
 不传 = 工作区）翻成一句给 AtomCode 的指令，AtomCode 自己在那个工作目录里跑 `git diff` 并读代码，
-报告写回来。两个熔断（`review_max_rounds`、`review_max_duration_secs`）**保留**，现在管的是
-这一回合本身，而不是一个 spawn 出去的进程。`working_dir` 缺省取会话 cwd，取不到就**拒绝**而不是
+报告写回来。评审回合现在跟随 `ask_max_rounds`（与 `atomcode_ask` 同一套熔断）：曾经的
+`review_max_rounds` / `review_max_duration_secs` 两个字段只被解析进快照、没有任何调用点读，
+已随字段一起移除（docs/DECISIONS.md）。`working_dir` 缺省取会话 cwd，取不到就**拒绝**而不是
 回落到宿主进程的 cwd——那条纪律没变。
 
 daemon 侧（`atomcode_ask`）从头到尾不受此影响——它走 account 解析，默认模型直接可用。

@@ -139,15 +139,16 @@
         # desktop) that share one state_path. Empty = auto-detect from
         # $DSH_PROFILE / argv. Set explicitly when running a custom profile.
         session_key_prefix: ''
-        # A review turn's two fuses: the same round cap and wall-clock cap an ask
-        # turn gets, applied to the daemon turn a review now is.
-        # 0 = 不设轮数熔断（与 ask_max_rounds: 0 同义）：桥接层不再计数 tool_start，
-        # 交回 daemon 自己的治理。墙钟 review_max_duration_secs 仍然生效。
+        # A review turn has no fuses of its own: `/atomcode-review` runs through
+        # the same runAsk as `atomcode_ask`, so it answers to `ask_max_rounds`
+        # above (and the per-call `max_rounds` / `timeout_secs` arguments).
+        # The two fields that used to live here (`review_max_rounds`,
+        # `review_max_duration_secs`) were parsed into the snapshot and read by
+        # nothing once a review became an ask turn — removed rather than kept as
+        # knobs that look live and change nothing.
         # The `review_no_web` knob died with the CLI path: web search was a CLI
         # flag (`--no-web`), and a daemon turn's tool set is the daemon's own
         # business — the plugin has no lever on it.
-        review_max_rounds: 35
-        review_max_duration_secs: 900
         # Whether a review entry point fills in its own standard brief when the
         # user leaves the composer text / `task` argument empty. Three values:
         #   always     — the brief is sent on every review; non-empty user text

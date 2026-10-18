@@ -2,7 +2,7 @@
  * knob-clamps.test.mjs — a knob whose limit lives in a description has no
  * limit.
  *
- * Three wall-clock/round knobs promised caps in prose while the code passed
+ * Three wall-clock/round knobs once promised caps in prose while the code passed
  * any magnitude through:
  *
  *   - `timeout_secs: 1e9` became a 1e12 ms wire budget, cut only by the host's
@@ -13,6 +13,11 @@
  *     quota;
  *   - `max_duration_secs` above ~1740 pushed the process backstop past the
  *     host guard, so the fuse failed INVISIBLE instead of long.
+ *
+ * Two remain. The third went away with the knob that carried it: a review is an
+ * ask turn now, `review_max_duration_secs` was parsed but read by nothing, and
+ * it was removed rather than kept as a knob that looks live and changes nothing
+ * (docs/DECISIONS.md).
  *
  * The clamps now live in code, next to the defaults they bound, so these tests
  * pin the policy itself: `0` stays the deliberate "no fuse" WORD and is never
@@ -32,10 +37,8 @@ import {
   HOST_TOOL_TIMEOUT_MS,
   HOST_TOOL_TIMEOUT_SECS,
   MAX_ROUNDS_CEILING,
-  MAX_REVIEW_DURATION_SECS,
   clampMaxRounds,
   resolveMaxRounds,
-  resolveDurationSecs,
 } from '../lib/config.js';
 import { readDaemonIdentity } from '../lib/daemon.js';
 
@@ -76,36 +79,14 @@ describe('the round-count clamp — a fuse cannot be switched off by inflating t
 
   it('the ceiling is far past any legitimate turn, and named', () => {
     assert.equal(MAX_ROUNDS_CEILING, 1000);
-    assert.ok(MAX_ROUNDS_CEILING > 35, 'the review default must sit well under the ceiling');
+    assert.ok(MAX_ROUNDS_CEILING > 25, 'the ask default must sit well under the ceiling');
   });
 });
 
-describe('the wall-clock clamps — the fuse this plugin owns stays the binding one', () => {
-  it('the host timeout is one number, in both units', () => {
+describe('the host timeout — the one wall-clock number left', () => {
+  it('is one number, in both units', () => {
     assert.equal(HOST_TOOL_TIMEOUT_MS, 30 * 60 * 1000);
     assert.equal(HOST_TOOL_TIMEOUT_SECS, 1800);
-  });
-
-  it('review’s duration ceiling leaves room for the +60s process backstop', () => {
-    assert.equal(MAX_REVIEW_DURATION_SECS, HOST_TOOL_TIMEOUT_SECS - 60);
-    assert.equal(MAX_REVIEW_DURATION_SECS, 1740);
-  });
-
-  it('a real duration is honoured', () => {
-    assert.equal(resolveDurationSecs(900, 900, MAX_REVIEW_DURATION_SECS), 900);
-    assert.equal(resolveDurationSecs(1740, 900, MAX_REVIEW_DURATION_SECS), 1740, 'the ceiling itself is legal');
-    assert.equal(resolveDurationSecs(120.5, 900, MAX_REVIEW_DURATION_SECS), 120, 'fractional floors');
-  });
-
-  it('an inflated duration is clamped so the fuse does not fail invisible', () => {
-    assert.equal(resolveDurationSecs(1e9, 900, MAX_REVIEW_DURATION_SECS), MAX_REVIEW_DURATION_SECS);
-    assert.equal(resolveDurationSecs(undefined, 1e9, MAX_REVIEW_DURATION_SECS), MAX_REVIEW_DURATION_SECS);
-  });
-
-  it('0 and garbage fall back — "no fuse" is not a word on this knob', () => {
-    assert.equal(resolveDurationSecs(0, 900, MAX_REVIEW_DURATION_SECS), 900);
-    assert.equal(resolveDurationSecs(-30, 900, MAX_REVIEW_DURATION_SECS), 900);
-    assert.equal(resolveDurationSecs('soon', 900, MAX_REVIEW_DURATION_SECS), 900);
   });
 });
 
