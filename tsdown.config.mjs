@@ -56,6 +56,11 @@ export default defineConfig([
       sessions: "src/host/sessions.ts",
       "provider-store": "src/host/provider-store.ts",
       "panel-settings-store": "src/host/panel-settings-store.ts",
+      // Durable side of the panel's 工具调用统计 card. Its own entry so
+      // `stats-route`/`wiring` suites can reach `lib/usage-store.js` directly
+      // rather than through `runtime.js` (the same seam-splitting rule as the
+      // apply()-split entries below).
+      "usage-store": "src/host/usage-store.ts",
       // apply()-split of the former God module: each concern is its own entry so
       // `lib/` stays "one artifact per source module" and a reader can find a
       // concern by its file name. These are NEW entries — nothing that already

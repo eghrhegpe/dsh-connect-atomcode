@@ -236,6 +236,9 @@ export async function runAsk(
     stats.ask.calls += 1;
     stats.ask.err += 1;
     stats.ask.msTotal += Date.now() - t0;
+    // A refused turn is still a call (and a failure) — persist it, or the
+    // panel's 累计 undercounts the times the tool refused to run.
+    runtime.persistAskUsage();
     return empty(
       'atomcode_ask 拒绝了本回合：取不到 working_dir，而 daemon 无人值守自动放行（[headless] auto-approved——对任何 approval_mode 都成立），AtomCode 的工具会跑在它自己的 cwd（通常是用户 home）里——' +
         '这正是本插件对取不到目录的调用一直直接拒绝的那个情况（红线 8）。三种走法：' +
@@ -281,6 +284,7 @@ export async function runAsk(
   if (!(await ensureDaemon(exec?.signal))) {
     stats.ask.err += 1;
     stats.ask.msTotal += Date.now() - t0;
+    runtime.persistAskUsage();
     // Cancel-during-startup is not a daemon outage; say which it was.
     return empty(
       exec?.signal?.aborted

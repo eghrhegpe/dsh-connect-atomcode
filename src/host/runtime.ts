@@ -43,6 +43,8 @@ import {
 import { createSessionStore } from './sessions.ts';
 import { createProviderStore } from './provider-store.ts';
 import { createPanelSettingsStore } from './panel-settings-store.ts';
+import { createUsageStore } from './usage-store.ts';
+import type { AskUsageCounters } from './usage-store.ts';
 import { buildQuotaReport } from './quota.ts';
 import {
   APPROVAL_MODES_TEXT,
@@ -105,6 +107,24 @@ export function createRuntime({
   // one `state_path` knob governs all three files. Read PER CALL so a pick made
   // in the panel applies to the very next turn — no host restart.
   const panelSettingsStore = createPanelSettingsStore(join(dirname(statePath), 'panel-settings.json'));
+
+  // The durable side of the panel's 工具调用统计 card, in the SAME directory so
+  // one `state_path` knob governs all four files. The counters are seeded into
+  // the bag at mount (so 累计 reads across restarts) and written back after each
+  // ask turn. A bad file costs only the count, never a turn, so the store is
+  // total and any degradation is NAMED here (红线 3) rather than swallowed.
+  const usageStore = createUsageStore(join(dirname(statePath), 'usage.json'), (error) => {
+    log(`用量累计已降级（本轮回复不受影响）：${error}`);
+  });
+  const persistedAsk: AskUsageCounters = usageStore.read();
+  /** Snapshot the live counters for the store (inFlight is host-only, never written). */
+  const snapshotAskUsage = (): AskUsageCounters => ({
+    calls: stats.ask.calls,
+    ok: stats.ask.ok,
+    err: stats.ask.err,
+    msTotal: stats.ask.msTotal,
+    tokens: stats.ask.tokens,
+  });
   /**
    * The panel settings store is total by design (never throws). A throw means the
    * state dir was swapped mid-run; it degrades to "no panel override" AND names
@@ -274,6 +294,7 @@ export function createRuntime({
       askMaxRounds: DEFAULT_ASK_MAX_ROUNDS,
       reviewBriefMode: DEFAULT_REVIEW_BRIEF_MODE,
     },
+    persistedAsk,
   });
 
   // `approval_mode` is a closed enum the daemon 422s on, so `readConfig` refuses
@@ -646,6 +667,19 @@ export function createRuntime({
     refreshPanelState,
     refreshModelCatalog,
     setReasoningEffort: (effort: string) => setReasoningEffort({ port, effort }),
+    /**
+     * Write the ask counters back to `usage.json`. Called after each ask turn
+     * (success, refusal and daemon-down alike — a refused turn is still a call).
+     * Best-effort: a write failure must not fail a turn that already finished,
+     * so it is logged and the in-memory count stands.
+     */
+    persistAskUsage: () => {
+      try {
+        usageStore.write(snapshotAskUsage());
+      } catch (error: any) {
+        log(`用量累计写盘失败（内存计数仍生效）：${String(error && error.message ? error.message : error)}`);
+      }
+    },
     listSessions: () => listSessions(port),
   };
 }

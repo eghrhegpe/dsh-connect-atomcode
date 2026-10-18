@@ -103,6 +103,8 @@ src/host/panel-settings-store.ts → lib/panel-settings-store.js  面板覆盖 b
 src/host/state-file.ts      → lib/state-file.js      state JSON 文件读写层，被 sessions / provider-store / panel-settings-store 共用
 src/host/stats.ts           → lib/stats.js           buildStatsBody：把 daemon / binary / config / provider / protocol /
                                                        quota / sessions / ask / review 拼成一份 /stats 快照
+src/host/usage-store.ts     → lib/usage-store.js     「工具调用统计」卡的持久半边：ask 五个计数（calls/ok/err/msTotal/tokens）
+                                                       读写 usage.json（挂载时读入 seed，每次 ask 回合后写回，跨重启累计）；inFlight 不上盘
 
 # shared —— 被两半同时读的模块（"这个 base_url 是不是本机端点" / "这份快照的字段契约" 是同一个事实）
 src/shared/loopback.ts      → lib/loopback.js        isLoopbackBaseUrl：判断"这个 base_url 是不是本机端点"（两个 consumer 已随

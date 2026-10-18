@@ -22,6 +22,7 @@
 import type { HealthFailure } from './daemon.ts';
 import type { InFlightTurn, StatsSnapshot } from '../shared/stats.ts';
 import { DAEMON_PROBE_TIMEOUT_MS } from './config.ts';
+import type { AskUsageCounters } from './usage-store.ts';
 
 /** Host-side status endpoint helper (read-only, same-origin). */
 export function writeJson(res: any, status: number, body: unknown, headers?: Record<string, string>) {
@@ -320,6 +321,13 @@ export interface StatsSeed {
   retrySecs: number;
   authored: { approvalMode: boolean; workingDir: boolean; askMaxRounds: boolean; reviewBriefMode: boolean };
   defaults: { approvalMode: string; askMaxRounds: number; reviewBriefMode: string };
+  /**
+   * The ask counters carried over from `usage.json`, so the panel's 累计 reads
+   * across restarts rather than only for this mount. Omitted (or all zeroes)
+   * when there is nothing to carry over — the caller reads the store at mount
+   * and hands its answer here; `createStatsBag` never touches the disk itself.
+   */
+  persistedAsk?: AskUsageCounters;
 }
 
 /**
@@ -376,7 +384,14 @@ export function createStatsBag(seed: StatsSeed): StatsBag {
     defaults: seed.defaults,
     quotaDriftSeen: false,
     protocolUnknownTypes: [],
-    ask: { calls: 0, ok: 0, err: 0, msTotal: 0, tokens: 0, inFlight: null },
+    ask: {
+      calls: seed.persistedAsk?.calls ?? 0,
+      ok: seed.persistedAsk?.ok ?? 0,
+      err: seed.persistedAsk?.err ?? 0,
+      msTotal: seed.persistedAsk?.msTotal ?? 0,
+      tokens: seed.persistedAsk?.tokens ?? 0,
+      inFlight: null,
+    },
     askLive: [],
     review: { calls: 0, ok: 0, err: 0, msTotal: 0 },
   };

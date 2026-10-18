@@ -88,6 +88,10 @@ function sandboxDeps({ defaultWorkingDir = '', reviewBriefMode = 'when-empty', l
       resolveBriefMode: () => ({ mode: reviewBriefMode, source: 'config' }),
       resolveDefaultWorkingDir: () => '',
       ensureDaemon: async () => {},
+      // Added with the durable 工具调用统计 card: runAsk persists the counters
+      // after every ask turn (including refusals). A stub that omits it makes the
+      // refusal path throw instead of returning its message.
+      persistAskUsage: () => {},
     },
     log: log ?? (() => {}),
   };
