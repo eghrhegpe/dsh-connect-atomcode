@@ -47,6 +47,12 @@ import { createMessageAsk } from './message-ask.ts';
 // `react` from the web boot's seed table.
 type LoaderRequire = (id: string) => any;
 
+// Reasoning-effort is the only panel control the user asked "why can't I change
+// it" about: the write route has existed since the first version but nothing in
+// the client ever POSTed to it, so the old "力度: low / high（当前 high）" line
+// read as a control the user could not use.
+const EFFORT_TITLE = '推理力度：模型每轮思考的深度。low 更快更省额度、high 更深入。选一个会让 daemon 记下来，之后的咨询默认用它；也可以在某一次咨询时临时传 reasoning_effort 覆盖';
+
 const REGISTRATION = {
   // MUST equal this package's name verbatim: the Host keys client-module
   // factories by package name and resolves the row as `factories.has(id)`.
@@ -282,6 +288,32 @@ const REGISTRATION = {
       }
     }
 
+    const REASONING_EFFORT_PATH = '/api/atomcode-bridge/reasoning-effort';
+    /**
+     * Write the persistent reasoning-effort to the daemon (panel-side control).
+     * The route forwards to the daemon's /live/reasoning_effort, which answers
+     * `{ok:true}` on success or `{ok:false,error:"reasoning_effort not supported
+     * by <provider>"}` when the level is not in the model's effort_levels.
+     */
+    async function postReasoningEffort(effort: string) {
+      try {
+        const response = await fetch(REASONING_EFFORT_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ effort }),
+        });
+        let parsed: any = null;
+        try {
+          parsed = await response.json();
+        } catch {
+          parsed = null;
+        }
+        if (parsed && parsed.ok === true) return { ok: true as const };
+        return { ok: false as const, error: (parsed && parsed.error) || 'HTTP ' + response.status };
+      } catch (reason: any) {
+        return { ok: false as const, error: reason && reason.message ? reason.message : String(reason) };
+      }
+    }
 
     /**
      * The interactive provider control: a dropdown over the ONE model ladder.
@@ -311,6 +343,31 @@ const REGISTRATION = {
       const model = providerSelectModel(provider, fallbackLabel);
       const [note, setNote] = useState('');
       const [pending, setPending] = useState(false);
+      // Reasoning-effort write state — separate from `note` so a provider-write
+      // failure cannot overwrite an effort-write failure (and vice versa).
+      const [effortPending, setEffortPending] = useState(false);
+      const [effortError, setEffortError] = useState('');
+      const effortLevels = model.effortLevels && model.effortLevels.length > 0 ? model.effortLevels : [];
+      const currentEffort = typeof model.currentEffort === 'string' ? model.currentEffort : '';
+      // The daemon's /live/reasoning_effort only SETS a level; there is no
+      // "clear" verb. So when the current value is unknown (null — the daemon
+      // has not been told, or the provider was just switched) we show a
+      // disabled placeholder instead of fabricating a level the model is not on.
+      const effortHasCurrent = effortLevels.indexOf(currentEffort) >= 0;
+      const effortValue = effortHasCurrent ? currentEffort : '';
+      const onEffortChange = async (event: any) => {
+        const value = event && event.target ? event.target.value : '';
+        if (value === '' || value === currentEffort) return; // no-op / placeholder
+        setEffortPending(true);
+        setEffortError('');
+        const result = await postReasoningEffort(value);
+        setEffortPending(false);
+        if (!result.ok) {
+          setEffortError('保存失败：' + result.error);
+          return;
+        }
+        if (typeof reload === 'function') void reload();
+      };
       const onChange = async (event: any) => {
         const value = event && event.target ? event.target.value : '';
         setPending(true);
@@ -375,19 +432,44 @@ const REGISTRATION = {
         trouble ? h('span', { style: S.valWarn, title: trouble }, trouble) : null,
         advisory ? h('span', { style: S.valWarn, title: advisory }, advisory) : null,
         note ? h('span', { style: S.valIdle }, note) : null,
-        // Show the effort levels for the selected model, if any. This is the
-        // only place the user learns which reasoning-effort values are legal
-        // before firing a turn — the daemon's /models is the source of truth.
-        model.effortLevels && model.effortLevels.length > 0
+        // The effort control: a dropdown over the SELECTED model's legal levels.
+        // This replaces the old read-only "力度: low / high（当前 high）" line.
+        // It stays a separate row from the model dropdown because the levels are
+        // a property of the pick above it — merging them would read as "the pick
+        // controls the depth", when in fact the model controls the levels and
+        // this control sets the daemon's persistent one.
+        effortLevels.length > 0
           ? h(
-              'span',
-              {
-                style: S.valIdle,
-                title: '本模型支持的推理力度（per-turn 传参 reasoning_effort 取这些值；留空 = 用当前持久值）',
-              },
-              '力度: ' +
-                model.effortLevels.join(' / ') +
-                (model.currentEffort ? '（当前 ' + model.currentEffort + '）' : ''),
+              'div',
+              { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+              h(
+                'div',
+                { style: S.provFieldRow },
+                h('span', { style: S.provLabel, title: EFFORT_TITLE }, '推理力度'),
+                h(
+                  'select',
+                  {
+                    style: { ...(effortPending ? { ...S.select, ...S.selectOff } : S.select), flex: '1 1 auto', minWidth: 0 },
+                    value: effortValue,
+                    disabled: effortPending,
+                    onChange: onEffortChange,
+                    title: EFFORT_TITLE,
+                    'aria-label': '推理力度',
+                  },
+                  effortLevels
+                    .map((level) => h('option', { key: 'effort-' + level, value: level }, level))
+                    // The daemon's /live/reasoning_effort has no "clear" verb, so
+                    // when the current value is unknown (never set, or the
+                    // provider was just switched) we show a disabled placeholder
+                    // rather than fabricate a level the model is not on.
+                    .concat(
+                      effortHasCurrent
+                        ? []
+                        : [h('option', { key: 'effort-unset', value: '', disabled: true }, '未设置')]
+                    )
+                )
+              ),
+              effortError ? h('span', { style: S.valWarn }, effortError) : null
             )
           : null
       );

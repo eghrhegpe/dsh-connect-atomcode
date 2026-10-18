@@ -1573,6 +1573,7 @@
 
 //#endregion
 //#region src/client/index.ts
+	const EFFORT_TITLE = "推理力度：模型每轮思考的深度。low 更快更省额度、high 更深入。选一个会让 daemon 记下来，之后的咨询默认用它；也可以在某一次咨询时临时传 reasoning_effort 覆盖";
 	const REGISTRATION = {
 		id: "dsh-connect-atomcode",
 		factory: function(require) {
@@ -1779,6 +1780,38 @@
 					};
 				}
 			}
+			const REASONING_EFFORT_PATH = "/api/atomcode-bridge/reasoning-effort";
+			/**
+			* Write the persistent reasoning-effort to the daemon (panel-side control).
+			* The route forwards to the daemon's /live/reasoning_effort, which answers
+			* `{ok:true}` on success or `{ok:false,error:"reasoning_effort not supported
+			* by <provider>"}` when the level is not in the model's effort_levels.
+			*/
+			async function postReasoningEffort(effort) {
+				try {
+					const response = await fetch(REASONING_EFFORT_PATH, {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ effort })
+					});
+					let parsed = null;
+					try {
+						parsed = await response.json();
+					} catch {
+						parsed = null;
+					}
+					if (parsed && parsed.ok === true) return { ok: true };
+					return {
+						ok: false,
+						error: parsed && parsed.error || "HTTP " + response.status
+					};
+				} catch (reason) {
+					return {
+						ok: false,
+						error: reason && reason.message ? reason.message : String(reason)
+					};
+				}
+			}
 			/**
 			* The interactive provider control: a dropdown over the ONE model ladder.
 			*
@@ -1795,6 +1828,25 @@
 				const model = providerSelectModel(provider, fallbackLabel);
 				const [note, setNote] = useState("");
 				const [pending, setPending] = useState(false);
+				const [effortPending, setEffortPending] = useState(false);
+				const [effortError, setEffortError] = useState("");
+				const effortLevels = model.effortLevels && model.effortLevels.length > 0 ? model.effortLevels : [];
+				const currentEffort = typeof model.currentEffort === "string" ? model.currentEffort : "";
+				const effortHasCurrent = effortLevels.indexOf(currentEffort) >= 0;
+				const effortValue = effortHasCurrent ? currentEffort : "";
+				const onEffortChange = async (event) => {
+					const value = event && event.target ? event.target.value : "";
+					if (value === "" || value === currentEffort) return;
+					setEffortPending(true);
+					setEffortError("");
+					const result = await postReasoningEffort(value);
+					setEffortPending(false);
+					if (!result.ok) {
+						setEffortError("保存失败：" + result.error);
+						return;
+					}
+					if (typeof reload === "function") reload();
+				};
 				const onChange = async (event) => {
 					const value = event && event.target ? event.target.value : "";
 					setPending(true);
@@ -1838,10 +1890,35 @@
 				}, trouble) : null, advisory ? h("span", {
 					style: S.valWarn,
 					title: advisory
-				}, advisory) : null, note ? h("span", { style: S.valIdle }, note) : null, model.effortLevels && model.effortLevels.length > 0 ? h("span", {
-					style: S.valIdle,
-					title: "本模型支持的推理力度（per-turn 传参 reasoning_effort 取这些值；留空 = 用当前持久值）"
-				}, "力度: " + model.effortLevels.join(" / ") + (model.currentEffort ? "（当前 " + model.currentEffort + "）" : "")) : null);
+				}, advisory) : null, note ? h("span", { style: S.valIdle }, note) : null, effortLevels.length > 0 ? h("div", { style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: 4
+				} }, h("div", { style: S.provFieldRow }, h("span", {
+					style: S.provLabel,
+					title: EFFORT_TITLE
+				}, "推理力度"), h("select", {
+					style: {
+						...effortPending ? {
+							...S.select,
+							...S.selectOff
+						} : S.select,
+						flex: "1 1 auto",
+						minWidth: 0
+					},
+					value: effortValue,
+					disabled: effortPending,
+					onChange: onEffortChange,
+					title: EFFORT_TITLE,
+					"aria-label": "推理力度"
+				}, effortLevels.map((level) => h("option", {
+					key: "effort-" + level,
+					value: level
+				}, level)).concat(effortHasCurrent ? [] : [h("option", {
+					key: "effort-unset",
+					value: "",
+					disabled: true
+				}, "未设置")]))), effortError ? h("span", { style: S.valWarn }, effortError) : null) : null);
 			}
 			/**
 			* The panel-settings controls: a brief-mode dropdown and a working-dir input.
