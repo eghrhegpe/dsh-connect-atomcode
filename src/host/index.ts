@@ -34,7 +34,7 @@ import { mountReviewCommand } from './command.ts';
  * to the client.
  */
 const PLUGIN = {
-  version: '0.4.4',
+  version: '0.5.0',
 } as const;
 
 export const name = 'atomcode-bridge';
