@@ -14,11 +14,9 @@
 
 1. **装上**：`dsh plugin add dsh-connect-atomcode` → **重启 DSH 进程**（patch 在启动时读取；只改前端时刷新浏览器即可）。其余装法与前置见 [安装](#安装)。
 2. **用上**：对话里说一句「用 atomcode_ask 锐评一下当前代码」，主模型自己组织提问；不想让主模型插手时，按每条回复下方的**「锐评」按钮**，或直接打 `/atomcode-review <评审目标>`。
-3. **看额度**：输入框下方的 `atom · 3d / 共 7d 0%` 标签就是 CodingPlan 窗口用量，点开是详情。为什么是这个数字见 [📊 CodingPlan 额度显示](#-codingplan-额度显示)。
+3. **看额度**：输入框下方的 `atom · 4% · 48m50s 后重置` 标签（下面截图里那个）就是 CodingPlan 窗口用量与重置倒计时，点开是详情。为什么是这个数字见 [📊 CodingPlan 额度显示](#-codingplan-额度显示)。
 
-![对话中的 atomcode_ask 回合 + 输入框下 CodingPlan 额度弹窗与紧凑标签（`atom · 3d / 共 7d 0%`）](assets/atomcode-ask.png)
-
-> 截图拍于标签改版之前，dock 上的文字以本页为准。
+![在对话里打 `/atomcode-review`：命令发出后由宿主侧直接执行，评审结论以一张卡片投递回会话（这一步不花模型回合），主模型据此接着原任务往下走；右下角是输入框下的 CodingPlan 额度弹窗与紧凑标签](assets/atomcode-review.png)
 
 **先知道三条，省得装完才发现**：
 
@@ -76,6 +74,8 @@ bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行
 
 **字段语义的真源是 [`cordis.patch.yml`](cordis.patch.yml)**——每个字段的完整注释（含为什么是这个默认值）都在那里，本表只回答「叫什么 / 默认 / 干什么」。面板**不提供输入框**的字段（`approval_mode`、`default_reasoning_effort`、`working_dir`、`ask_max_rounds`）只能在 patch 里改；详情页的「回合边界」行会标出这是插件默认还是**你改过**（判断来自 host 的 `config.authored`，不是值比较）。
 
+![详情页「运行统计」卡片：启动情况、运行环境（默认档位 + 推理力度）、回合边界。下拉里写 `不覆盖（用配置 …）` 的一行表示这一项没有面板值、正落在 patch 的 `config:` 上；一旦在面板上选过，那行才换成你的选择](assets/atomcode-setting.png)
+
 | 键 | 默认 | 一句说明 |
 |---|---|---|
 | `port` | `13459` | ask 用的 daemon 端口（刻意避开 AtomCode TUI 的 13456） |
@@ -125,7 +125,7 @@ AtomCode 5.x 在这条路上的 "provider" **就是模型档位名**，不是厂
 
 ## 📊 CodingPlan 额度显示
 
-详情页面板显示当前 CodingPlan 的**套餐 / 到期 / 滚动窗口用量百分比 / 重置时间与倒计时**；输入框下方 dock 行的紧凑标签 `atom · 19% · 2h41m 后重置` 同源（窗口用量 + 还有多久重置，不是套餐周期），点击弹出小面板。
+详情页面板显示当前 CodingPlan 的**套餐 / 到期 / 滚动窗口用量百分比 / 重置时间与倒计时**；输入框下方 dock 行的紧凑标签 `atom · 4% · 48m50s 后重置` 同源（窗口用量 + 还有多久重置，不是套餐周期），点击弹出小面板。
 
 - **只有窗口用尽（100%）才变错误色**，其余正常色，不制造假警报
 - **额度未知时渲染 `null`**：daemon 停了不在输入框留永久错误徽标（原因仍在详情页）；槽位不存在（无 composer 的宿主）静默降级
