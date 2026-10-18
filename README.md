@@ -16,7 +16,7 @@
 2. **用上**：对话里说一句「用 atomcode_ask 锐评一下当前代码」，主模型自己组织提问；不想让主模型插手时，按每条回复下方的**「锐评」按钮**，或直接打 `/atomcode-review <评审目标>`。
 3. **看额度**：输入框下方的 `atom · 4% · 48m50s 后重置` 标签（下面截图里那个）就是 CodingPlan 窗口用量与重置倒计时，点开是详情。为什么是这个数字见 [📊 CodingPlan 额度显示](#-codingplan-额度显示)。
 
-![在对话里打 `/atomcode-review`：命令发出后由宿主侧直接执行，评审结论以一张卡片投递回会话（这一步不花模型回合），主模型据此接着原任务往下走；右下角是输入框下的 CodingPlan 额度弹窗与紧凑标签](assets/atomcode-review.png)
+![在对话里打 `/atomcode-review`：命令发出后由宿主侧直接执行，评审结论以一张卡片投递回会话（这一步不花模型回合），主模型据此接着原任务往下走；右下角是输入框下的 CodingPlan 额度弹窗与紧凑标签](https://raw.githubusercontent.com/eghrhegpe/dsh-connect-atomcode/master/assets/atomcode-review.png)
 
 **先知道三条，省得装完才发现**：
 
@@ -68,13 +68,13 @@ bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行
 
 > 本插件收录于社区精选列表 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（`dsh plugin add` 一键安装的 DSH 插件目录）。
 >
-> **npm 副本只含运行所需的那几样**（`files` 白名单：`lib/`、`client.js`、`icon.svg`、`locale/`、`cordis.patch.yml`、`README.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`）——`docs/`、`AGENTS.md`、`assets/` 都不在包里。所以 registry 页上看不到截图，文内指向 `docs/` 的相对链接也只在 GitHub 仓库里有效；市场读的截图在仓库根 `assets/` 与 `screenshots.json`。
+> **npm 副本只含运行所需的那几样**（`files` 白名单：`lib/`、`client.js`、`icon.svg`、`locale/`、`cordis.patch.yml`、`README.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`）——`docs/`、`AGENTS.md`、`assets/` 都不在包里，所以文内指向 `docs/` 的相对链接只在 GitHub 仓库里有效。**两张截图走 `raw.githubusercontent.com` 的绝对地址**，因此 registry 页上也能看到；市场读的截图仍取仓库根 `assets/` 与 `screenshots.json`（截图**不进包**是既有策略，`test/release-artifacts.test.mjs` 钉着它）。
 
 ## 配置（patch 行 `config:`）
 
 **字段语义的真源是 [`cordis.patch.yml`](cordis.patch.yml)**——每个字段的完整注释（含为什么是这个默认值）都在那里，本表只回答「叫什么 / 默认 / 干什么」。面板**不提供输入框**的字段（`approval_mode`、`default_reasoning_effort`、`working_dir`、`ask_max_rounds`）只能在 patch 里改；详情页的「回合边界」行会标出这是插件默认还是**你改过**（判断来自 host 的 `config.authored`，不是值比较）。
 
-![详情页「运行统计」卡片：启动情况、运行环境（默认档位 + 推理力度）、回合边界。下拉里写 `不覆盖（用配置 …）` 的一行表示这一项没有面板值、正落在 patch 的 `config:` 上；一旦在面板上选过，那行才换成你的选择](assets/atomcode-setting.png)
+![详情页「运行统计」卡片：启动情况、运行环境（默认档位 + 推理力度）、回合边界。下拉里写 `不覆盖（用配置 …）` 的一行表示这一项没有面板值、正落在 patch 的 `config:` 上；一旦在面板上选过，那行才换成你的选择](https://raw.githubusercontent.com/eghrhegpe/dsh-connect-atomcode/master/assets/atomcode-setting.png)
 
 | 键 | 默认 | 一句说明 |
 |---|---|---|

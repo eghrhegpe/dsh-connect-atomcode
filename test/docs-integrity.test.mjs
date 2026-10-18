@@ -111,6 +111,34 @@ function brokenLinks(doc, text) {
   return broken;
 }
 
+/**
+ * Screenshot refs (`![alt](target)`). These are NOT ordinary relative links:
+ * `assets/` is deliberately kept OUT of `package.json`'s `files` whitelist
+ * (see `test/release-artifacts.test.mjs`), so a relative `assets/…` target renders
+ * on GitHub and then goes missing on the registry page. The rule is therefore
+ * "absolute raw address, and the file must exist here anyway" — the absolute form
+ * keeps the typo net that leaving `brokenLinks()` would otherwise lose.
+ */
+const RAW_PREFIX = 'https://raw.githubusercontent.com/eghrhegpe/dsh-connect-atomcode/master/';
+
+function screenshotRefs(doc, text) {
+  const problems = [];
+  for (const m of text.matchAll(/!\[[^\]]*\]\(([^)\s]+)/g)) {
+    const raw = m[1];
+    if (!/^https?:/.test(raw)) {
+      const rel = raw.split('#')[0].split('?')[0];
+      problems.push(
+        `${doc}: 截图用了相对路径 ${raw}——assets/ 不进 npm 包（release-artifacts 钉着这条策略），registry 页上会裂；改成 ${RAW_PREFIX}${rel}`,
+      );
+      continue;
+    }
+    if (!raw.startsWith(RAW_PREFIX)) continue; // shields.io 之类的站外图
+    const rel = raw.slice(RAW_PREFIX.length).split('#')[0].split('?')[0];
+    if (!existsSync(resolve(join(ROOT, rel)))) problems.push(`${doc}: ${raw} 指向的 ${rel} 在本仓库里不存在`);
+  }
+  return problems;
+}
+
 /** Documents that spell out a mutable count ("N 条红线"). */
 function redLineCounts(doc, text) {
   const line = text.split(/\r?\n/).findIndex((l) => /\d+\s*条红线/.test(l));
@@ -142,6 +170,17 @@ describe('docs 引用完整性 — 相对链接必须落地', () => {
   it('每个 `](相对路径)` 指向真实存在的文件', () => {
     const broken = DOCS.flatMap((doc) => brokenLinks(doc, withoutFences(read(doc))));
     assert.deepStrictEqual(broken, [], '相对链接指向了不存在的文件：\n' + broken.join('\n'));
+  });
+});
+
+describe('docs 引用完整性 — 截图必须是绝对 raw 地址（assets/ 不进 npm 包）', () => {
+  // 四张图里三张是 shields.io 徽章（站外，跳过），只有 README 的两张截图是仓库内的。
+  // 它们曾经写成 `assets/xxx.png`：GitHub 上正常，registry 页上必裂——因为 `files`
+  // 白名单刻意不含 assets/（test/release-artifacts.test.mjs 钉着这条策略）。
+  // 绝对化之后 `brokenLinks()` 不再覆盖它们，所以「路径写错」这张网在这里补回来。
+  it('仓库内的截图要么是 raw 绝对地址、要么就报错，且该文件在仓库里存在', () => {
+    const offenders = DOCS.flatMap((doc) => screenshotRefs(doc, withoutFences(read(doc))));
+    assert.deepStrictEqual(offenders, [], '截图引用不合格：\n' + offenders.join('\n'));
   });
 });
 
@@ -220,6 +259,11 @@ describe('docs 引用完整性 — 扫描器自己活着（扫不到东西 ≠ �
     // 相对链接（从仓库根文档出发）
     assert.equal(brokenLinks('x.md', '](不存在的文件.md)').length, 1);
     assert.equal(brokenLinks('x.md', '](docs/README.md)').length, 0);
+    // 截图（绝对 raw + 路径必须落地）
+    assert.equal(screenshotRefs('README.md', '![a](assets/x.png)').length, 1);
+    assert.equal(screenshotRefs('README.md', `![a](${RAW_PREFIX}assets/atomcode-review.png)`).length, 0);
+    assert.equal(screenshotRefs('README.md', `![a](${RAW_PREFIX}assets/no-such-shot.png)`).length, 1);
+    assert.equal(screenshotRefs('README.md', '![npm](https://img.shields.io/npm/v/x)').length, 0);
     // 会变的计数
     assert.equal(redLineCounts('x.md', '本仓库共 8 条红线').length, 1);
     assert.equal(redLineCounts('x.md', '红线若干条').length, 0);

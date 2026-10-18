@@ -63,7 +63,7 @@
 
 ## 写文档的纪律
 
-这四条来自实际踩过的坑，**改文档时同样适用**（机制层的细则在 [`../AGENTS.md`](../AGENTS.md)）：
+这五条来自实际踩过的坑，**改文档时同样适用**（机制层的细则在 [`../AGENTS.md`](../AGENTS.md)）：
 
 1. **会变的计数不写进文档。** 套件数、test 数、AtomCode 的命令数/选项数，一律给「去哪量」而不是数字。
    套件数写死过一次，**13 分钟**后就被并行会话改过期了。
@@ -73,6 +73,19 @@
    等于把证据变成不可复现的叙述。
 4. **契约注释住在 `src/`。** 产物 `client.js` 会被打包器抹掉函数体内的注释，
    所以「注释也是契约」指的是 `src/client/*.ts` 与 `src/host/*.ts`。
+5. **仓库内的截图写绝对 raw 地址，不写相对路径。** `assets/` 刻意不进 npm 包（`files` 白名单，
+   `test/release-artifacts.test.mjs` 钉着这条策略），所以相对路径只在 GitHub 上渲染得出来、
+   registry 页上必裂：
+
+   ```
+   # 对：两边都渲染得出来
+   ![详情页卡片](https://raw.githubusercontent.com/eghrhegpe/dsh-connect-atomcode/master/assets/x.png)
+
+   # 错：GitHub 正常，registry 页上是裂图
+   ![详情页卡片](./assets/x.png)
+   ```
+
+   `test/docs-integrity.test.mjs` 拦相对路径，也会验证绝对地址指向的文件真的在仓库里（改文件名就一起改）。
 
 ## 代码地图
 
