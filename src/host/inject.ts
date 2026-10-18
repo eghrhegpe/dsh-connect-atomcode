@@ -61,12 +61,39 @@ export const INJECT_TEXT_LIMIT = 200000;
 let createUserMessageCache: { value: ((input: any) => any) | null } | undefined;
 
 /**
+ * A process-wide stand-in for {@link resolveCreateUserMessage}, for tests.
+ *
+ * The real factory is reached through the HOST's module graph, so a test process
+ * has no copy to resolve — a CI checkout of this repo installs nothing but its
+ * devDependencies, and every delivery assertion used to fail there for that
+ * environmental reason alone. The unit tests hand a factory straight to
+ * `deps.createUserMessage`; this override exists for the one path that has no
+ * parameter to pass one through — the mounted `/inject` route, which builds its
+ * own deps. `undefined` restores the real resolution, and production code never
+ * calls the setter.
+ */
+let createUserMessageOverride: ((input: any) => any) | null | undefined;
+
+/**
+ * Install (or clear) the test override above.
+ *
+ * @param factory - the stand-in, `null` for "this host exposes none", or
+ *   `undefined` to resolve the Host's copy again.
+ */
+export function setCreateUserMessageOverride(
+  factory: ((input: any) => any) | null | undefined,
+): void {
+  createUserMessageOverride = factory;
+}
+
+/**
  * Resolve `createUserMessage` from the Host's module graph.
  *
  * @returns the factory, or null when this Host cannot resolve `dsh-llm`. Null is
  *   REPORTED by the caller as a named refusal — never used to skip delivery.
  */
 export function resolveCreateUserMessage(): ((input: any) => any) | null {
+  if (createUserMessageOverride !== undefined) return createUserMessageOverride;
   if (createUserMessageCache !== undefined) return createUserMessageCache.value;
   try {
     // `createRequire` with this file's URL keeps the resolution anchored to the

@@ -24,9 +24,12 @@
  * as a new instruction".
  *
  * The fake agent stands in for `ctx.agents.get()` (or is passed directly, for
- * the continuation); the real `createUserMessage` is resolved through the built
- * artifact, so the message shape under test is the Host's own (an override is
- * passed only where a test needs to force a throw).
+ * the continuation). The message factory is a LOCAL stub: the real one lives in
+ * the Host's module graph (`dsh-llm` is a neverBundle external), so a machine
+ * without a DSH install — CI above all — cannot resolve it, and a delivery
+ * assertion that reached for it failed there for an environmental reason rather
+ * than a code one. Exactly one case still pins the real resolution, and it is
+ * SKIPPED, visibly, where there is no Host to resolve from.
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
@@ -75,6 +78,26 @@ function recordingAgent(status = 'running') {
   return agent;
 }
 
+/**
+ * A stand-in for the Host's `createUserMessage`, minting the identity a delivery
+ * reports back.
+ *
+ * The shape is copied from what the Host's factory RETURNS (`{ id, role,
+ * content, source }`), not from what this module hands it: `role` is the
+ * factory's to stamp, and a stub that merely echoed its input would let a
+ * delivery with no role pass.
+ */
+let stubMessageSeq = 0;
+function stubMessageFactory(input) {
+  stubMessageSeq += 1;
+  return {
+    id: `stub-message-${stubMessageSeq}`,
+    role: 'user',
+    content: input.content,
+    source: input.source,
+  };
+}
+
 describe('composeInjection — the model must be able to tell this apart from the user', () => {
   it('states that the user did not write it, and that it may be wrong', () => {
     const text = composeInjection('这里有个 off-by-one。');
@@ -107,7 +130,7 @@ describe('injectAtomcodeAnswer — the happy path delivers a self-attributed mes
   it('calls inject() on a RUNNING session — attach, never interrupt', () => {
     const agent = recordingAgent('running');
     const outcome = injectAtomcodeAnswer(
-      { agents: registryWith(agent), createUserMessage: resolveCreateUserMessage() },
+      { agents: registryWith(agent), createUserMessage: stubMessageFactory },
       { sessionId: 'session-a', text: '  这段代码有并发问题。  ' },
     );
     assert.equal(outcome.ok, true);
@@ -139,7 +162,7 @@ describe('injectAtomcodeAnswer — the happy path delivers a self-attributed mes
   it('calls steer() on an IDLE session — otherwise the answer parks forever', () => {
     const agent = recordingAgent('idle');
     const outcome = injectAtomcodeAnswer(
-      { agents: registryWith(agent), createUserMessage: resolveCreateUserMessage() },
+      { agents: registryWith(agent), createUserMessage: stubMessageFactory },
       { sessionId: 'session-a', text: '这段回答要进对话。' },
     );
     assert.equal(outcome.ok, true);
@@ -155,7 +178,7 @@ describe('injectAtomcodeAnswer — the happy path delivers a self-attributed mes
     // non-waking method — a delivery that parks beats spurious turns.
     const blind = { calls: [], inject(m) { this.calls.push({ ...m, __method: 'inject' }); } };
     const outcome = injectAtomcodeAnswer(
-      { agents: registryWith(blind), createUserMessage: resolveCreateUserMessage() },
+      { agents: registryWith(blind), createUserMessage: stubMessageFactory },
       { sessionId: 'session-a', text: 'x' },
     );
     assert.equal(outcome.ok, true);
@@ -166,17 +189,21 @@ describe('injectAtomcodeAnswer — the happy path delivers a self-attributed mes
   it('stamps a source the session can attribute to this plugin', () => {
     const agent = recordingAgent();
     injectAtomcodeAnswer(
-      { agents: registryWith(agent), createUserMessage: resolveCreateUserMessage() },
+      { agents: registryWith(agent), createUserMessage: stubMessageFactory },
       { sessionId: 'session-a', text: 'x' },
     );
     assert.equal(agent.calls[0].source.kind, INJECT_SOURCE_KIND);
     assert.notEqual(agent.calls[0].source.kind, 'user');
   });
 
-  it('builds the message with the Host factory, so its identity is a real one', () => {
+  // The id the caller reports must be the id that was actually delivered — a
+  // caller pointing at a message that does not exist is worse than no id at all.
+  // The REAL factory's identity is pinned separately, in the
+  // `resolveCreateUserMessage` block, because it needs a Host install to exist.
+  it('reports the id the factory minted, so the caller can point at the message', () => {
     const agent = recordingAgent();
     const outcome = injectAtomcodeAnswer(
-      { agents: registryWith(agent), createUserMessage: resolveCreateUserMessage() },
+      { agents: registryWith(agent), createUserMessage: stubMessageFactory },
       { sessionId: 'session-a', text: 'x' },
     );
     assert.equal(typeof outcome.messageId, 'string');
@@ -222,7 +249,12 @@ describe('injectAtomcodeAnswer — every refusal is named', () => {
   it('agent-not-live tells the user the session has to be open, and delivers nothing', () => {
     const agent = recordingAgent();
     const outcome = injectAtomcodeAnswer(
-      { agents: registryWith(agent) },
+      // The factory is supplied even though the delivery never gets that far:
+      // without it this case would answer `llm-unavailable` first on a machine
+      // that cannot resolve the Host's copy (the factory check runs before the
+      // registry lookup), and the assertion below would be about the wrong
+      // refusal.
+      { agents: registryWith(agent), createUserMessage: stubMessageFactory },
       { sessionId: 'session-closed', text: 'x' },
     );
     assert.equal(outcome.ok, false);
@@ -262,7 +294,7 @@ describe('injectAtomcodeAnswer — every refusal is named', () => {
       },
     };
     const outcome = injectAtomcodeAnswer(
-      { agents: registryWith(agent), createUserMessage: resolveCreateUserMessage() },
+      { agents: registryWith(agent), createUserMessage: stubMessageFactory },
       { sessionId: 'session-a', text: 'x' },
     );
     assert.equal(outcome.ok, false);
@@ -271,13 +303,40 @@ describe('injectAtomcodeAnswer — every refusal is named', () => {
   });
 });
 
+// Resolved ONCE, at import time, so the two cases below describe one
+// environment instead of racing each other.
+const hostFactory = resolveCreateUserMessage();
+
 describe('resolveCreateUserMessage — the Host copy, or an honest null', () => {
-  it('resolves the DSH factory in this environment', () => {
-    // Not a tautology: `dsh-llm` is a neverBundle external, so this asserts the
-    // artifact does NOT carry a bundled duplicate and that the name resolves.
-    const factory = resolveCreateUserMessage();
-    assert.equal(typeof factory, 'function');
+  it('is the Host factory or an honest null — never a throw', () => {
+    // This is the half that holds in CI: a machine WITH a DSH install resolves a
+    // function here, a machine without one (CI installs this repo's
+    // devDependencies only) gets null — and null is REPORTED as
+    // `llm-unavailable` by both callers, which the refusal cases above pin.
+    assert.ok(
+      hostFactory === null || typeof hostFactory === 'function',
+      `expected the factory or null, got ${typeof hostFactory}`,
+    );
   });
+
+  it(
+    'resolves the DSH factory when this environment has a Host install',
+    // Not a tautology where it runs: `dsh-llm` is a neverBundle external, so
+    // this asserts the artifact does NOT carry a bundled duplicate and that the
+    // name resolves through the Host's own graph. Skipped — visibly, in the CI
+    // log — where there is no Host to resolve from.
+    { skip: hostFactory === null ? 'no @deepseek-ai/dsh-llm to resolve here' : false },
+    () => {
+      assert.equal(typeof hostFactory, 'function');
+      const message = hostFactory({
+        content: [{ type: 'text', text: 'x' }],
+        source: { kind: INJECT_SOURCE_KIND },
+      });
+      assert.equal(typeof message.id, 'string');
+      assert.ok(message.id.length > 0, 'the Host mints the identity the session log understands');
+      assert.equal(message.role, 'user', 'the Host factory is what stamps the role');
+    },
+  );
 
   it('is cached, so a hot path does not re-resolve per delivery', () => {
     assert.equal(resolveCreateUserMessage(), resolveCreateUserMessage());
@@ -339,7 +398,7 @@ describe('injectReviewContinuation — the ONE named turn the refined 红线 all
   it('steers an IDLE session so the turn actually runs', () => {
     const agent = recordingAgent('idle');
     const outcome = injectReviewContinuation(
-      { agent, createUserMessage: resolveCreateUserMessage() },
+      { agent, createUserMessage: stubMessageFactory },
       { reviewReply: '  并发写同一个 map。  ', model: 'AtomGit-glm5.3-flash' },
     );
     assert.equal(outcome.ok, true);
@@ -354,7 +413,7 @@ describe('injectReviewContinuation — the ONE named turn the refined 红线 all
   it('injects (never interrupts) a RUNNING session', () => {
     const agent = recordingAgent('running');
     const outcome = injectReviewContinuation(
-      { agent, createUserMessage: resolveCreateUserMessage() },
+      { agent, createUserMessage: stubMessageFactory },
       { reviewReply: 'x' },
     );
     assert.equal(outcome.ok, true);
@@ -364,7 +423,7 @@ describe('injectReviewContinuation — the ONE named turn the refined 红线 all
   it('forwards the scope label into the delivered body', () => {
     const agent = recordingAgent('idle');
     injectReviewContinuation(
-      { agent, createUserMessage: resolveCreateUserMessage() },
+      { agent, createUserMessage: stubMessageFactory },
       { reviewReply: '第 42 行有个 off-by-one。', scope: '（附加要求：只看 diff）' },
     );
     assert.match(agent.calls[0].content[0].text, /（附加要求：只看 diff）/);
@@ -378,7 +437,7 @@ describe('injectReviewContinuation — the ONE named turn the refined 红线 all
       steer(m) { this.calls.push({ ...m, __method: 'steer' }); },
     };
     const outcome = injectReviewContinuation(
-      { agent, createUserMessage: resolveCreateUserMessage() },
+      { agent, createUserMessage: stubMessageFactory },
       { reviewReply: 'x' },
     );
     assert.equal(outcome.ok, true);
@@ -388,7 +447,7 @@ describe('injectReviewContinuation — the ONE named turn the refined 红线 all
 
   it('names the absent agent instead of throwing', () => {
     const outcome = injectReviewContinuation(
-      { agent: null, createUserMessage: resolveCreateUserMessage() },
+      { agent: null, createUserMessage: stubMessageFactory },
       { reviewReply: 'x' },
     );
     assert.equal(outcome.ok, false);
@@ -398,12 +457,12 @@ describe('injectReviewContinuation — the ONE named turn the refined 红线 all
   it('refuses empty text and oversized text with named codes', () => {
     const agent = recordingAgent('idle');
     const empty = injectReviewContinuation(
-      { agent, createUserMessage: resolveCreateUserMessage() },
+      { agent, createUserMessage: stubMessageFactory },
       { reviewReply: '   ' },
     );
     assert.equal(empty.code, 'text-required');
     const big = injectReviewContinuation(
-      { agent, createUserMessage: resolveCreateUserMessage() },
+      { agent, createUserMessage: stubMessageFactory },
       { reviewReply: 'x'.repeat(INJECT_TEXT_LIMIT + 1) },
     );
     assert.equal(big.code, 'text-too-large');

@@ -24,6 +24,13 @@ const BRIDGE = join(ROOT, 'lib', 'index.js');
 const SESSIONS = join(ROOT, 'lib', 'sessions.js');
 const mod = await import(pathToFileURL(BRIDGE).href);
 const { createSessionStore } = await import(pathToFileURL(SESSIONS).href);
+// The `/inject` route builds its own deps, so the message factory it ends up
+// reaching cannot be handed to it as a parameter — this module's override is
+// that one path's seam. Imported by PATH so it is the very same module instance
+// `lib/routes.js` imports; a second copy would install a stand-in nobody calls
+// (the same trap the host `lib/` shape exists to avoid, see AGENTS.md).
+const INJECT = join(ROOT, 'lib', 'inject.js');
+const { setCreateUserMessageOverride } = await import(pathToFileURL(INJECT).href);
 
 /**
  * A loopback port nothing listens on, so /health fails fast and hermetically.
@@ -1584,6 +1591,28 @@ describe('stats route — a degraded session store is named, not hidden', () => 
 });
 
 describe('inject route — an AtomCode answer reaches the session it came from', () => {
+  /**
+   * A stand-in for the Host's `createUserMessage`, in force for THIS block only.
+   *
+   * The route resolves the Host's copy, which a machine without a DSH install
+   * cannot have — which is every CI runner. Without the stand-in the three
+   * delivery cases below answer `llm-unavailable` and never reach the wire
+   * translation they exist to pin. Installed through the module's own seam, so
+   * the route, the handler and both snake_case translations stay the real ones.
+   */
+  let stubSeq = 0;
+  const stubMessageFactory = (input) => {
+    stubSeq += 1;
+    return {
+      id: `stub-message-${stubSeq}`,
+      role: 'user',
+      content: input.content,
+      source: input.source,
+    };
+  };
+  before(() => setCreateUserMessageOverride(stubMessageFactory));
+  after(() => setCreateUserMessageOverride(undefined));
+
   /** A registry holding one live agent, recording what was injected. */
   function stubAgents(hooks = {}) {
     const calls = [];
