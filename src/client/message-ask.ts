@@ -41,6 +41,14 @@ import { MESSAGE_ACTION_STYLE } from './styles.ts';
 export interface MessageAskDeps {
   h: (type: any, props?: any, ...children: any[]) => ReactElement;
   /**
+   * Holds the inline "指令没插入" note after a failed prefill. OPTIONAL on
+   * purpose: the button's job — pre-filling `/atomcode-review` — does not need
+   * it, and every other hook here is injected at the factory. When it is absent
+   * the note is dropped and the failure stays on the console (`review-handoff.ts`),
+   * exactly as before this note existed.
+   */
+  useState?: <T>(initial: T) => [T, (value: T | ((prev: T) => T)) => void];
+  /**
    * Pre-fill `/atomcode-review` with this message's prose.
    *
    * Returns false when the composer could not take the text (no rail, draft
@@ -65,9 +73,20 @@ export interface MessageAskDeps {
  * case, so this is a belt-and-braces guard, not a normal path).
  */
 export function createMessageAsk(deps: MessageAskDeps) {
-  const { h, requestReview } = deps;
+  const { h, useState, requestReview } = deps;
 
   function MessageAsk(props: any) {
+    // Hook order matters and both hooks sit ABOVE the `messageId` guard (see the
+    // note on the `useChat` call below): a hook after an early return is a
+    // conditional hook, and React would throw once `messageId` started arriving
+    // late. `note` is what a failed prefill looks like to the human who just
+    // clicked — the console line `review-handoff.ts` writes is invisible next to
+    // a button that visibly did nothing, so it is echoed here instead. The
+    // fallback arms the branch with a no-op pair when the factory did not hand
+    // `useState` over; the hook count stays constant either way (it only depends
+    // on whether `useState` exists, which never changes for one component).
+    const [note, setNote] =
+      typeof useState === 'function' ? useState('') : ['', () => {}];
     const messageId = props && props.messageId;
     // The hook runs before the `messageId` guard, on purpose. A hook called
     // AFTER an early return is a conditional hook: if `messageId` ever arrived
@@ -101,12 +120,17 @@ export function createMessageAsk(deps: MessageAskDeps) {
         text = null;
       }
       if (text === null) consoleWarning(messageId, snapshot);
-      requestReview({ text });
+      const ok = requestReview({ text });
+      // `false` means the composer could not take the text: the rail was not
+      // mounted, or the draft moved underneath us. The prefill did NOT land, so
+      // leaving the row silent would read as a broken button; name it here.
+      if (ok) setNote('');
+      else setNote('指令没插入：请在输入框手动输入 /atomcode-review，再按回车。');
     };
     // The guard sits BELOW the hook (see above); the row is simply empty without
     // an id, which the host never sends.
     if (typeof messageId !== 'string' || messageId === '') return null;
-    return h(
+    const button = h(
       'button',
       {
         type: 'button',
@@ -116,6 +140,27 @@ export function createMessageAsk(deps: MessageAskDeps) {
       },
       '锐评'
     );
+    if (note === '') return button;
+    // A note and the button it qualifies, side by side. `role="status"` makes the
+    // failure announceable (live region) instead of only visible.
+    return [
+      button,
+      h(
+        'span',
+        {
+          key: 'note',
+          role: 'status',
+          style: {
+            color: '#b26b4b',
+            fontSize: 11,
+            lineHeight: MESSAGE_ACTION_STYLE.lineHeight,
+            marginLeft: 6,
+            whiteSpace: 'nowrap',
+          },
+        },
+        note
+      ),
+    ];
   }
 
   return MessageAsk;

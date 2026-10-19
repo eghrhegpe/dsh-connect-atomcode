@@ -15,7 +15,7 @@
  * 用法
  *   node scripts/release-status.mjs                  # 用 package.json 的 version
  *   node scripts/release-status.mjs 0.4.3            # 点名一个版本
- *   node scripts/release-status.mjs 0.4.3 --check    # 不完整时退出码 1（默认总是 0）
+ *   node scripts/release-status.mjs 0.4.3 --check    # 不完整、或查不动（?）时退出码 1（默认总是 0）
  *
  * 除 §1 格子外还填一行 **§3 号规**（`破坏性号`）：最新 CHANGELOG 节声明了「破坏性改动」而版本号是
  * patch 时给 ✗ 并让 `--check` 退 1；该版已发布则记 ⚠ 历史不判红（号收不回，§2）。
@@ -112,13 +112,22 @@ if (tag === 'yes' && originMaster.ok) {
   }
 }
 
-// ── C. 版本侧：两处版本文件 + CHANGELOG 的最新节 ──────────────────────────────
+// ── C. 版本侧：版本文件 + CHANGELOG 的最新节 ──────────────────────────────────
 const indexSrc = readFileSync(join(ROOT, 'src', 'host', 'index.ts'), 'utf8');
-const indexVersion = indexSrc.match(/^\s*version:\s*'([^']+)',\s*$/m)?.[1] ?? null;
 const changelog = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8');
 const changelogVersion = changelog.match(/^##\s+(\d+\.\d+\.\d+)/m)?.[1] ?? null;
-/** The target version must be the one in BOTH hand-edited files AND the newest CHANGELOG section. */
-const versions = pkg.version === VERSION && indexVersion === VERSION && changelogVersion === VERSION ? 'yes' : 'no';
+/**
+ * The target version must be the one in package.json AND the newest CHANGELOG
+ * section. `src/host/index.ts` used to be a second hand-edited literal that this
+ * row compared against; it now READS package.json at load, so it cannot disagree
+ * and comparing it here would be tautological. One hand-edited place.
+ */
+const indexReadsManifest = indexSrc.includes('package.json') && indexSrc.includes('readFileSync');
+const versions =
+  pkg.version === VERSION && changelogVersion === VERSION && indexReadsManifest ? 'yes' : 'no';
+const indexNote = indexReadsManifest
+  ? 'src/host/index.ts 运行时读它'
+  : 'src/host/index.ts 没有读 package.json（版本单一真源被破坏）';
 const dirty = gitUsable ? git(['status', '--porcelain']) : { ok: false, out: '' };
 const treeClean = dirty.ok && dirty.out === '';
 
@@ -199,7 +208,7 @@ say(`${pad('master 可查', 16)}${mark(onMaster)} ${onMaster === 'yes' ? `该提
 if (behindInfo) detail(behindInfo);
 
 say(
-  `${pad('版本文件可查', 16)}${mark(versions)} package.json=${pkg.version} / src/host/index.ts=${indexVersion ?? '（没抽到）'} / CHANGELOG 最新节=${changelogVersion ?? '（没有版本号节）'}`,
+  `${pad('版本文件可查', 16)}${mark(versions)} package.json=${pkg.version}（${indexNote}） / CHANGELOG 最新节=${changelogVersion ?? '（没有版本号节）'}`,
 );
 detail(treeClean ? '工作树干净（§7 证据①）' : `工作树有未提交改动（§7 证据① 不成立）：\n${dirty.out.split('\n').slice(0, 8).join('\n')}`);
 
@@ -299,7 +308,7 @@ if (complete) {
   const hasWork = !treeClean || (lastTagSha !== '' && lastTagSha !== headSha);
   state = hasWork ? 'S1 代码已入库' : 'S0 未开始';
   next = hasWork
-    ? '先补齐 §3/§4（两处版本号 + CHANGELOG 节），再走 §6/§7/§8/§9。`npm run typecheck && npm run build && npm test` 必须全绿。'
+    ? '先补齐 §3/§4（package.json 的版本号 + CHANGELOG 节），再走 §6/§7/§8/§9。`npm run typecheck && npm run build && npm test` 必须全绿。'
     : '从 §3 走完整链路。';
 } else {
   state = '未完整（组合不在判定表里）';
@@ -310,7 +319,12 @@ say();
 say(`判定：${state}`);
 if (semverViolation) say(`号规 ✗：破坏性改动落在 patch 号上——发布前先按 §3 升 minor（--check 会因这一行退 1）。`);
 say(`还缺什么 / 下一步：${next}`);
-if (unknown > 0) say(`（有 ${unknown} 条事实查不动，打了 ?——它们既不算成立也不算缺，先解决查询通道再下结论。）`);
+if (unknown > 0) say(`（有 ${unknown} 条事实查不动，打了 ?——它们既不算成立也不算缺；--check 会因查不动退 1，先解决查询通道再下结论。）`);
 
 console.log(lines.join('\n'));
-if (CHECK && (!complete || semverViolation)) process.exitCode = 1;
+// `--check` is a gate, not a report: an `unknown` is NOT "not missing", so a
+// fact that cannot be checked must fail the gate too — otherwise a broken
+// query channel reads as a green light, which is exactly the failure the §1
+// table exists to stop (0.4.3 shipped without a Release because CI-green was
+// listed as "recommended"). `unknown > 0` therefore exits 1 as well.
+if (CHECK && (!complete || semverViolation || unknown > 0)) process.exitCode = 1;

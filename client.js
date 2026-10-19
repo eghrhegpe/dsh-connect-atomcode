@@ -1538,8 +1538,9 @@
 	* case, so this is a belt-and-braces guard, not a normal path).
 	*/
 	function createMessageAsk(deps) {
-		const { h, requestReview } = deps;
+		const { h, useState, requestReview } = deps;
 		function MessageAsk(props) {
+			const [note, setNote] = typeof useState === "function" ? useState("") : ["", () => {}];
 			const messageId = props && props.messageId;
 			let snapshot = null;
 			try {
@@ -1555,15 +1556,28 @@
 					text = null;
 				}
 				if (text === null) consoleWarning(messageId, snapshot);
-				requestReview({ text });
+				if (requestReview({ text })) setNote("");
+				else setNote("指令没插入：请在输入框手动输入 /atomcode-review，再按回车。");
 			};
 			if (typeof messageId !== "string" || messageId === "") return null;
-			return h("button", {
+			const button = h("button", {
 				type: "button",
 				style: MESSAGE_ACTION_STYLE,
 				onClick,
 				title: "把这条回复一起填入 /atomcode-review，按回车让 AtomCode 核对改动是否合理"
 			}, "锐评");
+			if (note === "") return button;
+			return [button, h("span", {
+				key: "note",
+				role: "status",
+				style: {
+					color: "#b26b4b",
+					fontSize: 11,
+					lineHeight: MESSAGE_ACTION_STYLE.lineHeight,
+					marginLeft: 6,
+					whiteSpace: "nowrap"
+				}
+			}, note)];
 		}
 		return MessageAsk;
 	}
@@ -2287,6 +2301,7 @@
 			const { ReviewRail, requestReview } = createReviewHandoff();
 			const MessageAsk = createMessageAsk({
 				h,
+				useState,
 				requestReview
 			});
 			function apply(ctx) {

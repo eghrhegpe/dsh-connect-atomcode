@@ -1197,6 +1197,16 @@ describe('createMessageAsk — the 锐评 row hands its OWN reply to the command
   const snapshotOf = (nodes) => ({ nodes: { values: () => nodes } });
   const tail = (messageId, blocks) => ({ kind: 'turn-tail', data: { closing: { finalNode: { messageId }, blocks } } });
 
+  /** A `useState` that actually holds its value, so a test can drive a re-render
+   * and read what the component stored. */
+  const makeState = () => {
+    let current = '';
+    return {
+      useState: (initial) => [current, (next) => { current = typeof next === 'function' ? next(current) : next; }],
+      read: () => current,
+    };
+  };
+
   /** Capture console.warn for one case (only `describe, it` are imported). */
   function withWarnings(run) {
     const saved = console.warn;
@@ -1237,6 +1247,42 @@ describe('createMessageAsk — the 锐评 row hands its OWN reply to the command
       assert.deepEqual(seen, [{ text: '' }]);
       assert.deepEqual(warnings, [], 'found-but-empty is not the same failure as not-found');
     });
+  });
+
+  it('echoes a failed prefill INLINE instead of leaving the button looking dead', () => {
+    // `requestReview` returning false means the composer never took the text — the
+    // prefill did not land. A click that visibly does nothing is the one failure
+    // the console line cannot reach, so the row says it in place and says how to
+    // get the review anyway.
+    const state = makeState();
+    const MessageAsk = createMessageAsk({ h, useState: state.useState, requestReview: () => false });
+    const props = { messageId: 'm1', useChat: (select) => select(snapshotOf([tail('m1', [{ kind: 'text', text: '改完了。' }])])) };
+    MessageAsk(props).props.onClick();
+    assert.match(state.read(), /手动输入 \/atomcode-review/, 'the failure is recorded, not dropped');
+    const [kept, note] = MessageAsk(props);
+    assert.equal(kept.type, 'button');
+    assert.equal(kept.props.children, '锐评');
+    assert.equal(note.props.role, 'status');
+    assert.match(note.props.children, /手动输入 \/atomcode-review/, 'the note says exactly what to do next');
+  });
+
+  it('shows only the button while nothing has failed, and clears the note after a good click', () => {
+    const state = makeState();
+    let ok = true;
+    const MessageAsk = createMessageAsk({ h, useState: state.useState, requestReview: () => ok });
+    const props = { messageId: 'm1', useChat: (select) => select(snapshotOf([tail('m1', [{ kind: 'text', text: '改完了。' }])])) };
+    assert.equal(typeof MessageAsk(props).props, 'object', 'a single button, no note, before any click');
+    ok = false;
+    MessageAsk(props).props.onClick();
+    assert.match(state.read(), /手动输入/, 'a failed click records the note');
+    // The note is live now, so the row is a button-plus-note pair; dig the button
+    // out of whichever shape it came back as.
+    const row = MessageAsk(props);
+    const [btn] = Array.isArray(row) ? row : [row];
+    ok = true;
+    btn.props.onClick();
+    assert.equal(state.read(), '', 'a successful prefill clears the note');
+    assert.equal(typeof MessageAsk(props).props, 'object', 'back to one button after the note clears');
   });
 
   it('names WHY a reply could not be read, then still prefills the command', () => {

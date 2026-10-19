@@ -943,6 +943,7 @@ const REGISTRATION = {
     // written out in ./message-ask.ts's header.
     const MessageAsk = createMessageAsk({
       h,
+      useState,
       requestReview,
     });
 
