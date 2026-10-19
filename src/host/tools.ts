@@ -356,6 +356,13 @@ export async function runAsk(
   } else {
     stats.ask.err += 1;
   }
+  // EVERY outcome persists, not just the two early refusals above. The success
+  // path used to update the in-memory counters and stop there, so `usage.json`
+  // was never written: the durable store existed and its only caller was the
+  // failure path. The panel's 「累计」 was therefore a per-process curiosity —
+  // it read 0 after every reload of a bridge that had run plenty of turns, which
+  // reads as "this card is broken" rather than "this counter was never saved".
+  runtime.persistAskUsage();
   // Accumulate protocol drift for the panel, on EVERY turn rather than only
   // successful ones: drift is a fact about the wire, not a property of the
   // reply, and a failed turn that still named an unknown type is exactly the

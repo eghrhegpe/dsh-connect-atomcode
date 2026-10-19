@@ -1242,7 +1242,10 @@
 					...S.callGroup,
 					borderRight: "none",
 					paddingRight: 0
-				} }, h("span", { style: S.callGroupLabel }, "atomcode_ask"), h(CallStat, {
+				} }, h("span", {
+					style: S.callGroupLabel,
+					title: "含 atomcode_ask 工具与 /atomcode-review 命令：两者走同一条 daemon /chat 通道，共用这一份计数、熔断与耗时"
+				}, "经本桥的回合"), h(CallStat, {
 					num: ask.calls,
 					label: "调用"
 				}), h(CallStat, {
@@ -1253,7 +1256,7 @@
 					num: ask.err,
 					label: "失败",
 					color: ask.err ? "var(--dsw-alias-state-error-primary)" : void 0
-				}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)));
+				}))), h(Row, { label: "累计 tokens" }, String(ask.tokens)), h(Row, { label: "平均耗时" }, fmtDuration(askAvg)));
 				const statusCluster = h("span", { style: S.cluster }, h("span", { style: error ? {
 					...S.live,
 					...S.liveStale

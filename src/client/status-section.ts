@@ -560,14 +560,26 @@ export function createStatusSection(deps: StatusSectionDeps) {
           h(
             'div',
             { style: { ...S.callGroup, borderRight: 'none', paddingRight: 0 } },
-            h('span', { style: S.callGroupLabel }, 'atomcode_ask'),
+            // The scope is BOTH entry points, not just the tool: `/atomcode-review`
+            // runs through the same `runAsk`, so it lands in these same counters.
+            // Labelling this "atomcode_ask" made a review-only workflow read as
+            // "nothing ever ran", which is exactly how the card was being read.
+            h(
+              'span',
+              {
+                style: S.callGroupLabel,
+                title:
+                  '含 atomcode_ask 工具与 /atomcode-review 命令：两者走同一条 daemon /chat 通道，共用这一份计数、熔断与耗时',
+              },
+              '经本桥的回合'
+            ),
             h(CallStat, { num: ask.calls, label: '调用' }),
             h(CallStat, { num: ask.ok, label: '成功', color: ask.ok ? 'var(--dsw-alias-state-success-primary)' : undefined }),
             h(CallStat, { num: ask.err, label: '失败', color: ask.err ? 'var(--dsw-alias-state-error-primary)' : undefined })
           )
         ),
-        h(Row, { label: 'ask 累计 tokens' }, String(ask.tokens)),
-        h(Row, { label: 'ask 平均耗时' }, fmtDuration(askAvg))
+        h(Row, { label: '累计 tokens' }, String(ask.tokens)),
+        h(Row, { label: '平均耗时' }, fmtDuration(askAvg))
       );
 
       // The freshness cluster: the reading's state, its age, and the one verb

@@ -12,7 +12,7 @@
  */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { describe, it, before, after, beforeEach } from 'node:test';
@@ -701,6 +701,71 @@ describe('atomcode_ask — bookkeeping that cannot be written does not fail the 
         afterFirst,
         `a repeated identical failure must not be re-announced; got ${JSON.stringify(ask.mountWarnings)}`,
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('atomcode_ask — the ask counters reach usage.json', () => {
+  const state = { requests: [], counter: 0, mode: 'ok' };
+  let fake;
+
+  before(async () => { fake = await startFakeDaemon(state); });
+  after(() => fake.server.close());
+
+  /**
+   * The panel's 「工具调用统计」 card is built from five counters that must
+   * survive a reload — that is the whole reason `usage-store.ts` exists. The
+   * store was tested in isolation and the CALLER was not: `persistAskUsage()`
+   * was wired into the two early refusals only, so a successful turn left
+   * nothing on disk and the 累计 reset to zero on every restart. These cases
+   * drive a real turn and then read the file the panel will seed from.
+   */
+  it('writes the accumulated counters after a SUCCESSFUL turn', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-usage-'));
+    const statePath = join(dir, 'sessions.json');
+    try {
+      const ask = await mountAsk(mod, { statePath, port: fake.port });
+      const usagePath = join(dir, 'usage.json');
+      assert.equal(existsSync(usagePath), false, 'nothing may be written before a turn runs');
+
+      const r = await ask.execute({ message: 'hi', working_dir: WORKDIR }, {});
+      assert.equal(r.ok, true, 'the fixture turn must succeed, or this proves nothing');
+      const doc = JSON.parse(readFileSync(usagePath, 'utf8'));
+      assert.equal(doc.version, 1);
+      assert.deepEqual(
+        { calls: doc.ask.calls, ok: doc.ask.ok, err: doc.ask.err, tokens: doc.ask.tokens },
+        { calls: 1, ok: 1, err: 0, tokens: 5 },
+        'a successful turn must be ON DISK: the fixture daemon reports tokens: 5 in `done`',
+      );
+      assert.ok(doc.ask.msTotal >= 0, 'msTotal must be a real number, not missing');
+
+      // A second turn ACCUMULATES. Overwriting would look right for calls===1.
+      await ask.execute({ message: 'again', working_dir: WORKDIR }, {});
+      const again = JSON.parse(readFileSync(usagePath, 'utf8'));
+      assert.equal(again.ask.calls, 2, 'each turn adds to the file, it does not replace it');
+      assert.equal(again.ask.tokens, 10);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('seeds the panel reading back from that file at the next mount', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-usage-'));
+    const statePath = join(dir, 'sessions.json');
+    try {
+      const first = await mountAsk(mod, { statePath, port: fake.port });
+      await first.execute({ message: 'hi', working_dir: WORKDIR }, {});
+      // A NEW mount is what a plugin reload looks like. The counters must come
+      // back from disk, or 「累计」 means "since the last reload" — which is
+      // exactly what the user saw as an always-empty card.
+      const second = await mountAsk(mod, { statePath, port: fake.port, withRoutes: true });
+      const stats = second.routes.find((r) => r.path === '/api/atomcode-bridge/stats');
+      const res = await callRoute(stats, { headers: { host: '127.0.0.1:3080' } });
+      assert.equal(res.body.ask.calls, 1, 'the reloaded mount must see the turn the previous one ran');
+      assert.equal(res.body.ask.ok, 1);
+      assert.equal(res.body.ask.tokens, 5);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

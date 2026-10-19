@@ -408,8 +408,11 @@ describe('client render — the detail panel', () => {
       '已跟踪会话',
       '最旧一条',
       '运行时长',
-      'ask 累计 tokens',
-      'ask 平均耗时',
+      // Both entry points land in these counters (`/atomcode-review` runs through
+      // the same `runAsk`), so the label names the SCOPE, not just the tool.
+      '经本桥的回合',
+      '累计 tokens',
+      '平均耗时',
     ]) {
       assert.ok(t.includes(label), `row "${label}" must render`);
     }
