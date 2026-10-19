@@ -28,16 +28,19 @@
 
 DSH 插件：把本机已登录的 **AtomCode**（官方二进制，终端 AI 编程助手）作为**侧边工具台**接入 DeepSeek Harness。
 注册**一个工具**：`atomcode_ask`（侧边咨询，一个完整自主回合）；代码评审由 `/atomcode-review` 斜杠命令承担（宿主侧执行，零模型回合）。
-Host（Node/cordis）只做五件事：注册工具（+ 一个 `/atomcode-review` 斜杠命令）、开四条路由（统计读、偏好写、力度写、会话读）、管 daemon 生命周期、解析额度、持有 `provider.json` 偏好；Client（React bundle）渲染详情页统计卡片、模型下拉、输入框额度标签、每条回复下方的「锐评」按钮，以及工具行上一个**渲染 null 的插入轨**（它只为拿到 composer 的 `inputActions`）。
+Host（Node/cordis）只做五件事：注册工具（+ 一个 `/atomcode-review` 斜杠命令）、开五条路由（统计读、偏好写、力度写、会话读、面板设置写）、管 daemon 生命周期、解析额度、持有 `provider.json` 偏好；Client（React bundle）渲染详情页统计卡片、模型下拉、输入框额度标签、每条回复下方的「锐评」按钮，以及工具行上一个**渲染 null 的插入轨**（它只为拿到 composer 的 `inputActions`）。
 
 **三条事实**（写代码前先认清你在动哪一条）：
 
 1. **v0.3 有意不做 provider 接管。** 最初的"AtomCode 作为模型提供方"设计已被删除：
    一个自带工具循环 + 绕过审批的完整 agent 塞进 DSH 的单 completion 插槽，会破坏 DSH 的工具循环、
    穿透它的权限模型、并把 O(N²) tokens 灌回每个会话轮次。**别把它"加回来"**——这是决定，不是疏漏。
-2. **额度是从本地化文本解析出来的，不是 API。** AtomCode 没有额度 HTTP 接口，唯一来源是
-   `POST /command {"command":"status"}` 返回的 `text`。解析不出来时**绝不编数字**，原样显示原文
-   （`src/host/quota.ts` 的 `reason` 字段）。这条是本插件唯一"看起来能改成读 JSON"的地方，而它不能。
+2. **额度有两个源：结构化的 `GET /codingplan/usage/{summary,daily}` 是首选，
+   `POST /command {"command":"status"}` 返回的本地化文本 `text` 是回落。** 本插件早年建立在
+   "额度只以文本存在"的假设上，那个假设后来被证明不完整（`src/host/codingplan.ts` 头注记了
+   这次发现）。但结构化的源也**不是替代**：过期计划对 `summary` 回 HTTP 502，只有文本路径能接住
+   那种状态。两条路都**绝不编数字**——解析不出来就显示原文或 `reason`
+   （`src/host/quota.ts` 与 `src/host/codingplan.ts`）。**别把它"简化成只读 JSON"**。
 3. **三条私有无版本协议无握手可谈。** `/chat` SSE 词表、`status` 本地化文本、`GET /models` 档位目录，
    都会随二进制升级悄悄漂移。v0.4 的答案不是握手而是**可观测降级**：静默失败必须变成
    面板上的具名诊断或 `protocol.quotaTextDrift` 信号（回归守卫 = `test/protocol.test.mjs`）。
@@ -99,7 +102,7 @@ Host（Node/cordis）只做五件事：注册工具（+ 一个 `/atomcode-review
 | 面 | 用途 | 坏了会怎样 |
 |---|---|---|
 | `ctx.tools`（`ctx.get('tools')`） | 注册一个工具（另有一个 `/atomcode-review` 斜杠命令，走 `ctx.commands`） | `apply` 早退，插件静默不挂 |
-| `ctx.webServer.register({kind:'exact', path})` | **四条路由**：`/api/atomcode-bridge/stats`（只读快照）、`/api/atomcode-bridge/provider`（面板的模型选择写入点，写插件自己的 `provider.json`）、`/api/atomcode-bridge/reasoning-effort`（面板的力度写入点）、`/api/atomcode-bridge/sessions`（会话列表只读）。四条都同源门禁 + `mountRoute` 的 methods 白名单（非法 method 一律 405）；**HTTP wire 上两个方向都用 snake_case**（`working_dir` / `session_id` / `message_id`），只在路由里翻译一次——漏掉出站方向就是 `message_id` 静默变 `undefined` 的那种 bug。（已删：人侧 `/ask` 与 `POST /inject` 两条路由——方针 A 之后评审走命令与工具、续作经 host 侧 `inject.ts` 进程内调用，都不再需要 HTTP 面。） | 面板与 chip 永久 `null`（客户端渲染 `—`）；provider 路由没了则那个下拉**禁用并写出原因**（不是空下拉） |
+| `ctx.webServer.register({kind:'exact', path})` | **五条路由**：`/api/atomcode-bridge/stats`（只读快照）、`/api/atomcode-bridge/provider`（面板的模型选择写入点，写插件自己的 `provider.json`）、`/api/atomcode-bridge/reasoning-effort`（面板的力度写入点）、`/api/atomcode-bridge/sessions`（会话列表只读）、`/api/atomcode-bridge/panel-settings`（面板的回合形状写入点，四个可写字段 `briefMode`/`workingDir`/`approvalMode`/`askMaxRounds`，写插件自己的 `panel-settings.json`）。五条都同源门禁 + `mountRoute` 的 methods 白名单（非法 method 一律 405）；**HTTP wire 上两个方向都用 snake_case**（`working_dir` / `session_id` / `message_id`），只在路由里翻译一次——漏掉出站方向就是 `message_id` 静默变 `undefined` 的那种 bug。（已删：人侧 `/ask` 与 `POST /inject` 两条路由——方针 A 之后评审走命令与工具、续作经 host 侧 `inject.ts` 进程内调用，都不再需要 HTTP 面。） | 面板与 chip 永久 `null`（客户端渲染 `—`）；provider 路由没了则那个下拉**禁用并写出原因**（不是空下拉） |
 | `ctx.get('agents')` → `agent.inject(message)` | `/atomcode-review` 成功后那条「继续原任务」的**唯一**投递通道（host 侧进程内调用，**不再有 `/inject` 路由**）：**公开方法**，"Queue model-facing context for the next pre-step **without waking the driver**"（`dsh-agent` 的 `runtime-types.d.ts`）。消息的 `source.kind` 必须是 `'atomcode-bridge'`，**永不用 `'user'`**（那是机器冒充人说话） | 没有 `agents` 服务 → 具名 `agents-unavailable`；会话没活 agent → 具名 `agent-not-live`。**别改用 `steer()`/`followup()`**——它们会唤醒驱动，等于一点击就替用户开了个模型回合。另注意 `inject` **不保证送达**（pre-step 已抢走批次会错过、取消/销毁可能丢弃），所以 `ok:true` 只表示已入队，别写成"模型已读过" |
 | `ctx.get('commands')` → `register({name, description, input:{hint}, handler})` | `/atomcode-review` 斜杠命令。handler 的契约注释是 "Execute against the receiving agent **without sending the command to the model**"——这就是 `/compact` 同构的那条路：宿主直接干活，**评审本体零 LLM 调用**。它复用工具那一份 `runAsk`（daemon 通道）+ 自己的 `composeReviewPrompt`，是第二个入口不是第二份实现 | 没有 `commands` 服务 → 不注册命令，**工具照常挂载**（可选服务，别加进 `inject` 数组——那是硬依赖）。**红线（2026-10 精化，方针 A+continue）**：`followup`/`steer`/`inject` 三个原始方法在评审本体里**永不许出现**——写进去就等于一次点击偷偷花掉一个模型回合；**唯一例外是评审成功后那一条具名的「继续原任务」**，它经 `inject.ts` 的 `injectReviewContinuation`（自己按 `agent.status` 分流 idle→steer / running→inject），并在命令回复里写明结果（红线 3）。`test/wiring.test.mjs` 扫 `lib/command.js` 里三个原始方法、`test/command.test.mjs` 钉「拒绝/失败一律不投递」、`test/inject.test.mjs` 钉那条继续 |
 | `ctx.effect(fn)` | 卸载时注销工具与路由 | **注意语义**：它执行 `fn` 当 setup，把返回值当 cleanup |

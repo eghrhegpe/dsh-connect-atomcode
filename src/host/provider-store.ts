@@ -103,16 +103,24 @@ export function normalizeProviderName(raw: unknown) {
   if (trimmed.length > MAX_NAME_LEN) {
     return { ok: false, value: null, error: `provider name is longer than ${MAX_NAME_LEN} characters` };
   }
-  // The name is forwarded VERBATIM as the ask body's `provider` field. The write
-  // endpoint accepts any string, so a value like `--no-web` would travel as a
-  // trusted identifier. No real provider name starts with a dash;
-  // refuse HERE (a named write error on the panel) rather than let the CLI
-  // guess, which surfaces as an unrelated flag error three layers away.
+  // The name is forwarded VERBATIM as the ask body's `provider` field, where it is
+  // matched against the daemon's `GET /models` names (形如 `AtomGit-glm5.3-flash`).
+  // So a value that can never match must be refused HERE — a named write error on
+  // the panel — instead of being stored and then surfacing as an unrelated
+  // model-resolution error on every later turn, with no hint that the write was
+  // the cause. No model profile name starts with a dash; a leading dash is also
+  // the shape of a CLI flag misparsed into a value field, worth catching at the
+  // same boundary even though this path has no argv any more (the review CLI that
+  // was one is gone).
   if (trimmed.startsWith('-')) {
-    return { ok: false, value: null, error: 'provider name must not start with "-" (the CLI argv would read it as an option, not as this option\'s value)' };
+    return {
+      ok: false,
+      value: null,
+      error: 'provider name must not start with "-" (no model profile name does; storing it would only fail later as an unrelated model-resolution error)',
+    };
   }
-  // A control character here would ride straight into the daemon's JSON body or
-  // a CLI argv; no legitimate provider name contains one.
+  // A control character here would ride straight into the daemon's JSON body;
+  // no legitimate provider name contains one.
   if (Array.from(trimmed).some((ch) => (ch.codePointAt(0) ?? NaN) < 0x20 || (ch.codePointAt(0) ?? NaN) === 0x7f)) {
     return { ok: false, value: null, error: 'provider name contains control characters' };
   }
