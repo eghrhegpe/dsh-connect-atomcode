@@ -57,8 +57,49 @@ const RESET_LABEL = /(?:重置于|resets?\s*(?:at)?\b|reset\s+at)/i;
 const REMAINING_LABEL = /(剩余|remaining|\bleft\b)/i;
 const COLON = /[：:]/;
 
+/**
+ * The daemon's OWN failure message, which is not a quota reading at all.
+ *
+ * Captured verbatim (AtomCode 5.2.3, a Lite trial that had expired):
+ *
+ *   CodingPlan：（状态获取失败 — parse status-v2 response (body: {"codingplan_free":
+ *   {"plan_name":"CodingPlan Lite","plan_type":null,"status":-1,"claimed_at":null,
+ *   "expires_at":null,"remaining_days":null,"total_days":30,"apply_id":null},
+ *   "current_usage":…): invalid type: null, expected i32 at line 1 column 136）
+ *
+ * Anchored on the daemon's own wording (`parse status-v2 response` is a
+ * private-protocol token, not translated prose), so a mere vocabulary change
+ * does NOT match here: this branch exists to say "the upstream is broken", which
+ * is a different fact from "we no longer recognize the text" — and a panel that
+ * confuses the two sends the reader hunting the wrong machine.
+ */
+const UPSTREAM_FAILURE = /parse\s+status-v2\s+response|状态获取失败/i;
+/** The plan name inside the response body the daemon echoes back, when present. */
+const BODY_PLAN_NAME = /"plan_name"\s*:\s*"([^"]*)"/;
+/**
+ * "No live window" evidence inside that echoed body: a negative status, or the
+ * expiry / remaining-days fields answered as `null`. An EXPIRED plan answers
+ * exactly like this (verified by re-claiming with `atomcode login`, after which
+ * the same command carried a dated window again) — and it is the body that says
+ * so, not this parser guessing from the error text.
+ */
+const BODY_INACTIVE = /"status"\s*:\s*-\d|"expires_at"\s*:\s*null|"remaining_days"\s*:\s*null/;
+
 /** Which line shape we REFUSED to interpret (drift, not absence). */
 export type ParseIssue = 'multiple-percentages' | 'reverse-semantics';
+
+/**
+ * The daemon could not read the quota from the gateway, so the `status` text is
+ * an error message rather than a reading. All the panel can honestly claim is
+ * what the echoed body shows:
+ *  - `plan-inactive`: the body carries no live window (an expired plan's shape)
+ *  - `upstream-parse`: it failed without echoing enough to say why
+ */
+export interface UpstreamFailure {
+  kind: 'plan-inactive' | 'upstream-parse';
+  /** `plan_name` recovered from the echoed body, when the body was echoed. */
+  planName: string | null;
+}
 
 /** The two source lines the parse was derived from, kept for display. */
 export interface QuotaRaw {
@@ -77,6 +118,12 @@ export interface ParsedQuota {
   resetInSecs: number | null;
   limited: boolean;
   parseIssue: ParseIssue | null;
+  /**
+   * Set when the daemon itself failed to read the quota from the gateway. The
+   * `CodingPlan：` prefix is still there, so without this the whole error blob
+   * parses as the plan name — which is exactly what the panel used to print.
+   */
+  upstreamFailure: UpstreamFailure | null;
   raw: QuotaRaw;
 }
 
@@ -148,6 +195,7 @@ export function parseStatusQuota(input: unknown): ParsedQuota {
     resetInSecs: null,
     limited: false,
     parseIssue: null,
+    upstreamFailure: null,
     raw: { planLine: null, usageLine: null },
   };
   const text =
@@ -169,6 +217,22 @@ export function parseStatusQuota(input: unknown): ParsedQuota {
     null;
 
   const out: ParsedQuota = { ...empty, raw: { planLine, usageLine } };
+
+  // The daemon's own failure message wears the `CodingPlan：` prefix, so it would
+  // otherwise be adopted as the plan line and the plan name would become the
+  // entire Rust error. Recognize it FIRST, report it as what it is, and leave the
+  // rest of the fields null: there is no reading to derive from a failed fetch,
+  // and the raw line is displayed instead (red line 2 — never invent a number).
+  // `plan` deliberately stays null too: it is what makes the renderer fall back to
+  // the "unavailable" branch, which is where `reason` AND the raw text are shown.
+  if (lines.some((l) => UPSTREAM_FAILURE.test(l))) {
+    const named = text.match(BODY_PLAN_NAME);
+    out.upstreamFailure = {
+      kind: BODY_INACTIVE.test(text) ? 'plan-inactive' : 'upstream-parse',
+      planName: named ? (named[1] ?? '').trim() || null : null,
+    };
+    return out;
+  }
 
   if (planLine) {
     // Everything after the label is `<name> · <expiry>（<window>）`.
@@ -270,22 +334,35 @@ export function buildQuotaReport(
     'multiple-percentages': '用量行含多个百分数，无法判定哪个是窗口用量（已拒绝猜测，不显示百分比）',
     'reverse-semantics': '用量行按"剩余"语义表述，与本面板的"已用"语义相反（已拒绝换算，不显示百分比）',
   };
+  // The daemon could not read the quota at all — a DIFFERENT fact from a changed
+  // vocabulary, and one whose reader has an action: an expired CodingPlan is
+  // re-claimed by running `/login` inside AtomCode (verified on this machine by
+  // exactly the failure text the branch above matches). The CAUSE is worded here,
+  // where the raw line is displayed next to it; the ACTION belongs to the panel's
+  // banner, so neither place says the same sentence twice.
+  const UPSTREAM_REASON: Record<UpstreamFailure['kind'], string> = {
+    'plan-inactive': '额度未生效：网关未给出生效窗口（到期时间与剩余天数都是空 —— 本机实测的 CodingPlan 过期形态）',
+    'upstream-parse': '额度不可用：AtomCode 解析网关的 status-v2 响应失败（原文见下）',
+  };
   return {
     available: true,
     ...parsed,
     fetchedAt,
     // `limited` at 100% is the client's cue to render the warning state.
-    reason: parsed.parseIssue
-      ? ISSUE_REASON[parsed.parseIssue]
-      : found
-        ? ''
-        : parsed.plan !== null
-          ? '用量行未被识别（daemon 的 status 文本可能已升级），计划行正常'
-          : 'status text carried no recognisable quota line',
-    // Drift signal for the plugin: the status command succeeded but the
-    // localized text no longer matches any known shape. The caller surfaces
-    // this (log + panel) so a silent quota blackout after an AtomCode upgrade
-    // is visible instead of looking like "0%" or a missing number.
+    reason: parsed.upstreamFailure
+      ? UPSTREAM_REASON[parsed.upstreamFailure.kind] +
+        (parsed.upstreamFailure.planName ? `（网关报的套餐是 ${parsed.upstreamFailure.planName}）` : '')
+      : parsed.parseIssue
+        ? ISSUE_REASON[parsed.parseIssue]
+        : found
+          ? ''
+          : parsed.plan !== null
+            ? '用量行未被识别（daemon 的 status 文本可能已升级），计划行正常'
+            : 'status text carried no recognisable quota line',
+    // Drift keeps its one meaning: the command answered but yielded NO reading.
+    // An upstream failure is such a case, so it rides this signal too (the panel
+    // marks the tab and shows the raw text) — `upstreamFailure` above says WHY,
+    // which is what the wording branches on.
     drift: !found,
   };
 }

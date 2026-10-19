@@ -467,6 +467,50 @@ describe('client render — the detail panel', () => {
     assert.ok(!t.includes('0%'), 'a failed parse must never render as a zero reading');
   });
 
+  it('words a daemon-side upstream failure as the action it needs', async () => {
+    // The same drift lamp, a different cause: the daemon itself could not read the
+    // quota (an expired CodingPlan answers the gateway with nulls and AtomCode's
+    // `status` call degrades to an error string). The old copy told the reader to
+    // suspect an AtomCode upgrade — it sent them to check versions when the fix
+    // was `/login`. The host words the cause; this pane must word the action.
+    const snapshot = {
+      ...FULL,
+      protocol: { ...FULL.protocol, quotaTextDrift: true },
+      quota: {
+        ...FULL.quota,
+        available: true,
+        plan: null,
+        usagePercent: null,
+        reason: '额度未生效：网关未给出生效窗口（到期时间与剩余天数都是空 —— 本机实测的 CodingPlan 过期形态）（网关报的套餐是 CodingPlan Lite）',
+        upstreamFailure: { kind: 'plan-inactive', planName: 'CodingPlan Lite' },
+      },
+    };
+    const { tree } = await renderPanel(snapshot);
+    const t = text(tree);
+    assert.ok(t.includes('/login'), `the one action that fixes an expired trial must be named: ${t}`);
+    assert.ok(t.includes('额度未生效'), 'and the host-worded cause must still be on the page');
+    assert.ok(!t.includes('AtomCode 可能已升级'), 'an upstream failure is not a drifted vocabulary');
+    const [quotaTab] = collect(tree, (n) => n.props && n.props.role === 'tab' && text(n).includes('用量'));
+    assert.match(
+      String(quotaTab?.props?.title || ''),
+      /\/login/,
+      'the tab marker must carry the action too, since the pane is one click away'
+    );
+  });
+
+  it('keeps the upgrade wording for a genuine vocabulary drift', async () => {
+    // Reverse guard: with no upstream failure named, the generic diagnostic stays.
+    const snapshot = {
+      ...FULL,
+      protocol: { ...FULL.protocol, quotaTextDrift: true },
+      quota: { ...FULL.quota, available: true, plan: null, usagePercent: null, upstreamFailure: null },
+    };
+    const { tree } = await renderPanel(snapshot);
+    const t = text(tree);
+    assert.ok(t.includes('额度解析失配'), 'unknown shapes still get the drift wording');
+    assert.ok(!t.includes('/login'), 'and must not be blamed on an expired plan');
+  });
+
   it('rides the freshness cluster on the tab strip\'s own row, with no header bar above', async () => {
     const { tree } = await renderPanel(FULL);
     // `role="tablist"` may only contain tabs, so the cluster has to be a SIBLING

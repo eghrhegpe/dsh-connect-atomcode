@@ -28,6 +28,19 @@ const SYNTH_EN = [
   '  Usage: current window ~45%  ·  resets at 09:15 (1h 2m 3s)',
 ].join('\n');
 
+/**
+ * Captured verbatim from the daemon on 2026-10-19, when the Lite trial had
+ * EXPIRED: the gateway answers with nulls where the window should be, AtomCode's
+ * struct wants an i32, and the whole `status` call degrades to this error string.
+ * The `CodingPlan：` prefix is why the parser needs to recognize it — otherwise
+ * everything after the colon becomes the "plan name".
+ */
+const REAL_UPSTREAM_FAILURE =
+  '  CodingPlan：（状态获取失败 — parse status-v2 response (body: {"codingplan_free":' +
+  '{"plan_name":"CodingPlan Lite","plan_type":null,"status":-1,"claimed_at":null,' +
+  '"expires_at":null,"remaining_days":null,"total_days":30,"apply_id":null},' +
+  '"current_usage":{"total_tokens":0}}): invalid type: null, expected i32 at line 1 column 136）';
+
 describe('parseStatusQuota — real captured payload', () => {
   const q = parseStatusQuota(REAL_ZH);
 
@@ -237,5 +250,55 @@ describe('parseStatusQuota — lines it must refuse to interpret', () => {
     const r = buildQuotaReport({ ok: true, text: [planLine, reverse].join('\n') }, 1);
     assert.equal(r.drift, true);
     assert.match(r.reason, /剩余|相反/);
+  });
+});
+
+describe('an upstream failure is not a quota reading (daemon could not reach the gateway)', () => {
+  const q = parseStatusQuota(REAL_UPSTREAM_FAILURE);
+
+  it('never lets the error blob become the plan name', () => {
+    // The bug this branch closes: the failure line starts with `CodingPlan：`, so
+    // the plan-line regex adopted it and the panel printed the whole Rust error
+    // where the plan name goes.
+    assert.equal(q.plan, null, 'the blob must not be reported as a plan');
+    assert.equal(q.expires, null, 'no expiry may be derived from a failed response');
+    assert.equal(q.planWindow, null);
+    assert.equal(q.usagePercent, null);
+  });
+
+  it('classifies it, and recovers the plan name from the echoed body', () => {
+    assert.equal(q.upstreamFailure?.kind, 'plan-inactive');
+    assert.equal(q.upstreamFailure.planName, 'CodingPlan Lite');
+  });
+
+  it('keeps the raw line so the panel can show the daemon\'s own words', () => {
+    assert.match(q.raw.planLine, /状态获取失败/);
+  });
+
+  it('reports it as a drift with a cause that names the state, not an upgrade', () => {
+    const r = buildQuotaReport({ ok: true, kind: 'status', text: REAL_UPSTREAM_FAILURE }, 1);
+    assert.equal(r.available, true, 'the command itself answered');
+    assert.equal(r.drift, true, 'there is no reading, so the drift lamp must light');
+    assert.match(r.reason, /未生效|过期/, 'the cause is the plan state, not a version');
+    assert.doesNotMatch(r.reason, /升级/, 'an upstream failure is NOT a vocabulary drift');
+    assert.match(r.reason, /CodingPlan Lite/, 'and it still names the plan the gateway reported');
+  });
+
+  it('stays honest when the body was not echoed back to say why', () => {
+    // No window fields in the message: claim only what is known (it failed).
+    const vague = 'CodingPlan：（状态获取失败 — parse status-v2 response (body: {"current_usage":{}}): unexpected EOF）';
+    const v = parseStatusQuota(vague);
+    assert.equal(v.upstreamFailure?.kind, 'upstream-parse');
+    assert.equal(v.upstreamFailure.planName, null);
+    const r = buildQuotaReport({ ok: true, text: vague }, 1);
+    assert.equal(r.drift, true);
+    assert.match(r.reason, /status-v2/, 'the failed call is named');
+    assert.doesNotMatch(r.reason, /未生效|过期/, 'no expiry may be claimed without the body saying so');
+  });
+
+  it('does NOT divert a healthy reading or a genuine vocabulary drift', () => {
+    // Reverse guard: the branch must fire on the daemon's own failure wording only.
+    assert.equal(parseStatusQuota(REAL_ZH).upstreamFailure, null);
+    assert.equal(parseStatusQuota('CodingPlan：X\n已消耗：本窗口 33%  ·  重置于 10:00（5m 后）').upstreamFailure, null);
   });
 });

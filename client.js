@@ -1232,7 +1232,8 @@
 					onClick: reload,
 					type: "button"
 				}, "刷新"));
-				const quotaDrift = proto.quotaTextDrift ? "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。" : "";
+				const upstreamKind = quota.upstreamFailure ? quota.upstreamFailure.kind : null;
+				const quotaDrift = proto.quotaTextDrift ? upstreamKind === "plan-inactive" ? "额度未生效：AtomCode 自己没读到 CodingPlan 状态，网关那条响应里没有生效窗口（到期时间与剩余天数都是空）。在 AtomCode 里运行 /login 续领后刷新本页。下面显示的是 daemon 的原文而非解析结果；可手工核对 /api/atomcode-bridge/stats 的 quota.raw。" : upstreamKind === "upstream-parse" ? "额度不可用：AtomCode 解析网关的 status-v2 响应失败（原文见下）—— 这不是本面板的解析问题，上游恢复后会自动读回。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。" : "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。" : "";
 				const content = h("div", { style: S.content }, h(Tabbed, {
 					status: statusCluster,
 					tabs: [

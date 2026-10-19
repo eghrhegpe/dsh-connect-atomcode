@@ -168,6 +168,14 @@ export interface QuotaBranch {
   resetInSecs?: number | null;
   /** When the snapshot carrying `resetInSecs` was taken, for the local countdown. */
   fetchedAt?: number | null;
+  /**
+   * Set when the daemon ITSELF could not read the quota from the gateway — the one
+   * shape where the `status` text is an error message rather than a reading. The
+   * host classifies it (`plan-inactive` when the echoed body shows no live window,
+   * else `upstream-parse`) and words the CAUSE in `reason`; the renderer words the
+   * ACTION, so this field decides which of the two diagnostics is shown.
+   */
+  upstreamFailure?: { kind?: string | null; planName?: string | null } | null;
   raw?: { usageLine?: string | null; planLine?: string | null } | null;
 }
 
