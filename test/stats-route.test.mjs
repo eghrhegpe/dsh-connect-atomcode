@@ -787,6 +787,51 @@ describe('stats route — the STRUCTURED CodingPlan source', () => {
     }
   });
 
+  it('falls back to the status text when the summary has a plan but no window', async () => {
+    // The half-reading this payload used to publish: `available: true`, a plan row,
+    // an empty `reason`, `drift: false`, and no percentage — the panel would print
+    // its own `|| '额度读数不可用'` next to a dark drift lamp, and the host would
+    // log nothing at all. Refusing it sends the reading to the text path instead,
+    // which names why the fallback happened. The text parser is the precedent: its
+    // `found` requires the usage line, not the plan line.
+    codingplan.summary = {
+      available: true,
+      plan: { name: 'CodingPlan Lite-体验版', expires_at: '2026-10-26', remaining_days: 7, total_days: 7 },
+    };
+    try {
+      const { body } = await mountAndCall();
+      assert.equal(body.quota.source, 'status-text');
+      assert.match(body.quota.sourceNote, /套餐\/窗口字段/);
+      assert.match(body.quota.sourceNote, /status 文本/);
+      // The fallback is a REAL reading, not a blank: the captured text parses.
+      assert.equal(body.quota.usagePercent, 77);
+      assert.equal(body.quota.drift, false, 'a text reading that parses is not drift');
+      assert.equal(body.protocol.quotaTextDrift, false, 'a reading that arrived does not light the lamp');
+      // The text branch carries no window numbers at all — the half-reading must not reach the panel.
+      assert.equal(body.quota.windowLimit, undefined);
+    } finally {
+      codingplan.summary = SUMMARY;
+    }
+  });
+
+  it('falls back when the window lost its percentage', async () => {
+    // The same rule one level down: `limit` and `used` only label the percentage
+    // (`本窗口 3 / 200 次`), so a window without it is not a reading either.
+    codingplan.summary = {
+      ...SUMMARY,
+      primary_window: { metric: 'calls', window_hours: 5, limit: 200, used: 3 },
+    };
+    try {
+      const { body } = await mountAndCall();
+      assert.equal(body.quota.source, 'status-text');
+      assert.match(body.quota.sourceNote, /status 文本/);
+      assert.equal(body.quota.usagePercent, 77);
+      assert.equal(body.quota.windowLimit, undefined, 'window numbers do not come from a percentage-less window');
+    } finally {
+      codingplan.summary = SUMMARY;
+    }
+  });
+
   it('publishes the per-day history as its own branch', async () => {
     const { body } = await mountAndCall();
     assert.equal(body.usageTrend.available, true);

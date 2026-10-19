@@ -105,11 +105,14 @@ describe('parseUsageSummary — real captured payload', () => {
     });
   });
 
-  it('does not require `plan` or `primary_window` to both be present', () => {
-    // Half a reading is still a reading; the caller shows what it has.
-    assert.equal(parseUsageSummary({ available: true, plan: { name: 'CodingPlan Pro' } }).planName, 'Pro');
+  it('does not require a `plan` when the window is present', () => {
+    // The window IS the reading — a percentage and a reset time; the plan name is
+    // what the card labels them with, and an empty label is a blank row.
     assert.equal(
-      parseUsageSummary({ available: true, primary_window: { limit: 5, used: 1 } }).window.limit,
+      parseUsageSummary({
+        available: true,
+        primary_window: { usage_percent: 12, limit: 5, used: 1 },
+      }).window.limit,
       5,
     );
   });
@@ -137,7 +140,7 @@ describe('parseUsageSummary — payloads it must refuse', () => {
     // A string limit is NOT 200 here; the window survives on its other fields.
     const s = parseUsageSummary({
       available: true,
-      primary_window: { limit: '200', used: 3, quota_exhausted: 'yes' },
+      primary_window: { usage_percent: 3, limit: '200', used: 3, quota_exhausted: 'yes' },
     });
     assert.equal(s.window.limit, null);
     assert.equal(s.window.used, 3);
@@ -146,16 +149,46 @@ describe('parseUsageSummary — payloads it must refuse', () => {
   });
 
   it('drops a window that carries no numbers at all', () => {
-    // The plan survives, the empty window does not — and with nothing usable
-    // left the whole payload is refused.
-    const kept = parseUsageSummary({
-      available: true,
-      plan: { name: 'CodingPlan Pro' },
-      primary_window: { limit: null },
-    });
-    assert.equal(kept.planName, 'Pro');
-    assert.equal(kept.window, null);
-    assert.equal(parseUsageSummary({ available: true, primary_window: { limit: null } }), null);
+    // An empty window is not a window, and with no window there is no reading —
+    // a plan name cannot carry it (see the test below), so the whole payload goes.
+    for (const payload of [
+      { available: true, primary_window: { limit: null } },
+      { available: true, plan: { name: 'CodingPlan Pro' }, primary_window: { limit: null } },
+    ]) {
+      assert.equal(parseUsageSummary(payload), null);
+    }
+  });
+
+  it('refuses a plan with no window — the shape the text path refuses too', () => {
+    // The only thing such a payload would print is a plan row and an expiry next
+    // to a missing percentage: `reason` stays empty, `drift` stays false, and the
+    // panel falls back to its own `|| '额度读数不可用'` instead of a host-worded
+    // reason. `buildQuotaReport` refuses that exact shape for the TEXT source
+    // (`found` requires the usage line, not the plan line), so the JSON source
+    // must not be the one that still accepts it — refusing it sends the caller to
+    // the text path, where the same fact gets a named reason and lights drift.
+    assert.equal(parseUsageSummary({ available: true, plan: { name: 'CodingPlan Pro' } }), null);
+    assert.equal(
+      parseUsageSummary({
+        available: true,
+        plan: { name: 'CodingPlan Pro', expires_at: '2026-10-26', remaining_days: 7, total_days: 7 },
+      }),
+      null,
+    );
+  });
+
+  it('refuses a window that lost its percentage', () => {
+    // The percentage is the number the card leads with; `limit` and `used` only
+    // label it (`本窗口 3 / 200 次`). Accepting the window anyway would print
+    // those numbers next to the panel's own generic fallback and a dark drift
+    // lamp — the same half-reading the text path refuses in `buildQuotaReport`,
+    // where `found` requires the usage line.
+    for (const payload of [
+      { available: true, primary_window: { limit: 200, used: 3 } },
+      { available: true, plan: { name: 'CodingPlan Pro' }, primary_window: { usage_percent: null } },
+    ]) {
+      assert.equal(parseUsageSummary(payload), null);
+    }
   });
 });
 

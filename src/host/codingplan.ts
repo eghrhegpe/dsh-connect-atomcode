@@ -120,9 +120,14 @@ function parseWindow(input: unknown): CodingPlanWindow | null {
     resetAt: str(w.next_reset_display) ?? str(w.next_reset_at),
     resetInSecs: num(w.seconds_until_reset),
   };
-  // A window with no numbers in it is not a window; saying so keeps the panel
-  // from rendering a metric block with three em-dashes.
-  return out.limit === null && out.used === null && out.usagePercent === null ? null : out;
+  // A window needs its percentage: it is the number the card leads with, and a
+  // window without it would leave the panel on its own `|| '额度读数不可用'`
+  // fallback while the drift banner stays dark — the same trap `buildQuotaReport`
+  // refuses for the text source, where `found` requires the usage line, not the
+  // plan line. `limit` and `used` alone are not a reading: they only label the
+  // percentage (`本窗口 3 / 200 次`), so a payload that drops the percentage is
+  // handed back to the text path, which names the reason and lights drift.
+  return out.usagePercent === null ? null : out;
 }
 
 /**
@@ -147,9 +152,17 @@ export function parseUsageSummary(input: unknown): CodingPlanSummary | null {
       remainingDays !== null && totalDays !== null ? `${remainingDays}d / 共 ${totalDays}d` : null,
     window: parseWindow(root.primary_window),
   };
-  // Nothing usable → let the caller fall back to the text path. Half a reading
-  // (a plan name with no window) is still worth showing.
-  return out.planName === null && out.window === null && out.expires === null ? null : out;
+  // A WINDOW is what makes a reading a reading. `planName` and `expires` are
+  // decoration: they duplicate what the text path already extracts from the same
+  // line, and accepting them on their own would put a healthy-looking plan row on
+  // the panel next to a missing percentage while reporting `drift: false` and
+  // `reason: ''` — which sends the renderer to its own `|| '额度读数不可用'`
+  // fallback instead of a host-worded reason, and leaves the drift banner dark.
+  // The text parser refuses that exact shape explicitly in `buildQuotaReport`
+  // (`found` there requires the usage line, not the plan line); this parser must
+  // not be the source that still accepts it. Refusing here hands the caller back
+  // to the text path, where the same fact gets a named reason and lights drift.
+  return out.window === null ? null : out;
 }
 
 /**
