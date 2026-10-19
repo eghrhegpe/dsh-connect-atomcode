@@ -245,7 +245,7 @@ gh release create vX.Y.Z \
 
 ## 10. 市场投稿
 
-`docs/submission/eghrhegpe__dsh-connect-atomcode.yml` 复制到
+`awesome-dsh-plugin-submission/eghrhegpe__dsh-connect-atomcode.yml` 复制到
 [awesome-dsh-plugin/awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 的
 `data/plugins/eghrhegpe__dsh-connect-atomcode.yml`，开 PR。CI 有 pr-check + check-submission。
 

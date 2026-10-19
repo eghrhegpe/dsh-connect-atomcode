@@ -302,7 +302,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
   发布形态与兄弟插件同款：`package.json` 的 `prepack: npm run build` + `files` 白名单 + `publishConfig.access`；
   **npm 发布要钉 `registry.npmjs.org`**——本机 `~/.npmrc` 的 registry 是只读镜像
   （会拒绝 publish），靠 `publishConfig.registry` + 仓库根 `.npmrc` 双保险拉回；
-  市场投稿见 `docs/submission/eghrhegpe__dsh-connect-atomcode.yml`——复制到 awesome-dsh-plugin 的
+  市场投稿见 `awesome-dsh-plugin-submission/eghrhegpe__dsh-connect-atomcode.yml`——复制到 awesome-dsh-plugin 的
   `data/plugins/` 后开 PR，别加 `npm:` 字段、别在 yml 里放截图（市场读仓库根 `screenshots.json`）。
   **发版状态别靠记忆**：`node scripts/release-status.mjs` 一条命令打印 §1 判定表的格子与最终闭环清单的 ✓/✗
   （需要网络的那几条查不动时打 `?`，不冒充成立）；离线的两条不变量——CHANGELOG 最新节必须是当前版本、

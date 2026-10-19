@@ -24,7 +24,7 @@
 #     one config field (default_provider), one namespace (model profile name from GET /models).
 url: https://github.com/eghrhegpe/dsh-connect-atomcode
 name: eghrhegpe/dsh-connect-atomcode
-category: tool
+category: tools
 description:
   en: 'Bridges the AtomCode terminal AI coding assistant already signed in on this machine into DeepSeek Harness as one model tool plus one slash command: atomcode_ask (a side-conversation relay with per-working-directory session continuity) and /atomcode-review (a host-side, bounded code review that spends no model turn). No API key to configure and no model takeover — the settings card just adds a read-only CodingPlan quota read-out and one model picker shared by both paths.'
-  zh: '把本机已登录的 AtomCode 终端 AI 编程助手接入 DeepSeek Harness，提供模型侧一个工具加人侧一条斜杠命令：atomcode_ask（带按工作目录会话连续的侧边咨询）与 /atomcode-review（宿主侧执行、不花模型回合的有界代码评审）。无需配置 API key、不接管模型——设置卡片加一个只读的 CodingPlan 额度读数和两条通路共用的一个模型档位选择器。'
+  zh: '用你本机已登录的 AtomGit 免费额度，请 AtomCode 给代码做一次独立代码审查：模型通过`atomcode_ask` 工具自主调用审查；你也可以使用`/atomcode-review`命令，一键评审未提交改动 / 分支 / PR。本插件不读取 API key。'
