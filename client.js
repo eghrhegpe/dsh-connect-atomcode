@@ -1491,7 +1491,10 @@
 	* plumbing connection, not a control the user should ever see.
 	*
 	* THE HAND-OFF IS A PREFILL, NOT A SEND. Clicking 锐评 inserts
-	* `/atomcode-review <quoted reply>` at the caret and stops. The human presses
+	* `/atomcode-review <quoted reply>` at the caret and stops — with the reply
+	* capped at {@link QUOTE_LIMIT} characters, and a note in the text when it is
+	* (see that constant: the quote is echoed onto three surfaces, so the only
+	* unbounded thing in this module would be the click itself). The human presses
 	* Enter, and the HOST runs the review. Nothing here talks to the network, and
 	* nothing here spends a model turn (红线: the plugin's only ways to touch the
 	* session model are `followup`/`steer`/`inject`, and none of them appears in this
@@ -1540,6 +1543,53 @@
 		return !moved;
 	}
 	/**
+	* How much of the reply is quoted into the prefill.
+	*
+	* The prefill is the ONE place the quote is created, and everything downstream
+	* inherits its size: the composer holds it, Enter commits it as the user
+	* message, the command result repeats it inside `（指令：…）`
+	* (`src/host/command.ts`), and the continuation instruction injects that label
+	* back to the session model. An uncapped quote therefore turns a long answer
+	* into a wall the human scrolls past in three places and the reviewer pays for
+	* in tokens — while what a review actually needs from an answer is its point,
+	* which is at the top.
+	*
+	* The limit is NOT about the composer's cost: the host's trigger scan is linear
+	* at ~1.5 µs/KB of draft (measured), so a 30 KB quote costs ~40 µs per
+	* keystroke — no jank to avoid. This is about the three surfaces a human reads.
+	*/
+	const QUOTE_LIMIT = 4e3;
+	/** The sentence that makes the omission visible instead of silent. */
+	function truncatedNote(originalLength, keptLength) {
+		return `\n…（此处只引回答前 ${keptLength} 字，原文共 ${originalLength} 字，其余已省略；要 AtomCode 看别的片段，请手动补进这条指令）`;
+	}
+	/**
+	* Cut `text` to `limit` characters without splitting a surrogate pair.
+	*
+	* `String.prototype.slice` counts UTF-16 units, so cutting between an emoji's
+	* halves leaves an orphaned high surrogate — it renders as `�` in the composer
+	* and travels that way into the reviewer's instruction.
+	*/
+	function cutAt(text, limit) {
+		let end = limit;
+		const code = text.charCodeAt(end - 1);
+		if (code >= 55296 && code <= 56319) end -= 1;
+		return text.slice(0, end);
+	}
+	/**
+	* The command line one click pre-fills: the official command, plus the asked-for
+	* reply as its argument — capped, and saying so when it caps.
+	*
+	* @param reply the quoted reply; `''` for none.
+	* @returns the text to insert (never empty).
+	*/
+	function prefillFor(reply) {
+		if (reply === "") return "/atomcode-review";
+		if (reply.length <= QUOTE_LIMIT) return "/atomcode-review " + reply;
+		const kept = cutAt(reply, QUOTE_LIMIT);
+		return "/atomcode-review " + kept + truncatedNote(reply.length, kept.length);
+	}
+	/**
 	* Build the hand-off pair: the null-rendering rail and the prefill function.
 	*
 	* @returns {{
@@ -1570,12 +1620,11 @@
 		*/
 		function requestReview(input) {
 			const reply = input && input.text !== null && input.text !== void 0 ? String(input.text) : "";
-			const command = "/atomcode-review" + (reply !== "" ? " " + reply : "");
 			if (insertDraftFor === null) {
 				warn("输入框还没挂载，锐评指令没插入，请手动输入 /atomcode-review");
 				return false;
 			}
-			return insertDraftFor(command, "锐评指令");
+			return insertDraftFor(prefillFor(reply), "锐评指令");
 		}
 		/**
 		* The `conversation.input.left` occupant: `null`, and that is the whole point.

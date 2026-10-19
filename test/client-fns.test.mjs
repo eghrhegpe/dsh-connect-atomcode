@@ -238,6 +238,49 @@ describe('createReviewHandoff — 锐评 PREFILLS the official command, it never
     });
   });
 
+  it('caps the quote, and says in the text that it capped', () => {
+    // The prefill is where the quote is born, so everything downstream inherits
+    // its size: the composer holds it, Enter commits it as the user message, the
+    // command result repeats it inside `（指令：…）` (src/host/command.ts), and the
+    // continuation instruction injects that same label back to the session model.
+    // A wall of answer in all four is what this case exists for; the note in the
+    // text is what keeps the omission visible instead of silent.
+    const seen = [];
+    const { ReviewRail, requestReview } = createReviewHandoff();
+    ReviewRail({ inputActions: recordingRail(seen) });
+    const reply = 'A'.repeat(12_345);
+    assert.equal(requestReview({ text: reply }), true);
+    const text = seen.at(-1);
+    assert.ok(text.startsWith('/atomcode-review ' + 'A'.repeat(4000)), 'the quote is the head of the reply, verbatim');
+    assert.ok(!text.includes('A'.repeat(4001)), 'not one character over the cap');
+    assert.match(text, /只引回答前 4000 字/);
+    assert.match(text, /原文共 12345 字/);
+    assert.ok(text.length < 4200, `the whole prefill stays small (was ${text.length})`);
+  });
+
+  it('caps at a surrogate boundary, so half an emoji never reaches the composer', () => {
+    // 3999 ASCII chars put the cut in the middle of the emoji that follows it:
+    // slicing at 4000 UTF-16 units keeps the pair's high half and orphans it —
+    // it renders as `�` and travels that way into the reviewer's instruction.
+    const seen = [];
+    const { ReviewRail, requestReview } = createReviewHandoff();
+    ReviewRail({ inputActions: recordingRail(seen) });
+    requestReview({ text: 'x'.repeat(3999) + '🙂' + 'y'.repeat(5000) });
+    const text = seen.at(-1);
+    assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(text), 'no lone high surrogate');
+    assert.ok(!/(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text), 'no lone low surrogate');
+    assert.match(text, /只引回答前 3999 字/, 'the cut backs off by one whole unit');
+  });
+
+  it('at exactly the cap, quotes everything and adds no note', () => {
+    const seen = [];
+    const { ReviewRail, requestReview } = createReviewHandoff();
+    ReviewRail({ inputActions: recordingRail(seen) });
+    const reply = 'B'.repeat(4000);
+    requestReview({ text: reply });
+    assert.equal(seen.at(-1), '/atomcode-review ' + reply, 'the cap is inclusive — only a longer reply is trimmed');
+  });
+
   it('names the failure when no rail has rendered yet', () => {
     withWarnings((warnings) => {
       const { requestReview } = createReviewHandoff();
