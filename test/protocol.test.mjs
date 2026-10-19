@@ -1,9 +1,9 @@
 /**
- * protocol.test.mjs — the drift pins (v0.4).
+ * protocol.test.mjs — the drift pins (from an earlier minor).
  *
  * The bridge rides two PRIVATE, unversioned AtomCode surfaces: the /chat SSE
  * vocabulary and the `status` command's localized text. Every one of them can change under us with a binary
- * upgrade and no error. v0.4's answer is not a protocol handshake (none is
+ * upgrade and no error. That minor's answer is not a protocol handshake (none is
  * offered) but **observable degradation**: a silent failure mode becomes either
  * a named diagnostic or a panel signal.
  *
@@ -87,7 +87,7 @@ describe('SSE protocol drift — an unknown vocabulary must fail LOUDLY', () => 
   });
 
   it('names the observed types instead of "ended before done"', async () => {
-    // A post-upgrade daemon that renamed every event. The v0.3 behaviour was
+    // A post-upgrade daemon that renamed every event. The earlier behaviour was
     // `ok:false, error:"atomcode SSE stream ended before done"` — technically
     // true, operationally useless (no hint that the PROTOCOL changed).
     const fake = await startFakeDaemon((req, res) => {

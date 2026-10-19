@@ -804,7 +804,7 @@ describe('stats route — auto-start on observation', () => {
   });
 
   it('a failed auto-start is retried after the cooldown, not dead for the mount', async () => {
-    // v0.3: `spawnTried` latched true forever and the start promise was cached,
+    // An earlier minor: `spawnTried` latched true forever and the start promise was cached,
     // so the FIRST failure (binary not yet installed) silenced auto-start for
     // the whole mount — installing AtomCode later changed nothing until a host
     // restart. The cooldown makes the failure recoverable.
@@ -862,7 +862,7 @@ describe('stats route — auto-start on observation', () => {
   });
 
   it('an in-flight start is never orphaned, so concurrent ASKS cannot double-spawn', async () => {
-    // The v0.4-first-cut bug: a `daemonStartSettled` flag latched true forever,
+    // A bug from an earlier first cut: a `daemonStartSettled` flag latched true forever,
     // and `ensureDaemon`'s "drop the stale successful start" path keyed on it —
     // so it also discarded a start that was still IN FLIGHT. With
     // `daemon_retry_secs: 0` a second caller then spawned a SECOND daemon
@@ -927,7 +927,7 @@ describe('stats route — auto-start on observation', () => {
     try {
       const route = mountRoute({ statePath, port: CLOSED_PORT });
       const { body } = await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
-      // These are the v0.4 drift pins. Their absence in the snapshot is exactly
+      // These are the drift pins from an earlier minor. Their absence in the snapshot is exactly
       // the silent-degradation hole that made an AtomCode upgrade invisible.
       assert.equal(typeof body.protocol, 'object');
       assert.equal(typeof body.protocol.daemonVersion, 'string');

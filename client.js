@@ -728,6 +728,31 @@
 		return `协议漂移：daemon 发来了本插件不认识的事件类型（${types.slice().sort().join(", ")}），AtomCode 可能已升级或改了事件名。本插件的轮数熔断靠计数 tool_start 生效——若被改名的正是这类被计数的事件，熔断会少计甚至完全不触发，此时 round_count 不可信，请调小 ask 的 max_rounds 或人工盯防。`;
 	}
 	/**
+	* Is this knob the user's choice, the plugin's shipped default, or unknowable?
+	*
+	* The host owns the answer: `cfg.authored` is derived from the RESOLVED value in
+	* `lib/index.js`, and a renderer comparing `value === fallback` would be a second
+	* copy of a number the host owns. So this asks the host when it answered, and
+	* only falls back to comparing when the host said nothing.
+	*
+	* 'unknown' is NOT decoration — it is the only honest answer when the host
+	* reports no `authored` branch AND sent no default to compare against. An older
+	* host (or the desktop install copy) hands us only the RESOLVED value, and
+	* `approvalMode: 'ask'` from it is either the user's choice or a build whose
+	* default is 'ask' — we cannot tell. Tagging that "（插件默认）" would assert what
+	* we do not know, the same class of lie as printing a guessed quota number
+	* (红线 2). So when we cannot tell, we do not tag at all.
+	*
+	* Shared by the read-only `turnBoundaryRows` and the inline editable controls in
+	* `PanelSettingsControls` (./index.ts), so both word "你改过没有" the same way.
+	*/
+	function boundaryVerdict(authored, key, value, fallback) {
+		if (authored && key in authored) return authored[key] === true ? "changed" : "default";
+		if (fallback === null || fallback === void 0 || fallback === "") return "unknown";
+		return value === fallback ? "default" : "changed";
+	}
+	const boundaryTag = (v) => v === "changed" ? "（已改）" : v === "default" ? "（插件默认）" : "";
+	/**
 	* The "回合边界" card's rows — a pure function so the honesty rule below is
 	* testable without a browser.
 	*
@@ -755,31 +780,25 @@
 		const briefMode = typeof src.reviewBriefMode === "string" ? src.reviewBriefMode : "";
 		const briefRejected = typeof src.reviewBriefModeRejected === "string" && src.reviewBriefModeRejected !== "" ? src.reviewBriefModeRejected : "";
 		const briefDefault = typeof defaults.reviewBriefMode === "string" ? defaults.reviewBriefMode : "";
-		const verdict = (key, value, fallback) => {
-			if (authored && key in authored) return authored[key] === true ? "changed" : "default";
-			if (fallback === null || fallback === void 0 || fallback === "") return "unknown";
-			return value === fallback ? "default" : "changed";
-		};
-		const tag = (v) => v === "changed" ? "（已改）" : v === "default" ? "（插件默认）" : "";
 		return [
 			{
 				label: "AtomCode 自动执行权限",
-				text: mode === "" ? "—" : modeRejected !== "" ? `${mode}（已回落：你填的是 ${modeRejected}）` : mode + tag(verdict("approvalMode", mode, approvalDefault)),
+				text: mode === "" ? "—" : modeRejected !== "" ? `${mode}（已回落：你填的是 ${modeRejected}）` : mode + boundaryTag(boundaryVerdict(authored, "approvalMode", mode, approvalDefault)),
 				title: "决定 AtomCode 在帮你跑工具（执行命令、改文件）时受多大限制。bypass = 全程自动执行、无需你逐次确认（出厂默认，且当前 daemon 对后台调用一律自动放行，所以切换这里实际不改变行为）；build / accept_edits / plan 是更保守的档位。" + (modeRejected !== "" ? `你填的「${modeRejected}」不是合法档位（只能是 build / accept_edits / bypass / plan），已回落到 ${mode}——照原样传过去每个回合都会被 daemon 以 422 拒绝。` : "")
 			},
 			{
 				label: "AtomCode 干活的文件夹",
-				text: dir === "" ? "（跟随本次会话的工作目录）" : dir + tag(verdict("workingDir", dir, null)),
+				text: dir === "" ? "（跟随本次会话的工作目录）" : dir + boundaryTag(boundaryVerdict(authored, "workingDir", dir, null)),
 				title: dir === "" ? "没单独指定 = AtomCode 在你这次会话所在的工作目录里干活" : "AtomCode 干活所在的文件夹"
 			},
 			{
 				label: "单次咨询最多轮数",
-				text: rounds === null ? "—" : rounds > 0 ? String(rounds) + tag(verdict("askMaxRounds", rounds, askDefault)) : "不限",
+				text: rounds === null ? "—" : rounds > 0 ? String(rounds) + boundaryTag(boundaryVerdict(authored, "askMaxRounds", rounds, askDefault)) : "不限",
 				title: "一次「问 AtomCode」最多让它自己循环多少轮（每轮可能调用工具、读文件）。到上限就停止等待结果（不是强行中止：daemon 那边可能还在后台跑完）。"
 			},
 			{
 				label: "评审时自动补提示词",
-				text: briefMode === "" ? "—" : briefRejected !== "" ? `${briefMode}（已回落：你填的是 ${briefRejected}）` : briefMode + tag(verdict("reviewBriefMode", briefMode, briefDefault)),
+				text: briefMode === "" ? "—" : briefRejected !== "" ? `${briefMode}（已回落：你填的是 ${briefRejected}）` : briefMode + boundaryTag(boundaryVerdict(authored, "reviewBriefMode", briefMode, briefDefault)),
 				title: "用「代码评审」时，如果你没写要评什么，是否自动附一段内置评审提示词。always = 总是附上（你写了也加在后面）；when-empty = 只有你没写时才补（你写了就原样发）；never = 从不补（你没写就直接拒绝）。" + (briefRejected !== "" ? `你填的「${briefRejected}」不是合法取值（只能是 always / when-empty / never），已回落到 ${briefMode}。` : "")
 			}
 		];
@@ -1925,6 +1944,16 @@
 				];
 				const currentBrief = cfg && typeof cfg.panelBriefMode === "string" ? cfg.panelBriefMode : "";
 				const currentDir = cfg && typeof cfg.panelWorkingDir === "string" ? cfg.panelWorkingDir : "";
+				const tagFor = (key, resolved, shippedDefault) => {
+					const authored = cfg && cfg.authored && typeof cfg.authored === "object" ? cfg.authored : null;
+					return boundaryTag(boundaryVerdict(authored, key, resolved, shippedDefault));
+				};
+				const tagStyle = {
+					color: "#9aa1ac",
+					fontSize: 10,
+					fontWeight: "normal",
+					marginLeft: 4
+				};
 				const [dirValue, setDirValue] = useState(currentDir);
 				const lastServerDir = useRef(currentDir);
 				if (currentDir !== lastServerDir.current) {
@@ -1965,7 +1994,7 @@
 				} }, h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
 					style: S.provLabel,
 					title: "这里的选择优先于插件配置（cordis.patch.yml）里 review_brief_mode；选「不覆盖」就回到配置值。含义：代码评审时是否自动补一段评审提示词"
-				}, "评审时自动补提示词"), h("select", {
+				}, "评审时自动补提示词"), h("span", { style: tagStyle }, tagFor("reviewBriefMode", cfg && cfg.reviewBriefMode, cfg && cfg.defaults && cfg.defaults.reviewBriefMode)), h("select", {
 					style: {
 						...briefPending ? {
 							...S.select,
@@ -1984,7 +2013,7 @@
 				}, m))))), briefError ? h("span", { style: S.valWarn }, briefError) : null, h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
 					style: S.provLabel,
 					title: "这里填的文件夹优先于插件配置里的默认目录；清空并保存 = 不覆盖，改回用配置值或本次会话目录。AtomCode 会在你填的这个文件夹里读文件、跑 git"
-				}, "AtomCode 干活的文件夹"), h("div", { style: {
+				}, "AtomCode 干活的文件夹"), h("span", { style: tagStyle }, tagFor("workingDir", cfg && cfg.defaultWorkingDir, null)), h("div", { style: {
 					display: "flex",
 					gap: 4,
 					flex: "1 1 auto",
@@ -2039,7 +2068,7 @@
 					return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
 						style: S.provLabel,
 						title: "这里的选择优先于插件配置里的 approval_mode；选「不覆盖」就回到配置值。含义：AtomCode 自动执行工具时受多大限制。注意：当前 daemon 对后台调用一律自动放行，切换这里实际不改变行为"
-					}, "AtomCode 自动执行权限"), h("select", {
+					}, "AtomCode 自动执行权限"), h("span", { style: tagStyle }, tagFor("approvalMode", cfg && cfg.approvalMode, cfg && cfg.defaults && cfg.defaults.approvalMode)), h("select", {
 						style: {
 							...S.select,
 							flex: "1 1 auto",
@@ -2072,7 +2101,7 @@
 					return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
 						style: S.provLabel,
 						title: "这里填的数字优先于插件配置里的 ask_max_rounds；0 = 不设上限（交给 daemon 治理）；留空 = 不覆盖。含义：一次「问 AtomCode」最多让它自己循环多少轮"
-					}, "单次咨询最多轮数"), h("div", { style: {
+					}, "单次咨询最多轮数"), h("span", { style: tagStyle }, tagFor("askMaxRounds", cfg && cfg.askMaxRounds, cfg && cfg.defaults && cfg.defaults.askMaxRounds)), h("div", { style: {
 						display: "flex",
 						gap: 4,
 						flex: "1 1 auto",

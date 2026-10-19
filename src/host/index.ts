@@ -26,16 +26,26 @@ import { createRuntime } from './runtime.ts';
 import { mountRoutes } from './routes.ts';
 import { mountAskTool } from './tools.ts';
 import { mountReviewCommand } from './command.ts';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
- * The plugin version — hand-edited here and in `package.json`, and the two must
- * agree (`test/wiring.test.mjs` pins this literal against the manifest). It is
- * handed to the runtime as `stats.pluginVersion`, and the stats body reports it
- * to the client.
+ * The plugin version — read from package.json at load, so there is exactly ONE
+ * hand-edited place instead of two. (The old form held a version literal here
+ * AND in package.json, and `test/wiring.test.mjs` pinned the pair together: a
+ * pair is not a source of truth, it is one typo away from drifting, and a test
+ * can only catch the drift after it has happened. The manifest names the
+ * release tag `git tag v<version>` and the npm publish, so the literal had to
+ * be checked — now it cannot disagree.)
+ *
+ * It is handed to the runtime as `stats.pluginVersion`, and the stats body
+ * reports it to the client. Resolved from `lib/` so the same read works in the
+ * checked-out repo and in an installed copy.
  */
-const PLUGIN = {
-  version: '0.5.1',
-} as const;
+const packageDir = dirname(fileURLToPath(import.meta.url));
+const packageJson = JSON.parse(readFileSync(join(packageDir, '..', 'package.json'), 'utf8')) as { version: string };
+const PLUGIN = { version: packageJson.version } as const;
 
 export const name = 'atomcode-bridge';
 export const inject = ['tools', 'webServer'];

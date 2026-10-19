@@ -33,6 +33,8 @@ import {
   providerRows,
   providerSelectModel,
   turnBoundaryRows,
+  boundaryTag,
+  boundaryVerdict,
   isLoopbackEndpoint,
   daemonStatusLine,
   protocolDriftNotice,
@@ -499,6 +501,22 @@ const REGISTRATION = {
       const currentBrief = cfg && typeof cfg.panelBriefMode === 'string' ? cfg.panelBriefMode : '';
       const currentDir = cfg && typeof cfg.panelWorkingDir === 'string' ? cfg.panelWorkingDir : '';
 
+      // "你改过没有" — the same wording the read-only rows used before these
+      // controls replaced them (./rows.ts boundaryTag). Without this the panel
+      // stops saying whether a value is the user's own choice or the shipped
+      // default, and a stock `bypass` installation reads as "someone set this".
+      // The host answers via `cfg.authored`, exactly as the read-only rows asked
+      // it; the resolved value and the shipped default are the same two inputs.
+      const tagFor = (
+        key: 'approvalMode' | 'workingDir' | 'askMaxRounds' | 'reviewBriefMode',
+        resolved: unknown,
+        shippedDefault: unknown,
+      ) => {
+        const authored = cfg && cfg.authored && typeof cfg.authored === 'object' ? cfg.authored : null;
+        return boundaryTag(boundaryVerdict(authored, key, resolved, shippedDefault));
+      };
+      const tagStyle = { color: '#9aa1ac', fontSize: 10, fontWeight: 'normal' as const, marginLeft: 4 };
+
       // Local editing state for the working-dir input, seeded from the server
       // value. Syncs when the server value changes (a poll or a successful
       // write from elsewhere), so the input always reflects the latest state.
@@ -549,6 +567,7 @@ const REGISTRATION = {
             'div',
             { style: S.provFieldRow },
             h('span', { style: S.provLabel, title: '这里的选择优先于插件配置（cordis.patch.yml）里 review_brief_mode；选「不覆盖」就回到配置值。含义：代码评审时是否自动补一段评审提示词' }, '评审时自动补提示词'),
+            h('span', { style: tagStyle }, tagFor('reviewBriefMode', cfg && cfg.reviewBriefMode, cfg && cfg.defaults && cfg.defaults.reviewBriefMode)),
             h(
               'select',
               {
@@ -572,6 +591,7 @@ const REGISTRATION = {
             'div',
             { style: S.provFieldRow },
             h('span', { style: S.provLabel, title: '这里填的文件夹优先于插件配置里的默认目录；清空并保存 = 不覆盖，改回用配置值或本次会话目录。AtomCode 会在你填的这个文件夹里读文件、跑 git' }, 'AtomCode 干活的文件夹'),
+            h('span', { style: tagStyle }, tagFor('workingDir', cfg && cfg.defaultWorkingDir, null)),
             h(
               'div',
               { style: { display: 'flex', gap: 4, flex: '1 1 auto', minWidth: 0 } },
@@ -613,6 +633,7 @@ const REGISTRATION = {
               'div',
               { style: S.provFieldRow },
               h('span', { style: S.provLabel, title: '这里的选择优先于插件配置里的 approval_mode；选「不覆盖」就回到配置值。含义：AtomCode 自动执行工具时受多大限制。注意：当前 daemon 对后台调用一律自动放行，切换这里实际不改变行为' }, 'AtomCode 自动执行权限'),
+              h('span', { style: tagStyle }, tagFor('approvalMode', cfg && cfg.approvalMode, cfg && cfg.defaults && cfg.defaults.approvalMode)),
               h(
                 'select',
                 {
@@ -649,6 +670,7 @@ const REGISTRATION = {
               'div',
               { style: S.provFieldRow },
               h('span', { style: S.provLabel, title: '这里填的数字优先于插件配置里的 ask_max_rounds；0 = 不设上限（交给 daemon 治理）；留空 = 不覆盖。含义：一次「问 AtomCode」最多让它自己循环多少轮' }, '单次咨询最多轮数'),
+              h('span', { style: tagStyle }, tagFor('askMaxRounds', cfg && cfg.askMaxRounds, cfg && cfg.defaults && cfg.defaults.askMaxRounds)),
               h(
                 'div',
                 { style: { display: 'flex', gap: 4, flex: '1 1 auto', minWidth: 0 } },

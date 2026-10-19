@@ -358,7 +358,7 @@ describe('atomcode_ask — session continuity glue', () => {
   });
 
   it('reset_session clears a stale mapping AND stops this turn from resuming it', async () => {
-    // The escape hatch for a daemon-side session that expired: v0.3 had a
+    // The escape hatch for a daemon-side session that expired: an earlier minor had a
     // `drop()` on the store with no caller at all, so a stale id could only be
     // cleared by hand-editing sessions.json.
     const statePath = tempState();
@@ -410,7 +410,7 @@ describe('atomcode_ask — bounded default and reply truncation', () => {
   after(() => fake.server.close());
 
   it('a long reply is marked truncated instead of silently clipped', async () => {
-    // v0.3 did `reply.slice(0, 200_000)` with no marker: the model read a
+    // An earlier minor did `reply.slice(0, 200_000)` with no marker: the model read a
     // half-finished report as a complete answer. The mark + flag make the loss
     // explicit.
     const server = createServer((req, res) => {

@@ -496,7 +496,7 @@ export function buildStatsBody(stats: StatsBag, quota: any): StatsSnapshot {
     },
     // Drift/provenance signals: which daemon build we talk to, and whether the
     // quota parser has stopped recognizing the status text. Both are silent
-    // degradations in v0.3 — now they are observable facts on the panel.
+    // degradations from an earlier minor — now they are observable facts on the panel.
     protocol: {
       daemonVersion: stats.daemonVersion,
       verifiedGeneration: '5.x',

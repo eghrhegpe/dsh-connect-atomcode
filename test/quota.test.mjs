@@ -178,7 +178,7 @@ it('handles a missing result object', () => {
 });
 
 /**
- * Refusals found by AtomCode reviewing the v0.4 commit (2026-10-14).
+ * Refusals found by AtomCode reviewing an earlier minor (2026-10-14).
  *
  * Both cases share one shape: the line parses "successfully" and yields a
  * number that is NOT the window usage. Before these guards the parser took the

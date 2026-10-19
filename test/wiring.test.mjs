@@ -1,7 +1,7 @@
 /**
  * wiring.test.mjs — tools-only plugin wiring under a fake Cordis context.
  *
- * v0.3 ships no LlmAdapter: the bridge registers exactly one model tool
+ * This minor ships no LlmAdapter: the bridge registers exactly one model tool
  * (`atomcode_ask`) and nothing on the `llm` service.
  */
 import assert from 'node:assert/strict';
@@ -99,7 +99,7 @@ function fakeCtx() {
   return { ctx, calls };
 }
 
-describe('lib/index.js — tools-only wiring (v0.3)', () => {
+describe('lib/index.js — tools-only wiring', () => {
   it('exports name/inject/apply; inject is ["tools", "webServer"], no host LLM import', async () => {
     const mod = await import(fileUrl(BRIDGE));
     assert.equal(mod.name, 'atomcode-bridge');
@@ -107,7 +107,7 @@ describe('lib/index.js — tools-only wiring (v0.3)', () => {
     assert.ok(mod.inject.includes('webServer'));
     assert.equal(typeof mod.apply, 'function');
     const source = readFileSync(BRIDGE, 'utf8');
-    assert.ok(!source.includes('@deepseek-ai/dsh-llm'), 'v0.3 must not import the LLM service');
+    assert.ok(!source.includes('@deepseek-ai/dsh-llm'), 'this minor must not import the LLM service');
     assert.ok(!source.includes('registerAdapter'), 'no adapter registration');
     assert.ok(!source.includes('registerConfigurableProviders'), 'no provider directory registration');
   });
@@ -293,7 +293,7 @@ describe('lib/index.js — ask safety defaults', () => {
     // Sentinel 8: inert mount (auto_start false, descriptor-only assertions).
     mod.apply(ctx, { state_path: statePath, auto_start: false, port: sentinelPort(8) });
     const ask = calls.tools.find((t) => t.name === 'atomcode_ask');
-    // v0.3 defaulted to 0 (unlimited) alongside approval_mode: bypass, i.e.
+    // An earlier minor defaulted to 0 (unlimited) alongside approval_mode: bypass, i.e.
     // "unattended autonomous agent with no ceiling" was the SHIPPED default.
     assert.doesNotMatch(ask.parameters.properties.max_rounds.description, /默认不限/);
     assert.match(ask.parameters.properties.max_rounds.description, /25/, 'the bounded default must be documented');
@@ -338,7 +338,7 @@ describe('src/host/sessions.ts — key prefixing', () => {
   });
 
   it('count() is prefix-scoped, so the panel does not inflate with a sibling profile', async () => {
-    // v0.3 counted EVERY key in the shared file, so a desktop profile's tracked
+    // An earlier minor counted EVERY key in the shared file, so a desktop profile's tracked
     // sessions showed up in the web panel's "已跟踪会话" count.
     const f = mkdtempSync(join(tmpdir(), 'atomcode-count-'));
     const p = join(f, 's.json');
@@ -823,29 +823,53 @@ describe('version truth — the manifest and the reported version cannot disagre
   // names the release tag (`git tag v<version>`) and the npm publish, so a
   // mismatch here would mislabel both.
   //
-  // The third place — release numbers written into PROSE (`// the 0.4.3 split`) —
-  // is not tracked but BANNED, asserted by the last test in this block. The
-  // release runbook used to list those labels as a thing to hand-check; a list
-  // that only a human counts is a list that drifts.
+  // The second place — release numbers written into PROSE (`// the God-module
+  // split`, `// the abort path`) — is not tracked but BANNED, asserted by the last
+  // test in this block. The release runbook used to list those labels as a thing
+  // to hand-check; a list that only a human counts is a list that drifts.
   //
   // Reading `src/` as TEXT (never importing it) is deliberate and safe here. The
   // "tests hit artifacts, not sources" rule exists for module identity — see the
   // `setSpawnOverride` note at the top of this file — and a text read shares no
   // module state.
-  it('package.json version === the version in the src/host stats body', () => {
+  it('package.json is the only version declaration in the host half', () => {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
-    const src = readFileSync(join(__dirname, '..', 'src', 'host', 'index.ts'), 'utf8');
-    const m = src.match(/^\s*version:\s*'([^']+)',\s*$/m);
-    assert.ok(m, 'src/host/index.ts must declare a version literal in its stats body');
-    assert.equal(m[1], pkg.version, `package.json says ${pkg.version}, the plugin reports ${m[1]}`);
+    // The version is read from the manifest, not declared twice. A second literal
+    // is one typo away from the manifest, and the pair that used to be pinned here
+    // (a literal in src/host/index.ts AND one in package.json) could only be
+    // caught after the drift had happened.
+    const hostDir = join(__dirname, '..', 'src', 'host');
+    const literal = [];
+    for (const f of readdirSync(hostDir).filter((x) => x.endsWith('.ts'))) {
+      readFileSync(join(hostDir, f), 'utf8')
+        .split(/\r?\n/)
+        .forEach((line, i) => {
+          if (/^\s*version:\s*'([^']+)',?\s*$/.test(line)) {
+            literal.push(`${f}:${i + 1}: ${line.trim()}`);
+          }
+        });
+    }
+    assert.deepStrictEqual(
+      literal,
+      [],
+      'no src/host file may declare a version literal — read package.json instead. Offenders:\n' + literal.join('\n'),
+    );
+    const src = readFileSync(join(hostDir, 'index.ts'), 'utf8');
+    assert.match(src, /package\.json/, 'index.ts must read the version from the manifest');
+    assert.ok(src.includes('version'), 'index.ts still reports a version');
   });
 
-  it('the committed artifact agrees too — the chain manifest → src → lib is whole', () => {
+  it('the committed artifact reports the manifest version at runtime', () => {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
     const built = readFileSync(BRIDGE, 'utf8');
+    // lib/index.js reaches for the manifest instead of carrying a copied literal.
+    // The chain manifest → src → lib holds because `build-gate.test.mjs` proves
+    // lib/ is a faithful build of src/; here we only confirm the artifact asks the
+    // manifest for its number and does not embed a stale copy beside it.
+    assert.ok(built.includes('package.json'), 'lib/index.js must read the manifest for its version');
     assert.ok(
-      built.includes(`version: "${pkg.version}"`),
-      `lib/index.js must be built from a source reporting ${pkg.version}`,
+      !built.includes(`version: "${pkg.version}"`) && !built.includes(`version: '${pkg.version}'`),
+      `lib/index.js must not carry a copied "${pkg.version}" literal alongside the manifest`,
     );
   });
 
@@ -859,12 +883,20 @@ describe('version truth — the manifest and the reported version cannot disagre
   //
   // So the rule is now a BAN rather than a count: name the EVENT ("the apply()
   // split", "the abort path", "the earlier gate"), never the release, in any
-  // source or test comment. The release number belongs in exactly two hand-edited
-  // places (asserted above) plus CHANGELOG.md, which is generated from git log.
+  // source or test comment. The release number belongs in ONE hand-edited place —
+  // package.json, read at load by `src/host/index.ts`, asserted above — plus
+  // CHANGELOG.md, which is generated from git log.
   //
   // This is what makes the ban enforceable rather than aspirational: a `vX.Y.Z`
   // token anywhere in `src/`, `test/` or `tsdown.config.mjs` fails here, so the
   // next "it's just a comment" version tag cannot land.
+  //
+  // The matcher is `\bv\d+(\.\d+){1,2}\b`: it trips on BOTH a bare two-part tag
+  // and a full three-part tag, and the leading `\b` keeps a tag glued to a word
+  // (as in `0v0.3`) from reading as a release — the older
+  // `/v\d+\.\d+\.\d+/` demanded a full three-part form, so a two-part tag like
+  // "this minor ships no LlmAdapter" sailed past it and a bare minor tripped
+  // nothing at all.
   it('no src/ or test/ file carries a vX.Y.Z release label in prose', () => {
     const ROOT = join(__dirname, '..');
     const roots = [join(ROOT, 'src'), join(ROOT, 'test')];
@@ -883,7 +915,7 @@ describe('version truth — the manifest and the reported version cannot disagre
       readFileSync(p, 'utf8')
         .split(/\r?\n/)
         .forEach((line, i) => {
-          if (/v\d+\.\d+\.\d+/.test(line)) {
+          if (/\bv\d+(\.\d+){1,2}\b/.test(line)) {
             offenders.push(`${p.slice(ROOT.length + 1)}:${i + 1}: ${line.trim()}`);
           }
         });

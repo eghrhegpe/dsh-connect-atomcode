@@ -112,6 +112,41 @@ export function protocolDriftNotice(protocol: ProtocolBranch | null | undefined)
 
 // ── 回合边界 ──────────────────────────────────────────────────────────────
 
+export type BoundaryVerdict = 'changed' | 'default' | 'unknown';
+
+/**
+ * Is this knob the user's choice, the plugin's shipped default, or unknowable?
+ *
+ * The host owns the answer: `cfg.authored` is derived from the RESOLVED value in
+ * `lib/index.js`, and a renderer comparing `value === fallback` would be a second
+ * copy of a number the host owns. So this asks the host when it answered, and
+ * only falls back to comparing when the host said nothing.
+ *
+ * 'unknown' is NOT decoration — it is the only honest answer when the host
+ * reports no `authored` branch AND sent no default to compare against. An older
+ * host (or the desktop install copy) hands us only the RESOLVED value, and
+ * `approvalMode: 'ask'` from it is either the user's choice or a build whose
+ * default is 'ask' — we cannot tell. Tagging that "（插件默认）" would assert what
+ * we do not know, the same class of lie as printing a guessed quota number
+ * (红线 2). So when we cannot tell, we do not tag at all.
+ *
+ * Shared by the read-only `turnBoundaryRows` and the inline editable controls in
+ * `PanelSettingsControls` (./index.ts), so both word "你改过没有" the same way.
+ */
+export function boundaryVerdict(
+  authored: Record<string, unknown> | null | undefined,
+  key: 'approvalMode' | 'workingDir' | 'askMaxRounds' | 'reviewBriefMode',
+  value: unknown,
+  fallback: unknown,
+): BoundaryVerdict {
+  if (authored && key in authored) return authored[key] === true ? 'changed' : 'default';
+  if (fallback === null || fallback === undefined || fallback === '') return 'unknown';
+  return value === fallback ? 'default' : 'changed';
+}
+
+export const boundaryTag = (v: BoundaryVerdict): string =>
+  v === 'changed' ? '（已改）' : v === 'default' ? '（插件默认）' : '';
+
 /**
  * The "回合边界" card's rows — a pure function so the honesty rule below is
  * testable without a browser.
@@ -153,27 +188,6 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
       ? src.reviewBriefModeRejected
       : '';
   const briefDefault = typeof defaults.reviewBriefMode === 'string' ? defaults.reviewBriefMode : '';
-  // Verdict: 'changed' | 'default' | 'unknown'.
-  //
-  // 'unknown' is NOT decoration — it is the only honest answer when the host
-  // reports no `authored` branch AND sent no default to compare against. An
-  // older host (or the desktop install copy) hands us only the RESOLVED value,
-  // and `approvalMode: 'ask'` from it is either the user's choice or a build
-  // whose default is 'ask' — we cannot tell. Tagging that "（插件默认）" would
-  // assert what we do not know, the same class of lie as printing a guessed
-  // quota number (红线 2). So when we cannot tell, we do not tag at all.
-  type Verdict = 'changed' | 'default' | 'unknown';
-  const verdict = (
-    key: 'approvalMode' | 'workingDir' | 'askMaxRounds' | 'reviewBriefMode',
-    value: unknown,
-    fallback: unknown,
-  ): Verdict => {
-    if (authored && key in authored) return authored[key] === true ? 'changed' : 'default';
-    if (fallback === null || fallback === undefined || fallback === '') return 'unknown';
-    return value === fallback ? 'default' : 'changed';
-  };
-  const tag = (v: Verdict): string =>
-    v === 'changed' ? '（已改）' : v === 'default' ? '（插件默认）' : '';
   return [
     {
       label: 'AtomCode 自动执行权限',
@@ -182,7 +196,7 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
           ? '—'
           : modeRejected !== ''
             ? `${mode}（已回落：你填的是 ${modeRejected}）`
-            : mode + tag(verdict('approvalMode', mode, approvalDefault)),
+            : mode + boundaryTag(boundaryVerdict(authored, 'approvalMode', mode, approvalDefault)),
       title:
         '决定 AtomCode 在帮你跑工具（执行命令、改文件）时受多大限制。bypass = 全程自动执行、无需你逐次确认（出厂默认，且当前 daemon 对后台调用一律自动放行，所以切换这里实际不改变行为）；build / accept_edits / plan 是更保守的档位。' +
         (modeRejected !== ''
@@ -191,7 +205,7 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
     },
     {
       label: 'AtomCode 干活的文件夹',
-      text: dir === '' ? '（跟随本次会话的工作目录）' : dir + tag(verdict('workingDir', dir, null)),
+      text: dir === '' ? '（跟随本次会话的工作目录）' : dir + boundaryTag(boundaryVerdict(authored, 'workingDir', dir, null)),
       title: dir === '' ? '没单独指定 = AtomCode 在你这次会话所在的工作目录里干活' : 'AtomCode 干活所在的文件夹',
     },
     {
@@ -200,7 +214,7 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
         rounds === null
           ? '—'
           : rounds > 0
-            ? String(rounds) + tag(verdict('askMaxRounds', rounds, askDefault))
+            ? String(rounds) + boundaryTag(boundaryVerdict(authored, 'askMaxRounds', rounds, askDefault))
             : '不限',
       title:
         '一次「问 AtomCode」最多让它自己循环多少轮（每轮可能调用工具、读文件）。到上限就停止等待结果（不是强行中止：daemon 那边可能还在后台跑完）。',
@@ -212,7 +226,7 @@ export function turnBoundaryRows(cfg: ConfigBranch | null | undefined): Boundary
           ? '—'
           : briefRejected !== ''
             ? `${briefMode}（已回落：你填的是 ${briefRejected}）`
-            : briefMode + tag(verdict('reviewBriefMode', briefMode, briefDefault)),
+            : briefMode + boundaryTag(boundaryVerdict(authored, 'reviewBriefMode', briefMode, briefDefault)),
       title:
         '用「代码评审」时，如果你没写要评什么，是否自动附一段内置评审提示词。always = 总是附上（你写了也加在后面）；' +
         'when-empty = 只有你没写时才补（你写了就原样发）；never = 从不补（你没写就直接拒绝）。' +

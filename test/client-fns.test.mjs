@@ -1,7 +1,7 @@
 /**
  * client-fns.test.mjs — the renderer's pure formatters.
  *
- * v0.3 tested the client half's REGISTRATION CONTRACT only (id, inject, slot
+ * An earlier minor tested the client half's REGISTRATION CONTRACT only (id, inject, slot
  * seats). Its actual logic — the countdown arithmetic, the 100% colour rule,
  * the bar clamp — had zero coverage, even though those are exactly the edge
  * cases that produce a lying panel (a countdown frozen at 0, a "77%" bar for a
