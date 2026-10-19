@@ -1328,6 +1328,361 @@
 	}
 
 //#endregion
+//#region src/client/provider-select.ts
+	const EFFORT_TITLE = "推理力度：模型每轮思考的深度。low 更快更省额度、high 更深入。选一个会让 daemon 记下来，之后的咨询默认用它；也可以在某一次咨询时临时传 reasoning_effort 覆盖";
+	/**
+	* Build the model dropdown row.
+	*
+	* @param {ProviderSelectDeps} deps
+	* @returns {(props: any) => ReactElement} the `ProviderSelectRow` component.
+	*/
+	function createProviderSelect(deps) {
+		const { h, useState, postProvider, postReasoningEffort, adoptProviderSnapshot } = deps;
+		/**
+		* The interactive provider control: a dropdown over the ONE model ladder.
+		*
+		* There used to be two of these — ask listed daemon model profiles, review
+		* listed config.toml direct entries, and 红线 8 existed to keep them from
+		* being read as one knob. The review namespace died with its CLI, so the
+		* panel shows one control for the one ladder both entry points climb.
+		*
+		* Pending/error state is local, and the control is never swapped back to static
+		* text — a failed write must stay visible with its reason, or the user cannot
+		* tell "the plugin refused" from "my click did nothing".
+		*/
+		function ProviderSelectRow({ label, provider, fallbackLabel, title, reload }) {
+			const model = providerSelectModel(provider, fallbackLabel);
+			const [note, setNote] = useState("");
+			const [pending, setPending] = useState(false);
+			const [effortPending, setEffortPending] = useState(false);
+			const [effortError, setEffortError] = useState("");
+			const effortLevels = model.effortLevels && model.effortLevels.length > 0 ? model.effortLevels : [];
+			const currentEffort = typeof model.currentEffort === "string" ? model.currentEffort : "";
+			const effortHasCurrent = effortLevels.indexOf(currentEffort) >= 0;
+			const effortValue = effortHasCurrent ? currentEffort : "";
+			const onEffortChange = async (event) => {
+				const value = event && event.target ? event.target.value : "";
+				if (value === "" || value === currentEffort) return;
+				setEffortPending(true);
+				setEffortError("");
+				const result = await postReasoningEffort(value);
+				setEffortPending(false);
+				if (!result.ok) {
+					setEffortError("保存失败：" + result.error);
+					return;
+				}
+				if (typeof reload === "function") reload();
+			};
+			const onChange = async (event) => {
+				const value = event && event.target ? event.target.value : "";
+				setPending(true);
+				setNote("");
+				const result = await postProvider(value);
+				setPending(false);
+				if (!result.ok) {
+					setNote("保存失败：" + result.error);
+					return;
+				}
+				adoptProviderSnapshot(result.provider);
+				if (typeof reload === "function") reload();
+			};
+			const override = model.note;
+			const trouble = model.disabled ? model.reason : "";
+			const warning = model.warning || "";
+			const advisory = [warning, override].filter((part) => part !== "").join(" · ");
+			return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
+				style: S.provLabel,
+				title
+			}, label), h("select", {
+				style: {
+					...model.disabled || pending ? {
+						...S.select,
+						...S.selectOff
+					} : S.select,
+					flex: "1 1 auto",
+					minWidth: 0
+				},
+				value: model.value,
+				disabled: model.disabled || pending,
+				onChange,
+				title: trouble || override || warning || title,
+				"aria-label": label
+			}, model.options.map((option, index) => h("option", {
+				key: "prov-" + index,
+				value: option.value
+			}, option.label)))), trouble ? h("span", {
+				style: S.valWarn,
+				title: trouble
+			}, trouble) : null, advisory ? h("span", {
+				style: S.valWarn,
+				title: advisory
+			}, advisory) : null, note ? h("span", { style: S.valIdle }, note) : null, effortLevels.length > 0 ? h("div", { style: {
+				display: "flex",
+				flexDirection: "column",
+				gap: 4
+			} }, h("div", { style: S.provFieldRow }, h("span", {
+				style: S.provLabel,
+				title: EFFORT_TITLE
+			}, "推理力度"), h("select", {
+				style: {
+					...effortPending ? {
+						...S.select,
+						...S.selectOff
+					} : S.select,
+					flex: "1 1 auto",
+					minWidth: 0
+				},
+				value: effortValue,
+				disabled: effortPending,
+				onChange: onEffortChange,
+				title: EFFORT_TITLE,
+				"aria-label": "推理力度"
+			}, effortLevels.map((level) => h("option", {
+				key: "effort-" + level,
+				value: level
+			}, level)).concat(effortHasCurrent ? [] : [h("option", {
+				key: "effort-unset",
+				value: "",
+				disabled: true
+			}, "未设置")]))), effortError ? h("span", { style: S.valWarn }, effortError) : null) : null);
+		}
+		return ProviderSelectRow;
+	}
+
+//#endregion
+//#region src/client/panel-controls.ts
+/**
+	* Build the panel-settings controls.
+	*
+	* @param {PanelControlsDeps} deps
+	* @returns {(props: any) => ReactElement} the `PanelSettingsControls` component.
+	*/
+	function createPanelControls(deps) {
+		const { h, useState, useRef, postPanelSettings } = deps;
+		/**
+		* The panel-settings controls: a brief-mode dropdown and a working-dir input.
+		*
+		* These override the patch fields at execution time (panel-settings.json),
+		* so a click takes effect on the very next turn — no reload needed. The
+		* current values come from the stats snapshot (`config.panelBriefMode`,
+		* `config.panelWorkingDir`); `null` means "no override, patch value applies".
+		*
+		* P1 fix: the working-dir input is LOCAL-STATE driven (seeded from the
+		* server value when it changes), so focus+blur without typing does NOT
+		* POST null. A save only fires when the value differs from the current
+		* server value. An explicit clear (empty string + save button click) is
+		* the only way to remove the override.
+		*/
+		function PanelSettingsControls({ cfg, reload }) {
+			const [briefPending, setBriefPending] = useState(false);
+			const [briefError, setBriefError] = useState("");
+			const [dirPending, setDirPending] = useState(false);
+			const [dirError, setDirError] = useState("");
+			const briefModes = [
+				"always",
+				"when-empty",
+				"never"
+			];
+			const currentBrief = cfg && typeof cfg.panelBriefMode === "string" ? cfg.panelBriefMode : "";
+			const currentDir = cfg && typeof cfg.panelWorkingDir === "string" ? cfg.panelWorkingDir : "";
+			const tagFor = (key, resolved, shippedDefault) => {
+				const authored = cfg && cfg.authored && typeof cfg.authored === "object" ? cfg.authored : null;
+				return boundaryTag(boundaryVerdict(authored, key, resolved, shippedDefault));
+			};
+			const tagStyle = {
+				color: "#9aa1ac",
+				fontSize: 10,
+				fontWeight: "normal",
+				marginLeft: 4
+			};
+			const [dirValue, setDirValue] = useState(currentDir);
+			const lastServerDir = useRef(currentDir);
+			if (currentDir !== lastServerDir.current) {
+				lastServerDir.current = currentDir;
+				setDirValue(currentDir);
+			}
+			const onBriefChange = async (event) => {
+				const value = event && event.target ? event.target.value : "";
+				if (value === currentBrief) return;
+				setBriefPending(true);
+				setBriefError("");
+				const result = await postPanelSettings({ briefMode: value === "" ? null : value });
+				setBriefPending(false);
+				if (!result.ok) {
+					setBriefError("保存失败：" + result.error);
+					return;
+				}
+				if (typeof reload === "function") reload();
+			};
+			/** Only saves when the value differs from the current server state. */
+			const saveDir = async () => {
+				const trimmed = dirValue.trim();
+				if (trimmed === currentDir) return;
+				setDirPending(true);
+				setDirError("");
+				const result = await postPanelSettings({ workingDir: trimmed === "" ? null : trimmed });
+				setDirPending(false);
+				if (!result.ok) {
+					setDirError("保存失败：" + result.error);
+					return;
+				}
+				if (typeof reload === "function") reload();
+			};
+			return h("div", { style: {
+				display: "flex",
+				flexDirection: "column",
+				gap: 6
+			} }, h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
+				style: S.provLabel,
+				title: "这里的选择优先于插件配置（cordis.patch.yml）里 review_brief_mode；选「不覆盖」就回到配置值。含义：代码评审时是否自动补一段评审提示词"
+			}, "评审时自动补提示词"), h("span", { style: tagStyle }, tagFor("reviewBriefMode", cfg && cfg.reviewBriefMode, cfg && cfg.defaults && cfg.defaults.reviewBriefMode)), h("select", {
+				style: {
+					...briefPending ? {
+						...S.select,
+						...S.selectOff
+					} : S.select,
+					flex: "1 1 auto",
+					minWidth: 0
+				},
+				value: currentBrief,
+				disabled: briefPending,
+				onChange: onBriefChange,
+				"aria-label": "评审时自动补提示词"
+			}, h("option", { value: "" }, "不覆盖（用配置 " + (cfg && typeof cfg.reviewBriefMode === "string" ? cfg.reviewBriefMode : "默认") + "）"), briefModes.map((m) => h("option", {
+				key: m,
+				value: m
+			}, m))))), briefError ? h("span", { style: S.valWarn }, briefError) : null, h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
+				style: S.provLabel,
+				title: "这里填的文件夹优先于插件配置里的默认目录；清空并保存 = 不覆盖，改回用配置值或本次会话目录。AtomCode 会在你填的这个文件夹里读文件、跑 git"
+			}, "AtomCode 干活的文件夹"), h("span", { style: tagStyle }, tagFor("workingDir", cfg && cfg.defaultWorkingDir, null)), h("div", { style: {
+				display: "flex",
+				gap: 4,
+				flex: "1 1 auto",
+				minWidth: 0
+			} }, h("input", {
+				style: {
+					...S.select,
+					flex: "1 1 auto",
+					minWidth: 0,
+					padding: "2px 6px",
+					fontSize: 12
+				},
+				value: dirValue,
+				placeholder: currentDir || "不覆盖（用配置/会话目录）",
+				disabled: dirPending,
+				onChange: (e) => setDirValue(e.target ? e.target.value : ""),
+				onKeyDown: (e) => {
+					if (e.key === "Enter") saveDir();
+				},
+				"aria-label": "AtomCode 干活的文件夹（面板覆盖）"
+			}), h("button", {
+				style: {
+					...S.select,
+					width: "auto",
+					flex: "0 0 auto",
+					fontSize: 11,
+					cursor: dirPending ? "wait" : "pointer",
+					whiteSpace: "nowrap"
+				},
+				disabled: dirPending || dirValue.trim() === currentDir,
+				onClick: saveDir
+			}, dirPending ? "…" : "保存")))), dirError ? h("span", { style: S.valWarn }, dirError) : null, (() => {
+				const approvalModes = [
+					"build",
+					"accept_edits",
+					"bypass",
+					"plan"
+				];
+				const currentApproval = cfg && typeof cfg.panelApprovalMode === "string" ? cfg.panelApprovalMode : "";
+				const onApprovalChange = async (event) => {
+					const value = event && event.target ? event.target.value : "";
+					if (value === currentApproval) return;
+					setBriefPending(true);
+					const result = await postPanelSettings({ approvalMode: value === "" ? null : value });
+					setBriefPending(false);
+					if (!result.ok) {
+						setBriefError("保存失败：" + result.error);
+						return;
+					}
+					if (typeof reload === "function") reload();
+				};
+				return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
+					style: S.provLabel,
+					title: "这里的选择优先于插件配置里的 approval_mode；选「不覆盖」就回到配置值。含义：AtomCode 自动执行工具时受多大限制。注意：当前 daemon 对后台调用一律自动放行，切换这里实际不改变行为"
+				}, "AtomCode 自动执行权限"), h("span", { style: tagStyle }, tagFor("approvalMode", cfg && cfg.approvalMode, cfg && cfg.defaults && cfg.defaults.approvalMode)), h("select", {
+					style: {
+						...S.select,
+						flex: "1 1 auto",
+						minWidth: 0
+					},
+					value: currentApproval,
+					disabled: briefPending,
+					onChange: onApprovalChange,
+					"aria-label": "AtomCode 自动执行权限"
+				}, h("option", { value: "" }, "不覆盖（用配置 " + (cfg && typeof cfg.approvalMode === "string" ? cfg.approvalMode : "bypass") + "）"), approvalModes.map((m) => h("option", {
+					key: m,
+					value: m
+				}, m)))));
+			})(), (() => {
+				const currentRounds = cfg && typeof cfg.panelAskMaxRounds === "number" ? cfg.panelAskMaxRounds : "";
+				const [roundsValue, setRoundsValue] = useState(currentRounds === "" ? "" : String(currentRounds));
+				const saveRounds = async () => {
+					const num = roundsValue === "" ? null : parseInt(roundsValue, 10);
+					if (num === currentRounds) return;
+					setBriefPending(true);
+					setBriefError("");
+					const result = await postPanelSettings({ askMaxRounds: num === null || Number.isNaN(num) ? null : num });
+					setBriefPending(false);
+					if (!result.ok) {
+						setBriefError("保存失败：" + result.error);
+						return;
+					}
+					if (typeof reload === "function") reload();
+				};
+				return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
+					style: S.provLabel,
+					title: "这里填的数字优先于插件配置里的 ask_max_rounds；0 = 不设上限（交给 daemon 治理）；留空 = 不覆盖。含义：一次「问 AtomCode」最多让它自己循环多少轮"
+				}, "单次咨询最多轮数"), h("span", { style: tagStyle }, tagFor("askMaxRounds", cfg && cfg.askMaxRounds, cfg && cfg.defaults && cfg.defaults.askMaxRounds)), h("div", { style: {
+					display: "flex",
+					gap: 4,
+					flex: "1 1 auto",
+					minWidth: 0
+				} }, h("input", {
+					style: {
+						...S.select,
+						flex: "1 1 auto",
+						minWidth: 0,
+						padding: "2px 6px",
+						fontSize: 12
+					},
+					value: roundsValue,
+					placeholder: "不覆盖（" + (cfg && typeof cfg.askMaxRounds === "number" ? cfg.askMaxRounds : "25") + "）",
+					disabled: briefPending,
+					type: "number",
+					min: 0,
+					max: 1e3,
+					onChange: (e) => setRoundsValue(e.target ? e.target.value : ""),
+					onKeyDown: (e) => {
+						if (e.key === "Enter") saveRounds();
+					},
+					"aria-label": "单次咨询最多轮数"
+				}), h("button", {
+					style: {
+						...S.select,
+						width: "auto",
+						flex: "0 0 auto",
+						fontSize: 11,
+						cursor: briefPending ? "wait" : "pointer"
+					},
+					disabled: briefPending || roundsValue === (currentRounds === "" ? "" : String(currentRounds)),
+					onClick: saveRounds
+				}, "保存"))));
+			})());
+		}
+		return PanelSettingsControls;
+	}
+
+//#endregion
 //#region src/client/quota-chip.ts
 /**
 	* Build the pair of quota readouts.
@@ -1732,7 +2087,6 @@
 
 //#endregion
 //#region src/client/index.ts
-	const EFFORT_TITLE = "推理力度：模型每轮思考的深度。low 更快更省额度、high 更深入。选一个会让 daemon 记下来，之后的咨询默认用它；也可以在某一次咨询时临时传 reasoning_effort 覆盖";
 	const REGISTRATION = {
 		id: "dsh-connect-atomcode",
 		factory: function(require) {
@@ -1950,334 +2304,6 @@
 				if (!result.ok) return result;
 				return { ok: true };
 			}
-			/**
-			* The interactive provider control: a dropdown over the ONE model ladder.
-			*
-			* There used to be two of these — ask listed daemon model profiles, review
-			* listed config.toml direct entries, and 红线 8 existed to keep them from
-			* being read as one knob. The review namespace died with its CLI, so the
-			* panel shows one control for the one ladder both entry points climb.
-			*
-			* Pending/error state is local, and the control is never swapped back to static
-			* text — a failed write must stay visible with its reason, or the user cannot
-			* tell "the plugin refused" from "my click did nothing".
-			*/
-			function ProviderSelectRow({ label, provider, fallbackLabel, title, reload }) {
-				const model = providerSelectModel(provider, fallbackLabel);
-				const [note, setNote] = useState("");
-				const [pending, setPending] = useState(false);
-				const [effortPending, setEffortPending] = useState(false);
-				const [effortError, setEffortError] = useState("");
-				const effortLevels = model.effortLevels && model.effortLevels.length > 0 ? model.effortLevels : [];
-				const currentEffort = typeof model.currentEffort === "string" ? model.currentEffort : "";
-				const effortHasCurrent = effortLevels.indexOf(currentEffort) >= 0;
-				const effortValue = effortHasCurrent ? currentEffort : "";
-				const onEffortChange = async (event) => {
-					const value = event && event.target ? event.target.value : "";
-					if (value === "" || value === currentEffort) return;
-					setEffortPending(true);
-					setEffortError("");
-					const result = await postReasoningEffort(value);
-					setEffortPending(false);
-					if (!result.ok) {
-						setEffortError("保存失败：" + result.error);
-						return;
-					}
-					if (typeof reload === "function") reload();
-				};
-				const onChange = async (event) => {
-					const value = event && event.target ? event.target.value : "";
-					setPending(true);
-					setNote("");
-					const result = await postProvider(value);
-					setPending(false);
-					if (!result.ok) {
-						setNote("保存失败：" + result.error);
-						return;
-					}
-					adoptProviderSnapshot(result.provider);
-					if (typeof reload === "function") reload();
-				};
-				const override = model.note;
-				const trouble = model.disabled ? model.reason : "";
-				const warning = model.warning || "";
-				const advisory = [warning, override].filter((part) => part !== "").join(" · ");
-				return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
-					style: S.provLabel,
-					title
-				}, label), h("select", {
-					style: {
-						...model.disabled || pending ? {
-							...S.select,
-							...S.selectOff
-						} : S.select,
-						flex: "1 1 auto",
-						minWidth: 0
-					},
-					value: model.value,
-					disabled: model.disabled || pending,
-					onChange,
-					title: trouble || override || warning || title,
-					"aria-label": label
-				}, model.options.map((option, index) => h("option", {
-					key: "prov-" + index,
-					value: option.value
-				}, option.label)))), trouble ? h("span", {
-					style: S.valWarn,
-					title: trouble
-				}, trouble) : null, advisory ? h("span", {
-					style: S.valWarn,
-					title: advisory
-				}, advisory) : null, note ? h("span", { style: S.valIdle }, note) : null, effortLevels.length > 0 ? h("div", { style: {
-					display: "flex",
-					flexDirection: "column",
-					gap: 4
-				} }, h("div", { style: S.provFieldRow }, h("span", {
-					style: S.provLabel,
-					title: EFFORT_TITLE
-				}, "推理力度"), h("select", {
-					style: {
-						...effortPending ? {
-							...S.select,
-							...S.selectOff
-						} : S.select,
-						flex: "1 1 auto",
-						minWidth: 0
-					},
-					value: effortValue,
-					disabled: effortPending,
-					onChange: onEffortChange,
-					title: EFFORT_TITLE,
-					"aria-label": "推理力度"
-				}, effortLevels.map((level) => h("option", {
-					key: "effort-" + level,
-					value: level
-				}, level)).concat(effortHasCurrent ? [] : [h("option", {
-					key: "effort-unset",
-					value: "",
-					disabled: true
-				}, "未设置")]))), effortError ? h("span", { style: S.valWarn }, effortError) : null) : null);
-			}
-			/**
-			* The panel-settings controls: a brief-mode dropdown and a working-dir input.
-			*
-			* These override the patch fields at execution time (panel-settings.json),
-			* so a click takes effect on the very next turn — no reload needed. The
-			* current values come from the stats snapshot (`config.panelBriefMode`,
-			* `config.panelWorkingDir`); `null` means "no override, patch value applies".
-			*
-			* P1 fix: the working-dir input is LOCAL-STATE driven (seeded from the
-			* server value when it changes), so focus+blur without typing does NOT
-			* POST null. A save only fires when the value differs from the current
-			* server value. An explicit clear (empty string + save button click) is
-			* the only way to remove the override.
-			*/
-			function PanelSettingsControls({ cfg, reload }) {
-				const [briefPending, setBriefPending] = useState(false);
-				const [briefError, setBriefError] = useState("");
-				const [dirPending, setDirPending] = useState(false);
-				const [dirError, setDirError] = useState("");
-				const briefModes = [
-					"always",
-					"when-empty",
-					"never"
-				];
-				const currentBrief = cfg && typeof cfg.panelBriefMode === "string" ? cfg.panelBriefMode : "";
-				const currentDir = cfg && typeof cfg.panelWorkingDir === "string" ? cfg.panelWorkingDir : "";
-				const tagFor = (key, resolved, shippedDefault) => {
-					const authored = cfg && cfg.authored && typeof cfg.authored === "object" ? cfg.authored : null;
-					return boundaryTag(boundaryVerdict(authored, key, resolved, shippedDefault));
-				};
-				const tagStyle = {
-					color: "#9aa1ac",
-					fontSize: 10,
-					fontWeight: "normal",
-					marginLeft: 4
-				};
-				const [dirValue, setDirValue] = useState(currentDir);
-				const lastServerDir = useRef(currentDir);
-				if (currentDir !== lastServerDir.current) {
-					lastServerDir.current = currentDir;
-					setDirValue(currentDir);
-				}
-				const onBriefChange = async (event) => {
-					const value = event && event.target ? event.target.value : "";
-					if (value === currentBrief) return;
-					setBriefPending(true);
-					setBriefError("");
-					const result = await postPanelSettings({ briefMode: value === "" ? null : value });
-					setBriefPending(false);
-					if (!result.ok) {
-						setBriefError("保存失败：" + result.error);
-						return;
-					}
-					if (typeof reload === "function") reload();
-				};
-				/** Only saves when the value differs from the current server state. */
-				const saveDir = async () => {
-					const trimmed = dirValue.trim();
-					if (trimmed === currentDir) return;
-					setDirPending(true);
-					setDirError("");
-					const result = await postPanelSettings({ workingDir: trimmed === "" ? null : trimmed });
-					setDirPending(false);
-					if (!result.ok) {
-						setDirError("保存失败：" + result.error);
-						return;
-					}
-					if (typeof reload === "function") reload();
-				};
-				return h("div", { style: {
-					display: "flex",
-					flexDirection: "column",
-					gap: 6
-				} }, h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
-					style: S.provLabel,
-					title: "这里的选择优先于插件配置（cordis.patch.yml）里 review_brief_mode；选「不覆盖」就回到配置值。含义：代码评审时是否自动补一段评审提示词"
-				}, "评审时自动补提示词"), h("span", { style: tagStyle }, tagFor("reviewBriefMode", cfg && cfg.reviewBriefMode, cfg && cfg.defaults && cfg.defaults.reviewBriefMode)), h("select", {
-					style: {
-						...briefPending ? {
-							...S.select,
-							...S.selectOff
-						} : S.select,
-						flex: "1 1 auto",
-						minWidth: 0
-					},
-					value: currentBrief,
-					disabled: briefPending,
-					onChange: onBriefChange,
-					"aria-label": "评审时自动补提示词"
-				}, h("option", { value: "" }, "不覆盖（用配置 " + (cfg && typeof cfg.reviewBriefMode === "string" ? cfg.reviewBriefMode : "默认") + "）"), briefModes.map((m) => h("option", {
-					key: m,
-					value: m
-				}, m))))), briefError ? h("span", { style: S.valWarn }, briefError) : null, h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
-					style: S.provLabel,
-					title: "这里填的文件夹优先于插件配置里的默认目录；清空并保存 = 不覆盖，改回用配置值或本次会话目录。AtomCode 会在你填的这个文件夹里读文件、跑 git"
-				}, "AtomCode 干活的文件夹"), h("span", { style: tagStyle }, tagFor("workingDir", cfg && cfg.defaultWorkingDir, null)), h("div", { style: {
-					display: "flex",
-					gap: 4,
-					flex: "1 1 auto",
-					minWidth: 0
-				} }, h("input", {
-					style: {
-						...S.select,
-						flex: "1 1 auto",
-						minWidth: 0,
-						padding: "2px 6px",
-						fontSize: 12
-					},
-					value: dirValue,
-					placeholder: currentDir || "不覆盖（用配置/会话目录）",
-					disabled: dirPending,
-					onChange: (e) => setDirValue(e.target ? e.target.value : ""),
-					onKeyDown: (e) => {
-						if (e.key === "Enter") saveDir();
-					},
-					"aria-label": "AtomCode 干活的文件夹（面板覆盖）"
-				}), h("button", {
-					style: {
-						...S.select,
-						width: "auto",
-						flex: "0 0 auto",
-						fontSize: 11,
-						cursor: dirPending ? "wait" : "pointer",
-						whiteSpace: "nowrap"
-					},
-					disabled: dirPending || dirValue.trim() === currentDir,
-					onClick: saveDir
-				}, dirPending ? "…" : "保存")))), dirError ? h("span", { style: S.valWarn }, dirError) : null, (() => {
-					const approvalModes = [
-						"build",
-						"accept_edits",
-						"bypass",
-						"plan"
-					];
-					const currentApproval = cfg && typeof cfg.panelApprovalMode === "string" ? cfg.panelApprovalMode : "";
-					const onApprovalChange = async (event) => {
-						const value = event && event.target ? event.target.value : "";
-						if (value === currentApproval) return;
-						setBriefPending(true);
-						const result = await postPanelSettings({ approvalMode: value === "" ? null : value });
-						setBriefPending(false);
-						if (!result.ok) {
-							setBriefError("保存失败：" + result.error);
-							return;
-						}
-						if (typeof reload === "function") reload();
-					};
-					return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
-						style: S.provLabel,
-						title: "这里的选择优先于插件配置里的 approval_mode；选「不覆盖」就回到配置值。含义：AtomCode 自动执行工具时受多大限制。注意：当前 daemon 对后台调用一律自动放行，切换这里实际不改变行为"
-					}, "AtomCode 自动执行权限"), h("span", { style: tagStyle }, tagFor("approvalMode", cfg && cfg.approvalMode, cfg && cfg.defaults && cfg.defaults.approvalMode)), h("select", {
-						style: {
-							...S.select,
-							flex: "1 1 auto",
-							minWidth: 0
-						},
-						value: currentApproval,
-						disabled: briefPending,
-						onChange: onApprovalChange,
-						"aria-label": "AtomCode 自动执行权限"
-					}, h("option", { value: "" }, "不覆盖（用配置 " + (cfg && typeof cfg.approvalMode === "string" ? cfg.approvalMode : "bypass") + "）"), approvalModes.map((m) => h("option", {
-						key: m,
-						value: m
-					}, m)))));
-				})(), (() => {
-					const currentRounds = cfg && typeof cfg.panelAskMaxRounds === "number" ? cfg.panelAskMaxRounds : "";
-					const [roundsValue, setRoundsValue] = useState(currentRounds === "" ? "" : String(currentRounds));
-					const saveRounds = async () => {
-						const num = roundsValue === "" ? null : parseInt(roundsValue, 10);
-						if (num === currentRounds) return;
-						setBriefPending(true);
-						setBriefError("");
-						const result = await postPanelSettings({ askMaxRounds: num === null || Number.isNaN(num) ? null : num });
-						setBriefPending(false);
-						if (!result.ok) {
-							setBriefError("保存失败：" + result.error);
-							return;
-						}
-						if (typeof reload === "function") reload();
-					};
-					return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
-						style: S.provLabel,
-						title: "这里填的数字优先于插件配置里的 ask_max_rounds；0 = 不设上限（交给 daemon 治理）；留空 = 不覆盖。含义：一次「问 AtomCode」最多让它自己循环多少轮"
-					}, "单次咨询最多轮数"), h("span", { style: tagStyle }, tagFor("askMaxRounds", cfg && cfg.askMaxRounds, cfg && cfg.defaults && cfg.defaults.askMaxRounds)), h("div", { style: {
-						display: "flex",
-						gap: 4,
-						flex: "1 1 auto",
-						minWidth: 0
-					} }, h("input", {
-						style: {
-							...S.select,
-							flex: "1 1 auto",
-							minWidth: 0,
-							padding: "2px 6px",
-							fontSize: 12
-						},
-						value: roundsValue,
-						placeholder: "不覆盖（" + (cfg && typeof cfg.askMaxRounds === "number" ? cfg.askMaxRounds : "25") + "）",
-						disabled: briefPending,
-						type: "number",
-						min: 0,
-						max: 1e3,
-						onChange: (e) => setRoundsValue(e.target ? e.target.value : ""),
-						onKeyDown: (e) => {
-							if (e.key === "Enter") saveRounds();
-						},
-						"aria-label": "单次咨询最多轮数"
-					}), h("button", {
-						style: {
-							...S.select,
-							width: "auto",
-							flex: "0 0 auto",
-							fontSize: 11,
-							cursor: briefPending ? "wait" : "pointer"
-						},
-						disabled: briefPending || roundsValue === (currentRounds === "" ? "" : String(currentRounds)),
-						onClick: saveRounds
-					}, "保存"))));
-				})());
-			}
 			function useStats() {
 				const [data, setData] = useState(null);
 				const [error, setError] = useState(null);
@@ -2414,6 +2440,19 @@
 			* hook sequence in every render.
 			*/
 			const QUOTA_READOUT = primitives && reactDom ? QuotaChip : QuotaChipDegraded;
+			const ProviderSelectRow = createProviderSelect({
+				h,
+				useState,
+				postProvider,
+				postReasoningEffort,
+				adoptProviderSnapshot
+			});
+			const PanelSettingsControls = createPanelControls({
+				h,
+				useState,
+				useRef,
+				postPanelSettings
+			});
 			const StatusSection = createStatusSection({
 				h,
 				useStats,

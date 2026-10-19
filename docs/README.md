@@ -128,8 +128,10 @@ src/shared/loopback.ts      → lib/loopback.js        isLoopbackBaseUrl：判�
 src/shared/stats.ts         (inlined both sides)     StatsSnapshot 及其分支的共享类型契约（只有类型，无运行时产物）
 
 # client —— 渲染端半身，下面每个源文件都被 bundle 进同一个 client.js（IIFE）
-src/client/index.ts          → client.js              entry：座位注册与控件装配（详情页两个 seat 的取舍 + dock 行 + 工具行）
+src/client/index.ts          → client.js              entry：座位注册、写路由传输、共享 stats 缓存（详情页两个 seat 的取舍 + dock 行 + 工具行）
 src/client/status-section.ts → client.js              详情页那张卡的分区渲染（环境 / 模型 / 协议 / 额度 / 用量）
+src/client/provider-select.ts → client.js             模型档位下拉 + 推理力度下拉（createProviderSelect 工厂）
+src/client/panel-controls.ts → client.js              详情页四个可编辑行：评审提示词 / 工作目录 / 权限模式 / 单次轮数上限
 src/client/rows.ts           → client.js              每行的文字与 tooltip（turnBoundaryRows / providerRows / inFlightText）
 src/client/quota.ts          → client.js              quotaView()：把额度分支折成可渲染的读数（含解析失败的原样回落）
 src/client/quota-chip.ts     → client.js              输入框额度 chip 的弹窗（portal + Tooltip + 打开时的 1s tick）
