@@ -245,13 +245,11 @@ gh release create vX.Y.Z \
 
 ## 10. 市场投稿
 
-`awesome-dsh-plugin-submission/eghrhegpe__dsh-connect-atomcode.yml` 复制到
-[awesome-dsh-plugin/awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 的
-`data/plugins/eghrhegpe__dsh-connect-atomcode.yml`，开 PR。CI 有 pr-check + check-submission。
+规则只认上游原文，本仓副本在 `awesome-dsh-plugin-submission/contributing.md`——**别在本文件转述规则**（此前那三条「别加 npm: 字段 / 别放截图 / 别手改 README」就是转述，上游一改就作废）。
 
-- **别加 `npm:` 字段**（市场从仓库元数据推断）
-- **别在 yml 里放截图**（市场读仓库根 `screenshots.json` / `icon.svg`）
-- README 由仓库的脚本自动生成，投稿时别手改市场 README
+本仓只有一件事实：条目文件 `awesome-dsh-plugin-submission/eghrhegpe__dsh-connect-atomcode.yml`，提 PR 时原样复制到
+[awesome-dsh-plugin/awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 的
+`data/plugins/eghrhegpe__dsh-connect-atomcode.yml`。不要在这里再维护第二份 yaml。
 
 ## 11. 升级时对用户的影响
 
