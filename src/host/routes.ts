@@ -38,6 +38,7 @@
  * @module dsh-connect-atomcode/host/routes
  */
 import { PROVIDER_SLOT, normalizeProviderName } from './provider-store.ts';
+import { PANEL_SETTINGS_WRITABLE_FIELDS } from './panel-settings-store.ts';
 import { buildStatsBody, sameOrigin, writeJson } from './stats.ts';
 import type { Runtime } from './runtime.ts';
 
@@ -357,12 +358,13 @@ export function mountRoutes({
         },
       });
 
-  // ── Panel settings write: briefMode + workingDir overrides ─────────────────
-  // POST /api/atomcode-bridge/panel-settings  { briefMode?, workingDir? }
+  // ── Panel settings write: briefMode / workingDir / approvalMode / askMaxRounds ──
+  // POST /api/atomcode-bridge/panel-settings
+  //   { briefMode?, workingDir?, approvalMode?, askMaxRounds? }
   // Persists the panel's overrides to the plugin's own state file
   // (panel-settings.json, next to provider.json). Read PER CALL by the
   // execute path, so a click takes effect on the very next turn.
-  // GET answers with the current panel-settings reading + the effective values.
+  // GET answers with the current panel-settings reading.
   const PANEL_SETTINGS_BODY_LIMIT = 2048;
   const disposePanelSettings = mountRoute(webServer, {
         kind: 'exact',
@@ -374,20 +376,33 @@ export function mountRoutes({
           if (method === 'POST') {
             const body = await readBodyOr400(request, response, PANEL_SETTINGS_BODY_LIMIT);
             if (!body) return;
+            // The whitelist IS the store's writable set — one list, not a second
+            // copy. It drifted once: `approvalMode` and `askMaxRounds` were
+            // normalized and stored by `panelSettingsStore.set()` and POSTed one
+            // at a time by the panel's two controls, but this route forwarded
+            // only `briefMode` and `workingDir`, so those two controls answered
+            // 400 on every change from the day they shipped and no test caught
+            // it, because nothing exercised the write path.
             const fields: Record<string, unknown> = {};
-            if (Object.prototype.hasOwnProperty.call(body.value, 'briefMode')) {
-              fields.briefMode = body.value.briefMode;
-            }
-            if (Object.prototype.hasOwnProperty.call(body.value, 'workingDir')) {
-              fields.workingDir = body.value.workingDir;
+            for (const name of PANEL_SETTINGS_WRITABLE_FIELDS) {
+              if (Object.prototype.hasOwnProperty.call(body.value, name)) fields[name] = body.value[name];
             }
             if (Object.keys(fields).length === 0) {
-              writeJson(response, 400, { ok: false, error: 'at least one of briefMode or workingDir must be present' });
+              writeJson(response, 400, {
+                ok: false,
+                error: `at least one of ${PANEL_SETTINGS_WRITABLE_FIELDS.join(', ')} must be present`,
+              });
               return;
             }
             const written = panelSettingsStore.set(fields);
             if (!written.ok) {
-              const status = written.code === 'foreign-version' ? 409 : 500;
+              // The store's own failure ladder names the WHO; only a write the
+              // host refused (foreign version) is a server condition — a value the
+              // panel sent that fails normalization is a CLIENT condition, so it
+              // must answer 400, or the panel can never tell "I sent nonsense"
+              // apart from "the plugin broke".
+              const status =
+                written.code === 'foreign-version' ? 409 : written.code.startsWith('invalid-') ? 400 : 500;
               log(`panel-settings write refused: ${written.error}`);
               writeJson(response, status, { ok: false, error: written.error });
               return;
@@ -405,6 +420,8 @@ export function mountRoutes({
             ok: true,
             briefMode: current.briefMode,
             workingDir: current.workingDir,
+            approvalMode: current.approvalMode,
+            askMaxRounds: current.askMaxRounds,
             ...(current.foreignVersion ? { foreignVersion: true } : {}),
             ...(current.error ? { error: current.error } : {}),
           }, { 'cache-control': 'no-store' });

@@ -1747,3 +1747,138 @@ describe('stats route — a degraded session store is named, not hidden', () => 
     assert.equal(seen.length, before, 'the same failure must not be reported twice');
   });
 });
+
+/**
+ * The panel-settings write route — the panel's own turn-shape overrides.
+ *
+ * This was the ONLY write surface with no test at all, and it shipped broken on
+ * its second pair of fields: `approvalMode` and `askMaxRounds` are normalized and
+ * stored by `panel-settings-store.ts` and POSTed one at a time by the two controls
+ * in `client.js`, but the route forwarded only `briefMode` and `workingDir` — so
+ * those two controls answered 400 on every change, and no suite caught it, because
+ * nothing here exercised the write path. The whitelist is now the store's own
+ * writable set (`PANEL_SETTINGS_WRITABLE_FIELDS`); this suite pins the round trip
+ * for ALL four fields, end to end through the stats route the panel reads.
+ */
+describe("panel-settings route — the panel's own turn-shape overrides", () => {
+  const HOME_HDRS = { host: '127.0.0.1:3080' };
+  const dirs = [];
+
+  function mountBoth(extra = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'atomcode-panel-'));
+    dirs.push(dir);
+    const routes = captureRoutes({ statePath: join(dir, 'sessions.json'), port: CLOSED_PORT, extra });
+    return {
+      dir,
+      panel: join(dir, 'panel-settings.json'),
+      stats: routes.find((r) => r.path === STATS_PATH),
+      settings: routes.find((r) => r.path === PANEL_SETTINGS_PATH),
+    };
+  }
+
+  after(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('approvalMode and askMaxRounds round-trip through the write route', async () => {
+    const m = mountBoth({ approval_mode: 'bypass', ask_max_rounds: 25 });
+    const w = await callRoute(m.settings, { method: 'POST', headers: HOME_HDRS, body: { approvalMode: 'plan' } });
+    assert.equal(w.status, 200, w.body && w.body.error);
+    assert.equal(w.body.ok, true);
+    assert.equal(w.body.approvalMode, 'plan', 'the write must answer with what it just stored');
+    const w2 = await callRoute(m.settings, { method: 'POST', headers: HOME_HDRS, body: { askMaxRounds: 40 } });
+    assert.equal(w2.status, 200, w2.body && w2.body.error);
+    assert.equal(w2.body.askMaxRounds, 40);
+    assert.ok(existsSync(m.panel), 'the state file must exist after a write');
+    // The panel reads the RESOLVED value from the stats route; both must agree.
+    const poll = await callRoute(m.stats, { headers: HOME_HDRS });
+    assert.equal(poll.body.config.panelApprovalMode, 'plan', 'the next poll must agree with the write');
+    assert.equal(poll.body.config.panelAskMaxRounds, 40);
+    // `config.approvalMode` is the MOUNT-TIME patch field, not the panel pick —
+    // the pick lives on its own branch precisely so these two cannot be confused.
+    assert.equal(poll.body.config.approvalMode, 'bypass', 'the mount-time field must not be rewritten by the panel');
+    assert.equal(poll.body.config.askMaxRounds, 25);
+  });
+
+  it('all four fields may be written in one body', async () => {
+    const m = mountBoth();
+    const w = await callRoute(m.settings, {
+      method: 'POST',
+      headers: HOME_HDRS,
+      body: { briefMode: 'never', workingDir: 'D:\\repo', approvalMode: 'accept_edits', askMaxRounds: 0 },
+    });
+    assert.equal(w.status, 200, w.body && w.body.error);
+    assert.equal(w.body.briefMode, 'never');
+    assert.equal(w.body.workingDir, 'D:\\repo');
+    assert.equal(w.body.approvalMode, 'accept_edits');
+    assert.equal(w.body.askMaxRounds, 0);
+  });
+
+  it('GET reads the same state without writing it', async () => {
+    const m = mountBoth();
+    await callRoute(m.settings, { method: 'POST', headers: HOME_HDRS, body: { approvalMode: 'build' } });
+    const g = await callRoute(m.settings, { headers: HOME_HDRS });
+    assert.equal(g.status, 200);
+    assert.equal(g.body.ok, true);
+    assert.equal(g.body.approvalMode, 'build');
+    assert.equal(g.body.askMaxRounds, null, 'an untouched field reports no override');
+  });
+
+  it('null clears ONE override and leaves the others alone', async () => {
+    const m = mountBoth({ approval_mode: 'bypass', ask_max_rounds: 25 });
+    await callRoute(m.settings, { method: 'POST', headers: HOME_HDRS, body: { approvalMode: 'plan', askMaxRounds: 40 } });
+    const cleared = await callRoute(m.settings, { method: 'POST', headers: HOME_HDRS, body: { approvalMode: null } });
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.body.approvalMode, null);
+    assert.equal(cleared.body.askMaxRounds, 40, 'clearing one field must not clear the other');
+    const poll = await callRoute(m.stats, { headers: HOME_HDRS });
+    assert.equal(poll.body.config.panelApprovalMode, null, 'clearing returns to no override');
+    assert.equal(poll.body.config.panelAskMaxRounds, 40, 'the other override survives');
+  });
+
+  it('refuses a body with no writable field, and names the accepted set', async () => {
+    const m = mountBoth();
+    const r = await callRoute(m.settings, { method: 'POST', headers: HOME_HDRS, body: { foo: 'bar' } });
+    assert.equal(r.status, 400, `a body without a writable field must be refused (got ${r.status})`);
+    assert.match(r.body.error, /briefMode, workingDir, approvalMode, askMaxRounds/, 'and name the accepted set');
+    const empty = await callRoute(m.settings, { method: 'POST', headers: HOME_HDRS, body: {} });
+    assert.equal(empty.status, 400);
+    assert.equal(existsSync(m.panel), false, 'no rejection may create the state file');
+  });
+
+  it('refuses an out-of-enum or out-of-range value, naming the value', async () => {
+    const m = mountBoth();
+    const bad = [
+      { approvalMode: 'nope' },
+      { approvalMode: 'PLAN' },
+      { askMaxRounds: -1 },
+      { askMaxRounds: 1001 },
+      { askMaxRounds: 1.5 },
+      { askMaxRounds: '40' },
+    ];
+    for (const body of bad) {
+      const r = await callRoute(m.settings, { method: 'POST', headers: HOME_HDRS, body });
+      assert.equal(r.status, 400, `must refuse ${JSON.stringify(body)} (got ${r.status}: ${r.body && r.body.error})`);
+      assert.ok(r.body.error.length > 0, 'a refusal must name itself');
+    }
+    assert.equal(existsSync(m.panel), false);
+  });
+
+  it('a refused write must not erase a surviving pick', async () => {
+    const m = mountBoth();
+    await callRoute(m.settings, { method: 'POST', headers: HOME_HDRS, body: { approvalMode: 'plan' } });
+    const r = await callRoute(m.settings, { method: 'POST', headers: HOME_HDRS, body: { approvalMode: 'nope' } });
+    assert.equal(r.status, 400);
+    const poll = await callRoute(m.stats, { headers: HOME_HDRS });
+    assert.equal(poll.body.config.panelApprovalMode, 'plan', 'a refused write must not erase the pick');
+  });
+
+  it('HEAD is allowed but carries no body, exactly like the stats route', async () => {
+    const m = mountBoth();
+    const r = await callRoute(m.settings, { method: 'HEAD', headers: HOME_HDRS });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    assert.equal(r.raw, undefined, 'HEAD must end the response with no payload');
+    assert.equal(existsSync(m.panel), false, 'a HEAD must not create the state file either');
+  });
+});

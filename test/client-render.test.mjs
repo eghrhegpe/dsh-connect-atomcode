@@ -1336,3 +1336,81 @@ describe('client render — the provider dropdown write path', () => {
     assert.ok(text(tree).includes('daemon 未列出档位'), `the reason must be on screen: ${text(tree)}`);
   });
 });
+
+// ── the panel-settings controls (the OTHER half of the write surface) ──────
+//
+// The provider dropdown's write wire is pinned above. These two controls were
+// the ones that shipped broken: the route accepted only `briefMode` and
+// `workingDir` while the client POSTs `approvalMode` and `askMaxRounds` from
+// here — one field at a time, so every change answered 400 and the panel
+// printed 「保存失败：at least one of briefMode or workingDir must be present」.
+// The suite only asserted that the dropdowns EXIST; nothing exercised a write,
+// which is exactly how a half that "loads green" can stay broken for months.
+
+describe('client render — the panel-settings controls POST the fields the route accepts', () => {
+  const PANEL_SETTINGS_PATH = '/api/atomcode-bridge/panel-settings';
+  const APPROVAL_LABEL = 'AtomCode 自动执行权限';
+  const ROUNDS_LABEL = '单次咨询最多轮数';
+
+  it('the approval-mode dropdown POSTs approvalMode, not briefMode', async () => {
+    await withFetch(
+      async (call) => okResponse(FULL),
+      async (calls) => {
+        const handle = await renderPanel(FULL);
+        const tree = handle.tree;
+        const select = find(tree, (n) => n.type === 'select' && n.props['aria-label'] === APPROVAL_LABEL);
+        assert.ok(select, 'the approval-mode dropdown must render');
+        assert.equal(select.props.value, '', 'this fixture carries no panel pick, so the placeholder is selected');
+
+        await select.props.onChange({ target: { value: 'plan' } });
+
+        const write = calls.find((c) => c.url === PANEL_SETTINGS_PATH);
+        assert.ok(write, `a change must reach the panel-settings route: ${calls.map((c) => c.url)}`);
+        assert.equal(write.init.method, 'POST');
+        assert.deepEqual(
+          JSON.parse(write.init.body),
+          { approvalMode: 'plan' },
+          'the wire must carry the field this control edits — this is the field the route rejected',
+        );
+        const note = handle.react.published.find((v) => typeof v === 'string' && v.startsWith('保存失败'));
+        assert.equal(note, undefined, 'a 400 here would print 保存失败 and we would see it');
+      },
+    );
+  });
+
+  it('the ask-max-rounds control POSTs askMaxRounds', async () => {
+    await withFetch(
+      async (call) => okResponse(FULL),
+      async (calls) => {
+        // Hook order for a page render: `useStats`(3), then `ProviderSelectRow`
+        // (note, pending, effortPending, effortError), then
+        // `PanelSettingsControls` (briefPending, briefError, dirPending,
+        // dirError, dirValue, roundsValue). The save handler closes over
+        // `roundsValue`, so it must be seeded at RENDER time — driving the input
+        // alone only publishes a new value into `published`, and this recording
+        // React never re-renders on a setState.
+        const handle = await mount({
+          script: [FULL, null, NOW, false, '', false, '', false, '', false, '', '', '12'],
+        });
+        const tree = handle.panel({ view: 'page' });
+        const input = find(tree, (n) => n.type === 'input' && n.props['aria-label'] === ROUNDS_LABEL);
+        assert.ok(input, 'the rounds input must render');
+        assert.equal(input.props.value, '12', 'the seeded state must be what the input shows');
+
+        const flex = find(tree, (n) => Array.isArray(n.children) && n.children.includes(input));
+        const save = flex.children.find((c) => c && typeof c === 'object' && c.type === 'button');
+        assert.ok(save, 'the save button must sit beside the input');
+        await save.props.onClick();
+
+        const write = calls.find((c) => c.url === PANEL_SETTINGS_PATH);
+        assert.ok(write, `a change must reach the panel-settings route: ${calls.map((c) => c.url)}`);
+        assert.equal(write.init.method, 'POST');
+        assert.deepEqual(
+          JSON.parse(write.init.body),
+          { askMaxRounds: 12 },
+          'the wire must carry a NUMBER for askMaxRounds, and this is the field the route rejected',
+        );
+      },
+    );
+  });
+});
