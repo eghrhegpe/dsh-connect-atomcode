@@ -1156,7 +1156,8 @@
 				};
 				const proto = data.protocol || {};
 				const protoNotice = protocolDriftNotice(proto);
-				const trend = data.usageTrend || {};
+				const trendBranch = data.usageTrend;
+				const trend = trendBranch || {};
 				const trendRows = Array.isArray(trend.rows) ? trend.rows : [];
 				const prov = data.provider || null;
 				const retryNote = cfg.daemonRetrySecs > 0 ? cfg.daemonRetrySecs + "s" : "每次轮询";
@@ -1192,7 +1193,7 @@
 					display: "flex",
 					flexDirection: "column",
 					gap: 6
-				} }, trend.available === false ? h("p", { style: S.error }, trend.reason || "按天用量不可用") : trendRows.length === 0 ? h("p", { style: S.key }, "daemon 没有返回按天记录") : [...trendRows.slice(-7).reverse().map((row) => h(Row, {
+				} }, trendBranch === void 0 ? h("p", { style: S.key }, "宿主未提供按天用量（本页连的 host 进程早于该字段，重启 DSH 后出现）") : trend.available === false ? h("p", { style: S.error }, trend.reason || "按天用量不可用") : trendRows.length === 0 ? h("p", { style: S.key }, "daemon 没有返回按天记录") : [...trendRows.slice(-7).reverse().map((row) => h(Row, {
 					key: "trend-" + row.date,
 					label: String(row.date).slice(5)
 				}, fmtTokens(row.tokens) + " tok · " + count(row.requests) + " 次")), h(Row, { label: "区间" }, "最近 " + Math.min(7, trendRows.length) + " 天" + (trend.endDate ? " · 数据到 " + trend.endDate : ""))]);

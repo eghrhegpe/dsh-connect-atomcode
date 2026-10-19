@@ -506,6 +506,12 @@ describe('client render — the detail panel', () => {
     // A branch with no rows at all is a different fact from a failed read.
     const { tree: empty } = await renderPanel({ ...FULL, usageTrend: { available: true, rows: [] } });
     assert.ok(text(empty).includes('daemon 没有返回按天记录'), text(empty));
+    // And a MISSING branch is a third fact: the host process predates the field.
+    // Blaming the daemon here would send the reader to the wrong end of the wire.
+    const { tree: absent } = await renderPanel({ ...FULL, usageTrend: undefined });
+    const a = text(absent);
+    assert.ok(a.includes('宿主未提供按天用量'), a);
+    assert.ok(!a.includes('daemon 没有返回按天记录') && !a.includes('按天用量读取失败'), a);
   });
 
   it('names a refused approval_mode instead of labelling the fallback as the default', async () => {    const snapshot = {

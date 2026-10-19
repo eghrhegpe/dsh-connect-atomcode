@@ -317,7 +317,12 @@ export function createStatusSection(deps: StatusSectionDeps) {
       // Per-day usage history. Its OWN branch rather than more `quota` rows: it
       // answers a different question (where the tokens went, not what is left),
       // and it can be missing while the quota reading is fine.
-      const trend = data.usageTrend || {};
+      // The branch itself is ABSENT on a host that predates it (this page and the
+      // host process are normally the same build, so that is a reload waiting to
+      // happen) — say which of the two it is, because "daemon 没有返回" would
+      // blame the daemon for a stale host.
+      const trendBranch = data.usageTrend;
+      const trend = trendBranch || {};
       const trendRows = Array.isArray(trend.rows) ? trend.rows : [];
       const prov = data.provider || null;
       const retryNote = cfg.daemonRetrySecs > 0 ? cfg.daemonRetrySecs + 's' : '每次轮询';
@@ -422,7 +427,13 @@ export function createStatusSection(deps: StatusSectionDeps) {
       const trendCard = h(
         'div',
         { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-        trend.available === false
+        trendBranch === undefined
+          ? h(
+              'p',
+              { style: S.key },
+              '宿主未提供按天用量（本页连的 host 进程早于该字段，重启 DSH 后出现）'
+            )
+          : trend.available === false
           ? h('p', { style: S.error }, trend.reason || '按天用量不可用')
           : trendRows.length === 0
             ? h('p', { style: S.key }, 'daemon 没有返回按天记录')
