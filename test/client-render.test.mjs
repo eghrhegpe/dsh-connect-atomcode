@@ -224,6 +224,28 @@ function rowValue(node, label) {
   return found;
 }
 
+/** Every node matching `pred`, in document order. */
+function collect(node, pred, out = []) {
+  if (!node || typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    for (const kid of node) collect(kid, pred, out);
+    return out;
+  }
+  if (pred(node)) out.push(node);
+  collect(node.children, pred, out);
+  return out;
+}
+
+/**
+ * The panel's own root, found by the attribution attribute it stamps on itself.
+ *
+ * The panel prints NO heading of its own — the host page above it already names
+ * the plugin, and a second 「运行统计」 above the host's own read as a duplicate —
+ * so this attribute is what tells "our panel rendered" apart from "some panel
+ * rendered" (and it is also how a human recognizes the panel in DevTools).
+ */
+const panelRoot = (tree) => collect(tree, (n) => n.props && 'data-dsh-plugin' in n.props)[0] ?? null;
+
 // ── mounting the real registration ─────────────────────────────────────────
 
 /**
@@ -353,9 +375,14 @@ describe('client render — the detail panel', () => {
   it('renders every card, every row label and the values behind them', async () => {
     const { tree } = await renderPanel(FULL);
     const t = text(tree);
-    for (const heading of ['运行统计', 'CodingPlan 额度', '启动情况', '运行环境', '回合边界', '侧边会话', '工具调用统计']) {
+    assert.ok(panelRoot(tree), 'the panel must mark its own root with data-dsh-plugin');
+    for (const heading of ['CodingPlan 额度', '启动情况', '运行环境', '回合边界', '侧边会话', '工具调用统计']) {
       assert.ok(t.includes(heading), `card/section "${heading}" must render`);
     }
+    assert.ok(
+      !t.includes('运行统计'),
+      'the host page above already prints 「运行统计」; the panel must not print a second one',
+    );
     for (const label of [
       '套餐',
       '到期',
@@ -438,6 +465,71 @@ describe('client render — the detail panel', () => {
     assert.ok(t.includes('额度解析失配'), 'drift is a silent degradation and must be stated');
     assert.ok(t.includes('未能从 status 文本中识别出额度'), 'the parse failure must show its own reason');
     assert.ok(!t.includes('0%'), 'a failed parse must never render as a zero reading');
+  });
+
+  it('rides the freshness cluster on the tab strip\'s own row, with no header bar above', async () => {
+    const { tree } = await renderPanel(FULL);
+    // `role="tablist"` may only contain tabs, so the cluster has to be a SIBLING
+    // of the strip inside a shared flex row — and that row owns the border the
+    // active tab's underline sits on. One row, not two: the panel used to spend a
+    // whole header bar (title + cluster) on what this row can hold.
+    const row = collect(
+      tree,
+      (n) => Array.isArray(n.children) && n.children.some((kid) => kid && kid.props && kid.props.role === 'tablist'),
+    )[0];
+    assert.ok(row, 'the strip must live in a row that can also host the freshness cluster');
+    const rowText = text(row);
+    for (const fact of ['运行', '用量', '会话', '实时', '刷新']) {
+      assert.ok(rowText.includes(fact), `"${fact}" must ride that one row: ${rowText}`);
+    }
+    const page = panelRoot(tree);
+    assert.equal(
+      page.children.filter(Boolean).length,
+      1,
+      'the panel root holds ONLY the scrolling body — a header bar of its own is what used to sit here',
+    );
+    // Nothing drifted in this snapshot, so no tab may wear the marker.
+    const tabs = collect(tree, (n) => n.props && n.props.role === 'tab');
+    assert.equal(tabs.length, 3, 'one tab per pane');
+    for (const tab of tabs) {
+      assert.equal(tab.props.title, undefined, 'a clean panel puts no tooltip on its tabs');
+      assert.ok(!text(tab).includes('!'), 'and marks none of them');
+    }
+  });
+
+  it('puts each degradation inside the tab it belongs to, and names it on that tab', async () => {
+    const snapshot = {
+      ...FULL,
+      protocol: { ...FULL.protocol, quotaTextDrift: true, unknownTypes: ['tool_end'] },
+    };
+    const { tree } = await renderPanel(snapshot);
+    const panes = collect(tree, (n) => n.props && n.props.role === 'tabpanel');
+    assert.equal(panes.length, 3, 'one pane per tab');
+    const [runtime, quota, session] = panes;
+    assert.ok(
+      text(quota).includes('额度解析失配'),
+      'quota drift belongs to the 用量 pane, where the quota card it explains is',
+    );
+    assert.ok(!text(runtime).includes('额度解析失配'), 'and must not also sit in 运行');
+    assert.ok(
+      text(runtime).includes('协议漂移'),
+      'protocol drift belongs to the 运行 pane, whose 回合边界 counts exactly those events',
+    );
+    assert.ok(!text(quota).includes('协议漂移'), 'and must not also sit in 用量');
+    assert.ok(!text(session).includes('漂移'), 'nor in 会话');
+    // Once each: in its own pane, not ALSO as a banner above the strip.
+    const whole = text(tree);
+    assert.equal(whole.split('额度解析失配').length - 1, 1, 'the quota drift is stated exactly once');
+    assert.equal(whole.split('协议漂移').length - 1, 1, 'the protocol drift is stated exactly once');
+    // The tab carries the reason, so a degradation inside an unopened tab is
+    // still announced from the strip (the guarantee the notices used to buy by
+    // living outside the panes).
+    const tabs = collect(tree, (n) => n.props && n.props.role === 'tab');
+    assert.ok(String(tabs[0].props.title).includes('协议漂移'), 'the 运行 tab names its own anomaly on hover');
+    assert.ok(String(tabs[1].props.title).includes('额度解析失配'), 'the 用量 tab does too');
+    assert.equal(tabs[2].props.title, undefined, 'a clean tab stays clean');
+    assert.ok(text(tabs[1]).includes('!'), 'and the marker is visible without hovering');
+    assert.ok(!text(tabs[2]).includes('!'), 'a clean tab carries no marker');
   });
 
   it('shows the in-flight strip with the poll-lag tooltip while a turn runs', async () => {
@@ -526,11 +618,11 @@ describe('client render — the detail panel', () => {
     // the keyed page view, and `view: undefined` would just re-trigger that default.
     const listSeat = { view: null, seats: ['plugins.detail.section'] };
     const mine = await renderPanel(FULL, { ...listSeat, subject: { kind: 'bundle', pkg: { name: 'dsh-connect-atomcode' } } });
-    assert.ok(text(mine.tree).includes('运行统计'), 'our own bundle is claimed by name');
+    assert.ok(panelRoot(mine.tree), 'our own bundle is claimed by name');
     const theirs = await renderPanel(FULL, { ...listSeat, subject: { kind: 'bundle', pkg: { name: 'dsh-connect-agnes-token-plan' } } });
     assert.equal(theirs.tree, null, 'another plugin\'s page must render nothing');
     const keyed = await renderPanel(FULL, { view: 'page', subject: { kind: 'bundle', pkg: { name: 'dsh-connect-agnes-token-plan' } }, seats: ['plugins.detail.section'] });
-    assert.ok(text(keyed.tree).includes('运行统计'), 'a keyed seat needs no name claim — the host already addressed us');
+    assert.ok(panelRoot(keyed.tree), 'a keyed seat needs no name claim — the host already addressed us');
   });
 
   it('gives the summary view one line that reports live state', async () => {
@@ -538,7 +630,7 @@ describe('client render — the detail panel', () => {
     const t = text(tree);
     assert.ok(t.includes('端口 13459'), `the summary is the card's one-liner: ${t}`);
     assert.ok(t.includes('5.2.3'), 'it may report the daemon build it speaks to');
-    assert.ok(!t.includes('运行统计'), 'it must not render the page');
+    assert.equal(panelRoot(tree), null, 'it must not render the page');
     assert.ok(!t.includes('CodingPlan 额度'), 'and no card may leak into it');
     const unknown = await renderPanel(null, { view: 'summary' });
     assert.ok(text(unknown.tree).includes('状态未知'), 'an unreachable host is the one thing the description cannot say');
@@ -615,7 +707,7 @@ describe('client render — no shape of snapshot may produce a placeholder', () 
       for (const placeholder of ['undefined', 'NaN', 'Infinity', '[object Object]']) {
         assert.ok(!t.includes(placeholder), `the panel printed "${placeholder}" for ${name}: ${t}`);
       }
-      assert.ok(t.includes('运行统计'), 'the panel still renders its frame');
+      assert.ok(panelRoot(tree), 'the panel still renders its frame');
     });
   }
 

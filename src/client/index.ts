@@ -927,6 +927,9 @@ const REGISTRATION = {
       CallStat,
       ProviderSelectRow,
       PanelSettingsControls,
+      // Stamped on the panel root as `data-dsh-plugin`. Taken from the one
+      // registration object instead of a second literal in status-section.ts.
+      panelId: REGISTRATION.id,
     });
 
     // The composer's insertion rail, and the 锐评 hand-off that needs it. The

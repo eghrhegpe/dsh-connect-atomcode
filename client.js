@@ -26,31 +26,13 @@
 			fontSize: 13,
 			lineHeight: "20px"
 		},
-		headerBar: {
-			flex: "none",
-			position: "relative",
-			zIndex: 1
-		},
-		header: {
-			display: "flex",
-			alignItems: "center",
-			gap: 12,
-			padding: "2px 0 10px"
-		},
-		title: {
-			margin: 0,
-			fontSize: 18,
-			fontWeight: 600,
-			lineHeight: "24px",
-			letterSpacing: "-0.01em"
-		},
 		cluster: {
 			display: "inline-flex",
 			alignItems: "center",
 			gap: 10,
 			flexWrap: "wrap",
 			justifyContent: "flex-end",
-			marginLeft: "auto"
+			alignSelf: "center"
 		},
 		live: {
 			fontSize: 11,
@@ -129,18 +111,27 @@
 			flexDirection: "column",
 			gap: 12
 		},
+		tabRow: {
+			display: "flex",
+			alignItems: "stretch",
+			gap: 12,
+			borderBottom: "1px solid var(--dsw-alias-border-l1)"
+		},
 		tabBar: {
 			display: "flex",
 			gap: 4,
-			borderBottom: "1px solid var(--dsw-alias-border-l1)",
 			overflowX: "auto"
 		},
+		spacer: { flex: "1 1 auto" },
 		tab: {
 			appearance: "none",
 			background: "none",
 			border: "none",
 			borderBottom: "2px solid transparent",
 			padding: "8px 12px",
+			display: "flex",
+			alignItems: "center",
+			gap: 4,
 			fontSize: 13,
 			color: "var(--dsw-alias-label-secondary)",
 			cursor: "pointer",
@@ -153,6 +144,11 @@
 			fontWeight: 600,
 			borderBottom: "2px solid var(--dsw-alias-accent, #6C5CE7)"
 		},
+		tabAlert: {
+			color: "var(--dsw-alias-state-warn-primary)",
+			fontWeight: 700
+		},
+		paneBanner: { gridColumn: "1 / -1" },
 		tabPane: {
 			display: "grid",
 			gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))",
@@ -999,7 +995,7 @@
 	* @returns {(props: any) => ReactElement} the `StatusSection` component.
 	*/
 	function createStatusSection(deps) {
-		const { h, useStats, useState, StatusPill, Row, CallStat, ProviderSelectRow, PanelSettingsControls } = deps;
+		const { h, useStats, useState, StatusPill, Row, CallStat, ProviderSelectRow, PanelSettingsControls, panelId } = deps;
 		/**
 		* The bundle card's one-liner (`view: 'summary'`).
 		*
@@ -1058,21 +1054,33 @@
 			}, "▾")), open ? h("div", { style: S.sectionBody }, props.children) : null);
 		}
 		/**
-		* The theme tabs (运行 / 用量 / 会话). Same rule as `Section` above: it is a
-		* separate component so its `useState` never shifts the hook order that
+		* The tab row and its panes. Same rule as `Section` above: it is a separate
+		* component so its `useState` never shifts the hook order that
 		* `test/client-render.test.mjs` asserts for `StatusSection`.
+		*
+		* The strip and the freshness cluster share ONE row (`S.tabRow`), whose bottom
+		* border is what the active tab's underline sits on. The cluster must stay
+		* OUTSIDE `role="tablist"` — a tablist may only contain tabs — so the row
+		* splits them with a spacer rather than giving the cluster a header bar of its
+		* own above (which is what the panel used to do: a whole row for one badge).
 		*
 		* Every pane STAYS RENDERED — the inactive ones are `display: none`, not
 		* unmounted. Two reasons: the headings a reader (and a test) greps for must
-		* not vanish with a click, and the `quotaTextDrift` / protocol notices live
-		* OUTSIDE these panes precisely because a silent degradation must never hide
-		* behind a tab. The cost is negligible — the whole panel is a handful of rows.
+		* not vanish with a click, and a degradation that belongs to a pane must stay
+		* findable from the strip. That second one used to be bought by keeping the
+		* notices ABOVE the tabs ("a silent degradation must never hide behind a
+		* tab"); they now live in the pane they belong to, and such a tab carries
+		* `alert` — a visible `!` next to its label plus the reason as its hover title
+		* — so the signal is on the strip whichever tab is open. The cost is
+		* negligible: the whole panel is a handful of rows.
 		*
-		* @param {Array<{label: string, pane: any}>} props.tabs
+		* @param {{status?: any, tabs: Array<{label: string, pane: any, alert?: string}>}} props
+		*   `status` is the tab-independent freshness cluster; `alert` is non-empty
+		*   only on a tab whose pane is carrying a degradation.
 		*/
 		function Tabbed(props) {
 			const [active, setActive] = useState(0);
-			return h("div", { style: S.tabs }, h("div", {
+			return h("div", { style: S.tabs }, h("div", { style: S.tabRow }, h("div", {
 				style: S.tabBar,
 				role: "tablist"
 			}, props.tabs.map((tab, index) => h("button", {
@@ -1083,9 +1091,13 @@
 				} : S.tab,
 				onClick: () => setActive(index),
 				"aria-selected": index === active,
+				...tab.alert ? { title: tab.alert } : {},
 				role: "tab",
 				type: "button"
-			}, tab.label))), props.tabs.map((tab, index) => h("div", {
+			}, tab.label, tab.alert ? h("span", {
+				style: S.tabAlert,
+				"aria-hidden": true
+			}, "!") : null))), h("span", { style: S.spacer }), props.status || null), props.tabs.map((tab, index) => h("div", {
 				key: tab.label,
 				style: {
 					...S.tabPane,
@@ -1206,7 +1218,7 @@
 					label: "失败",
 					color: ask.err ? "var(--dsw-alias-state-error-primary)" : void 0
 				}))), h(Row, { label: "ask 累计 tokens" }, String(ask.tokens)), h(Row, { label: "ask 平均耗时" }, fmtDuration(askAvg)));
-				const headerBar = h("div", { style: S.headerBar }, h("div", { style: S.header }, h("h3", { style: S.title }, "运行统计"), h("div", { style: S.cluster }, h("span", { style: error ? {
+				const statusCluster = h("span", { style: S.cluster }, h("span", { style: error ? {
 					...S.live,
 					...S.liveStale
 				} : S.live }, error ? "已断开" : "实时"), updatedAt ? h("span", {
@@ -1219,32 +1231,56 @@
 					style: S.refresh,
 					onClick: reload,
 					type: "button"
-				}, "刷新"))));
-				const content = h("div", { style: S.content }, ask.inFlight ? h("div", { style: S.inFlight }, h("span", { style: S.inFlightDot }), h("span", {
-					style: S.inFlightLabel,
-					title: "有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失。模型并行发多条 ask 时这里只报「最近开始且仍在跑」的那一条（面板装不下第二条）；更早的那条跑完或最新那条先跑完，本行都会改报还活着的那条"
-				}, "ask 回合进行中"), h("span", { style: S.inFlightText }, inFlightText(ask.inFlight))) : null, proto.quotaTextDrift ? h("div", { style: S.notice }, "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。") : null, protoNotice ? h("div", { style: S.notice }, protoNotice) : null, h(Tabbed, { tabs: [
-					{
-						label: "运行",
-						pane: [
-							h(Section, {
-								title: "启动情况",
-								titleRight: h(StatusPill, { up: !!d.up })
-							}, startupCard),
-							h(Section, { title: "运行环境" }, envCard),
-							h(Section, { title: "回合边界" }, boundaryCard)
-						]
-					},
-					{
-						label: "用量",
-						pane: [h(Section, { title: "CodingPlan 额度" }, quotaCard), h(Section, { title: "工具调用统计" }, toolCard)]
-					},
-					{
-						label: "会话",
-						pane: [h(Section, { title: "侧边会话" }, sessionCard)]
-					}
-				] }));
-				body = h("div", { style: S.page }, headerBar, h("div", { style: S.scroll }, content));
+				}, "刷新"));
+				const quotaDrift = proto.quotaTextDrift ? "额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。" : "";
+				const content = h("div", { style: S.content }, h(Tabbed, {
+					status: statusCluster,
+					tabs: [
+						{
+							label: "运行",
+							alert: protoNotice || void 0,
+							pane: [
+								ask.inFlight ? h("div", { style: {
+									...S.inFlight,
+									...S.paneBanner
+								} }, h("span", { style: S.inFlightDot }), h("span", {
+									style: S.inFlightLabel,
+									title: "有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失。模型并行发多条 ask 时这里只报「最近开始且仍在跑」的那一条（面板装不下第二条）；更早的那条跑完或最新那条先跑完，本行都会改报还活着的那条"
+								}, "ask 回合进行中"), h("span", { style: S.inFlightText }, inFlightText(ask.inFlight))) : null,
+								protoNotice ? h("div", { style: {
+									...S.notice,
+									...S.paneBanner
+								} }, protoNotice) : null,
+								h(Section, {
+									title: "启动情况",
+									titleRight: h(StatusPill, { up: !!d.up })
+								}, startupCard),
+								h(Section, { title: "运行环境" }, envCard),
+								h(Section, { title: "回合边界" }, boundaryCard)
+							]
+						},
+						{
+							label: "用量",
+							alert: quotaDrift || void 0,
+							pane: [
+								quotaDrift ? h("div", { style: {
+									...S.notice,
+									...S.paneBanner
+								} }, quotaDrift) : null,
+								h(Section, { title: "CodingPlan 额度" }, quotaCard),
+								h(Section, { title: "工具调用统计" }, toolCard)
+							]
+						},
+						{
+							label: "会话",
+							pane: [h(Section, { title: "侧边会话" }, sessionCard)]
+						}
+					]
+				}));
+				body = h("div", {
+					style: S.page,
+					"data-dsh-plugin": panelId
+				}, h("div", { style: S.scroll }, content));
 			}
 			return body;
 		};
@@ -2296,7 +2332,8 @@
 				Row,
 				CallStat,
 				ProviderSelectRow,
-				PanelSettingsControls
+				PanelSettingsControls,
+				panelId: REGISTRATION.id
 			});
 			const { ReviewRail, requestReview } = createReviewHandoff();
 			const MessageAsk = createMessageAsk({

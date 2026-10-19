@@ -14,15 +14,20 @@
  * point rather than imported here. What this file imports directly is only what
  * is React-free: `S`, and the pure formatters in `quota.ts` / `rows.ts`.
  *
- * LAYOUT (2026-10, rewritten to the sibling sensenova panel's language): a
- * PINNED page header over a scrolling body, content grouped into collapsible
- * section cards inside three THEME TABS (运行 / 用量 / 会话), the active pane
- * laid out as a responsive grid so a wide window reads two columns instead of
- * one long one. The panel stops reading as six equal grey boxes and starts
- * reading as one page with a readable anchor; hierarchy comes from background
- * steps (section on layer-1, metric blocks on layer-2) instead of a border per
- * row. No data was dropped — every heading and every row is still here, each
- * section just owns a fold of its own and a tab of its own.
+ * LAYOUT (2026-10, rewritten to the sibling sensenova panel's language): a TAB
+ * ROW at the head of a scrolling body — the strip (运行 / 用量 / 会话) on the left
+ * and the freshness cluster on the right of the SAME row, so the rule under the
+ * strip is also the rule under the cluster. The row sits inside the scroll region
+ * (the sibling panel does too), so a host that gives the panel a fixed height
+ * scrolls it away with the body; the cluster is on the row rather than on a line
+ * of its own regardless. Content is grouped into collapsible section cards inside
+ * those tabs, the active pane laid out as a responsive grid so a wide window
+ * reads two columns instead of one long one. The panel prints NO title of its
+ * own: the host page above it already names the plugin, and a second 「运行统计」
+ * heading above the host's own read as a duplicate. Hierarchy comes from
+ * background steps (section on layer-1, metric blocks on layer-2) instead of a
+ * border per row. No data was dropped — every heading and every row is still
+ * here, each section just owns a fold of its own and a tab of its own.
  *
  * @module dsh-connect-atomcode/client/status-section
  */
@@ -98,6 +103,15 @@ export interface StatusSectionDeps {
    * so a click takes effect on the very next turn.
    */
   PanelSettingsControls?: (props: { cfg: any; reload?: () => void }) => ReactElement;
+  /**
+   * The plugin's registered id, stamped on the panel root as `data-dsh-plugin`.
+   * Injected rather than imported: the id has ONE definition (the registration
+   * in ./index.ts, itself checked against package.json by
+   * `test/client-id.test.mjs`), and a second literal here could drift from it.
+   * The attribute is what lets a test tell "our panel rendered" from "some panel
+   * rendered" while the panel no longer prints a heading of its own.
+   */
+  panelId: string;
 }
 
 /**
@@ -107,7 +121,7 @@ export interface StatusSectionDeps {
  * @returns {(props: any) => ReactElement} the `StatusSection` component.
  */
 export function createStatusSection(deps: StatusSectionDeps) {
-  const { h, useStats, useState, StatusPill, Row, CallStat, ProviderSelectRow, PanelSettingsControls } = deps;
+  const { h, useStats, useState, StatusPill, Row, CallStat, ProviderSelectRow, PanelSettingsControls, panelId } = deps;
 
   /**
    * The bundle card's one-liner (`view: 'summary'`).
@@ -174,40 +188,62 @@ export function createStatusSection(deps: StatusSectionDeps) {
   }
 
   /**
-   * The theme tabs (运行 / 用量 / 会话). Same rule as `Section` above: it is a
-   * separate component so its `useState` never shifts the hook order that
+   * The tab row and its panes. Same rule as `Section` above: it is a separate
+   * component so its `useState` never shifts the hook order that
    * `test/client-render.test.mjs` asserts for `StatusSection`.
+   *
+   * The strip and the freshness cluster share ONE row (`S.tabRow`), whose bottom
+   * border is what the active tab's underline sits on. The cluster must stay
+   * OUTSIDE `role="tablist"` — a tablist may only contain tabs — so the row
+   * splits them with a spacer rather than giving the cluster a header bar of its
+   * own above (which is what the panel used to do: a whole row for one badge).
    *
    * Every pane STAYS RENDERED — the inactive ones are `display: none`, not
    * unmounted. Two reasons: the headings a reader (and a test) greps for must
-   * not vanish with a click, and the `quotaTextDrift` / protocol notices live
-   * OUTSIDE these panes precisely because a silent degradation must never hide
-   * behind a tab. The cost is negligible — the whole panel is a handful of rows.
+   * not vanish with a click, and a degradation that belongs to a pane must stay
+   * findable from the strip. That second one used to be bought by keeping the
+   * notices ABOVE the tabs ("a silent degradation must never hide behind a
+   * tab"); they now live in the pane they belong to, and such a tab carries
+   * `alert` — a visible `!` next to its label plus the reason as its hover title
+   * — so the signal is on the strip whichever tab is open. The cost is
+   * negligible: the whole panel is a handful of rows.
    *
-   * @param {Array<{label: string, pane: any}>} props.tabs
+   * @param {{status?: any, tabs: Array<{label: string, pane: any, alert?: string}>}} props
+   *   `status` is the tab-independent freshness cluster; `alert` is non-empty
+   *   only on a tab whose pane is carrying a degradation.
    */
-  function Tabbed(props: { tabs: Array<{ label: string; pane: any }> }): any {
+  function Tabbed(props: { status?: any; tabs: Array<{ label: string; pane: any; alert?: string }> }): any {
     const [active, setActive] = useState(0);
     return h(
       'div',
       { style: S.tabs },
       h(
         'div',
-        { style: S.tabBar, role: 'tablist' },
-        props.tabs.map((tab, index) =>
-          h(
-            'button',
-            {
-              key: tab.label,
-              style: index === active ? { ...S.tab, ...S.tabActive } : S.tab,
-              onClick: () => setActive(index),
-              'aria-selected': index === active,
-              role: 'tab',
-              type: 'button',
-            },
-            tab.label
+        { style: S.tabRow },
+        h(
+          'div',
+          { style: S.tabBar, role: 'tablist' },
+          props.tabs.map((tab, index) =>
+            h(
+              'button',
+              {
+                key: tab.label,
+                style: index === active ? { ...S.tab, ...S.tabActive } : S.tab,
+                onClick: () => setActive(index),
+                'aria-selected': index === active,
+                // Only an affected tab gets a title: an unconditional one would
+                // put a tooltip on the clean tabs too, where it says nothing.
+                ...(tab.alert ? { title: tab.alert } : {}),
+                role: 'tab',
+                type: 'button',
+              },
+              tab.label,
+              tab.alert ? h('span', { style: S.tabAlert, 'aria-hidden': true }, '!') : null
+            )
           )
-        )
+        ),
+        h('span', { style: S.spacer }),
+        props.status || null
       ),
       props.tabs.map((tab, index) =>
         h(
@@ -467,75 +503,69 @@ export function createStatusSection(deps: StatusSectionDeps) {
         h(Row, { label: 'ask 平均耗时' }, fmtDuration(askAvg))
       );
 
-      // Pinned page header: the panel's name on the left, the freshness cluster
-      // on the right (实时/已断开 badge, the reading's age, the refresh verb).
-      const headerBar = h(
-        'div',
-        { style: S.headerBar },
-        h(
-          'div',
-          { style: S.header },
-          h('h3', { style: S.title }, '运行统计'),
-          h(
-            'div',
-            { style: S.cluster },
-            h(
+      // The freshness cluster: the reading's state, its age, and the one verb
+      // that refreshes it. It rides the tab row (see `Tabbed`) — there is no
+      // header bar of its own any more, and this panel prints no title: the host
+      // page above already names the plugin.
+      const statusCluster = h(
+        'span',
+        { style: S.cluster },
+        h('span', { style: error ? { ...S.live, ...S.liveStale } : S.live }, error ? '已断开' : '实时'),
+        updatedAt
+          ? h(
               'span',
-              { style: error ? { ...S.live, ...S.liveStale } : S.live },
-              error ? '已断开' : '实时'
-            ),
-            updatedAt
-              ? h(
-                  'span',
-                  { style: S.updated, title: error || '' },
-                  (error ? '最后更新 ' : '更新于 ') + new Date(updatedAt).toLocaleTimeString('zh-CN')
-                )
-              : null,
-            error ? h('span', { style: S.staleReason, title: error }, failureNote) : null,
-            h('button', { style: S.refresh, onClick: reload, type: 'button' }, '刷新')
-          )
-        )
+              { style: S.updated, title: error || '' },
+              (error ? '最后更新 ' : '更新于 ') + new Date(updatedAt).toLocaleTimeString('zh-CN')
+            )
+          : null,
+        error ? h('span', { style: S.staleReason, title: error }, failureNote) : null,
+        h('button', { style: S.refresh, onClick: reload, type: 'button' }, '刷新')
       );
+
+      // 静默降级的显式信号：额度文本形状变了（AtomCode 升级）时必须说出来，
+      // 而不是让面板看起来像"额度为 0"。它属于「用量」pane —— 配额的读者就在那张卡
+      // 上；同一段文本还挂在该 tab 的 `alert` 上（可见 '!' + hover 原因），所以
+      // 「降级藏在 tab 后面」这个顾虑由 tab 自己承担，不再需要一条跨 tab 的横幅。
+      const quotaDrift = proto.quotaTextDrift
+        ? '额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），' +
+          '下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。'
+        : '';
 
       const content = h(
         'div',
         { style: S.content },
-        // Live strip for a turn running RIGHT NOW — the only fact on this page
-        // that changes while the user reads it, so it leads the body.
-        ask.inFlight
-          ? h(
-              'div',
-              { style: S.inFlight },
-              h('span', { style: S.inFlightDot }),
-              h(
-                'span',
-                {
-                  style: S.inFlightLabel,
-                  title:
-                    '有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失。' +
-                    '模型并行发多条 ask 时这里只报「最近开始且仍在跑」的那一条（面板装不下第二条）；更早的那条跑完或最新那条先跑完，本行都会改报还活着的那条',
-                },
-                'ask 回合进行中',
-              ),
-              h('span', { style: S.inFlightText }, inFlightText(ask.inFlight))
-            )
-          : null,
-        // 静默降级的显式信号：额度文本形状变了（AtomCode 升级）时必须说出来，
-        // 而不是让面板看起来像"额度为 0"。
-        proto.quotaTextDrift
-          ? h(
-              'div',
-              { style: S.notice },
-              '额度解析失配：daemon 的 status 文本已不符合已知形状（AtomCode 可能已升级），' +
-                '下面显示的是原始文本而非解析结果。可手工核对 /api/atomcode-bridge/stats 的 quota.raw。'
-            )
-          : null,
-        protoNotice ? h('div', { style: S.notice }, protoNotice) : null,
         h(Tabbed, {
+          status: statusCluster,
           tabs: [
             {
               label: '运行',
+              // 协议漂移讲的是 daemon 发来的事件类型 —— 这个 pane 里的「回合边界」正是
+              // 靠计数那些事件，所以它属于这里，而不是某个 tab 之外的一行页脚。
+              alert: protoNotice || undefined,
               pane: [
+                // Live strip for a turn running RIGHT NOW — the only fact on this
+                // page that changes while the user reads it, so it leads the pane.
+                // `paneBanner`: a pane is a grid, so without it the strip would
+                // render inside a single 340px column.
+                ask.inFlight
+                  ? h(
+                      'div',
+                      { style: { ...S.inFlight, ...S.paneBanner } },
+                      h('span', { style: S.inFlightDot }),
+                      h(
+                        'span',
+                        {
+                          style: S.inFlightLabel,
+                          title:
+                            '有一条 atomcode_ask 回合正在跑。数字来自详情页每 5 秒一次的轮询，最多落后一个轮询周期；只报计数与耗时、不含回复内容（回复是整轮取回的）。回合结束后本行消失。' +
+                            '模型并行发多条 ask 时这里只报「最近开始且仍在跑」的那一条（面板装不下第二条）；更早的那条跑完或最新那条先跑完，本行都会改报还活着的那条',
+                        },
+                        'ask 回合进行中',
+                      ),
+                      h('span', { style: S.inFlightText }, inFlightText(ask.inFlight))
+                    )
+                  : null,
+                protoNotice ? h('div', { style: { ...S.notice, ...S.paneBanner } }, protoNotice) : null,
                 h(Section, { title: '启动情况', titleRight: h(StatusPill, { up: !!d.up }) }, startupCard),
                 h(Section, { title: '运行环境' }, envCard),
                 h(Section, { title: '回合边界' }, boundaryCard),
@@ -543,7 +573,9 @@ export function createStatusSection(deps: StatusSectionDeps) {
             },
             {
               label: '用量',
+              alert: quotaDrift || undefined,
               pane: [
+                quotaDrift ? h('div', { style: { ...S.notice, ...S.paneBanner } }, quotaDrift) : null,
                 h(Section, { title: 'CodingPlan 额度' }, quotaCard),
                 h(Section, { title: '工具调用统计' }, toolCard),
               ],
@@ -556,10 +588,12 @@ export function createStatusSection(deps: StatusSectionDeps) {
         })
       );
 
+      // `data-dsh-plugin` is this panel's own name tag. The host page above prints
+      // the plugin's name, so this panel deliberately prints no heading of its own
+      // — which would leave a reader (or a test) nothing to recognize it by.
       body = h(
         'div',
-        { style: S.page },
-        headerBar,
+        { style: S.page, 'data-dsh-plugin': panelId },
         h('div', { style: S.scroll }, content)
       );
     }

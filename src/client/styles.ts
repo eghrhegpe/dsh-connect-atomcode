@@ -53,22 +53,18 @@ export const S = {
     fontSize: 13,
     lineHeight: '20px',
   } as CSSProperties,
-  headerBar: { flex: 'none', position: 'relative', zIndex: 1 },
-  header: { display: 'flex', alignItems: 'center', gap: 12, padding: '2px 0 10px' },
-  // The page's own name. 18px rather than the card's 13: it is the ONLY thing
-  // here that is not data, and one larger line gives the panel a readable
-  // anchor instead of six equal headings marching down the page.
-  title: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '24px', letterSpacing: '-0.01em' },
-  // The freshness cluster, pinned to the header's right so it stays put while
-  // the body scrolls. `inline-flex` + `flexWrap` lets it shrink instead of
-  // pushing the title off a narrow panel.
+  // The freshness cluster (实时/已断开 badge, the reading's age, the refresh
+  // verb) rides the TAB ROW's right end (see `tabRow`): the strip alone left
+  // that row's right half empty, and a header bar of its own above it held
+  // nothing else — one row, not two. `inline-flex` + `flexWrap` lets it shrink
+  // instead of pushing the tabs off a narrow panel.
   cluster: {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 10,
     flexWrap: 'wrap',
     justifyContent: 'flex-end',
-    marginLeft: 'auto',
+    alignSelf: 'center',
   },
   live: {
     fontSize: 11,
@@ -126,18 +122,30 @@ export const S = {
   // active one getting the accent underline. Non-active panes are HIDDEN, not
   // unmounted, so the headings a test or a reader greps for stay in the tree.
   tabs: { display: 'flex', flexDirection: 'column', gap: 12 },
-  tabBar: {
+  // ONE row holds the tab strip and the freshness cluster, and the rule under
+  // it is what the active tab's 2px underline sits on. The border belongs to
+  // the ROW rather than to the strip: `role="tablist"` may only contain tabs
+  // (the cluster is not one), and a border on the strip alone would stop dead
+  // in the middle of the row.
+  tabRow: {
     display: 'flex',
-    gap: 4,
+    alignItems: 'stretch',
+    gap: 12,
     borderBottom: '1px solid var(--dsw-alias-border-l1)',
-    overflowX: 'auto',
   },
+  tabBar: { display: 'flex', gap: 4, overflowX: 'auto' },
+  // Pushes the cluster to the row's right end (the tab row is the only flex row
+  // whose children want to split).
+  spacer: { flex: '1 1 auto' } as CSSProperties,
   tab: {
     appearance: 'none',
     background: 'none',
     border: 'none',
     borderBottom: '2px solid transparent',
     padding: '8px 12px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
     fontSize: 13,
     color: 'var(--dsw-alias-label-secondary)',
     cursor: 'pointer',
@@ -150,6 +158,16 @@ export const S = {
     fontWeight: 600,
     borderBottom: '2px solid var(--dsw-alias-accent, #6C5CE7)',
   },
+  // A tab whose pane is carrying a degradation says so from the strip (this
+  // marker + the reason as its hover title). The notices used to live ABOVE the
+  // tabs for exactly that reason — a silent degradation must never hide behind
+  // a tab — and this marker is what lets them move inside the pane they belong
+  // to without losing that guarantee.
+  tabAlert: { color: 'var(--dsw-alias-state-warn-primary)', fontWeight: 700 },
+  // A banner that belongs to the WHOLE pane rather than to one column of it:
+  // panes are a responsive grid, so a notice (or the live in-flight strip) must
+  // span every column or it would render inside a single 340px card slot.
+  paneBanner: { gridColumn: '1 / -1' } as CSSProperties,
   tabPane: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))',
