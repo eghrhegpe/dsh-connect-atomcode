@@ -47,47 +47,16 @@ export const DAEMON_COMMAND_TIMEOUT_MS = 3_500;
 export const DEFAULT_APPROVAL_MODE = 'bypass';
 export const DEFAULT_ASK_MAX_ROUNDS = 25;
 
-/**
- * The `approval_mode` values the daemon ACCEPTS — a closed enum measured, not
- * assumed (`docs/AtomCode-CLI与daemon接口参考.md` §approval_mode; probe
- * `scripts/probes/approval-mode.mjs`, 2026-10-17 against daemon 5.2.3, which
- * enumerated it through the 422 parameter gate at zero quota).
- *
- * It is copied here because the daemon answers an unknown value with a 422 on
- * EVERY `/chat` — a typo in the patch file used to survive untouched from
- * `readConfig()` to the wire, so the first symptom was every ask turn failing
- * with a daemon error instead of "this value is not one of the four". The copy
- * is safe in the direction that matters: an enum that GROWS upstream is refused
- * here and reported on the panel as a rejection (fail-visible, one boot), while
- * a value the daemon would have 422'd is caught before it ever reaches a turn.
- * When this list is ever widened, widen `test/stats-route.test.mjs` with it.
- */
-export const APPROVAL_MODES = ['build', 'accept_edits', 'bypass', 'plan'] as const;
-
-/** Human-readable list for the panel/log, derived so it can never drift from the enum above. */
-export const APPROVAL_MODES_TEXT = APPROVAL_MODES.join(' / ');
-
-/**
- * The closed set the review brief injection accepts — a plugin-side enum, not a
- * daemon one, so no upstream 422 gate: it picks which prompt `runReviewCommand`
- * and the `/atomcode-review` command send when the user text is empty.
- *
- * `always`     — the brief is sent on every review; non-empty user text is
- *                appended after it (the pre-v1 behaviour, kept for scope-fanatics).
- * `when-empty` — the brief is sent only when the user text is empty; non-empty
- *                text goes through verbatim, without the brief (the shipped
- *                default, 2026-10-18 — the user-facing ask: "打招呼" should not
- *                trigger a six-round review).
- * `never`      — the brief is never sent; the user text goes through verbatim,
- *                and an empty text is refused by the caller (a review with no
- *                target is a wasted turn, so it fails fast and visibly).
- *
- * A spelling outside the set is refused and the field falls back to the
- * default; the raw spelling rides on `reviewBriefModeRejected`, mirroring
- * `approvalModeRejected` — report what was actually refused, don't guess.
- */
-export const REVIEW_BRIEF_MODES = ['always', 'when-empty', 'never'] as const;
-export type ReviewBriefMode = (typeof REVIEW_BRIEF_MODES)[number];
+// The two closed enums (APPROVAL_MODES / REVIEW_BRIEF_MODES + the derived text)
+// live in ONE module both halves read — ../shared/closed-sets.ts. The rationale
+// paragraphs that used to live on these exports (the daemon 422 gate, the
+// review-brief modes) moved there with the list. Re-exported here because
+// runtime.ts and the rejection messages name these exports from config.ts —
+// the shared module is the fact, this file is only the face.
+import { APPROVAL_MODES, APPROVAL_MODES_TEXT, REVIEW_BRIEF_MODES } from '../shared/closed-sets.ts';
+import type { ReviewBriefMode } from '../shared/closed-sets.ts';
+export { APPROVAL_MODES, APPROVAL_MODES_TEXT, REVIEW_BRIEF_MODES };
+export type { ReviewBriefMode };
 export const DEFAULT_REVIEW_BRIEF_MODE: ReviewBriefMode = 'when-empty';
 
 /**

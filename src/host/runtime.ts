@@ -49,15 +49,14 @@ import type { AskUsageCounters } from './usage-store.ts';
 import { buildQuotaReport } from './quota.ts';
 import { parseUsageDaily, parseUsageSummary, summaryQuotaReport } from './codingplan.ts';
 import {
-  APPROVAL_MODES_TEXT,
   DAEMON_COMMAND_TIMEOUT_MS,
   DAEMON_PROBE_TIMEOUT_MS,
   DEFAULT_APPROVAL_MODE,
   DEFAULT_ASK_MAX_ROUNDS,
   DEFAULT_REVIEW_BRIEF_MODE,
-  REVIEW_BRIEF_MODES,
 } from './config.ts';
 import type { HostConfig } from './config.ts';
+import { APPROVAL_MODES_TEXT, REVIEW_BRIEF_MODES } from '../shared/closed-sets.ts';
 import { describeDaemonDown, createStatsBag } from './stats.ts';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';

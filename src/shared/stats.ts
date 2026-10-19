@@ -31,7 +31,7 @@ export interface ConfigBranch {
   approvalMode?: string | null;
   /**
    * The `approval_mode` spelling the patch supplied that the daemon does NOT
-   * accept (`config.ts` 的 APPROVAL_MODES), carried so the panel can name the
+   * accept (`shared/closed-sets.ts` 的 APPROVAL_MODES), carried so the panel can name the
    * rejected value instead of showing the fallback as if the user had chosen it.
    * `null`/absent = the resolved value is legal.
    */

@@ -1450,6 +1450,70 @@
 	}
 
 //#endregion
+//#region src/shared/closed-sets.ts
+/**
+	* closed-sets.ts — the two closed enumerations this plugin knows about, in ONE
+	* place shared by both halves.
+	*
+	* `config.ts` (host validation) and `panel-controls.ts` (the panel's dropdowns)
+	* used to carry their own literal copies of the same two lists, with the
+	* premium/approval set also duplicated in `panel-settings-store.ts`. A new
+	* daemon mode then had to be edited in three files, and nothing pinned the
+	* panel's menus to the validator's set — the dropdown could drift from what the
+	* route accepts.
+	*
+	* This module is the single source. The host side reads it for validation and
+	* rejection messages; the client side reads it for the dropdown options; a
+	* client-render test pins the rendered <option> values back to this list.
+	*
+	* TL;DR of the two enums:
+	*
+	*  - `APPROVAL_MODES` — values the daemon ACCEPTS for `approval_mode`, a closed
+	*    enum measured, not assumed (`docs/AtomCode-CLI与daemon接口参考.md`
+	*    §approval_mode; probe `scripts/probes/approval-mode.mjs`, 2026-10-17
+	*    against daemon 5.2.3, which enumerated it through the 422 parameter gate
+	*    at zero quota). The daemon answers an unknown value with a 422 on EVERY
+	*    `/chat`, so a typo in the patch file would fail every ask turn at the wire
+	*    instead of at validation — the closed set exists to catch it earlier.
+	*    When this list is ever widened, widen `test/stats-route.test.mjs` with it.
+	*
+	*  - `REVIEW_BRIEF_MODES` — the closed set the review brief injection accepts,
+	*    a plugin-side enum (no daemon gate): it picks which prompt
+	*    `runReviewCommand` / `/atomcode-review` send when the user text is empty.
+	*    `always` — brief on every review, user text appended after it;
+	*    `when-empty` — brief only when user text is empty (shipped default);
+	*    `never` — brief never sent, empty text refused by the caller.
+	*
+	* @module dsh-connect-atomcode/shared/closed-sets
+	*/
+	/**
+	* The `approval_mode` values the daemon accepts.
+	*
+	* A value outside the set is refused at config time and the field falls back to
+	* `DEFAULT_APPROVAL_MODE` (config.ts); the raw spelling rides on
+	* `approvalModeRejected` so failures stay observable.
+	*/
+	const APPROVAL_MODES = [
+		"build",
+		"accept_edits",
+		"bypass",
+		"plan"
+	];
+	/** Human-readable list for the panel/log, derived so it can never drift from the enum above. */
+	const APPROVAL_MODES_TEXT = APPROVAL_MODES.join(" / ");
+	/**
+	* The closed set `review_brief_mode` accepts (see the module header for the
+	* per-mode semantics). A spelling outside the set is refused and the field
+	* falls back to `DEFAULT_REVIEW_BRIEF_MODE` (config.ts); the raw spelling rides
+	* on `reviewBriefModeRejected`, mirroring `approvalModeRejected`.
+	*/
+	const REVIEW_BRIEF_MODES = [
+		"always",
+		"when-empty",
+		"never"
+	];
+
+//#endregion
 //#region src/client/panel-controls.ts
 /**
 	* Build the panel-settings controls.
@@ -1478,13 +1542,17 @@
 			const [briefError, setBriefError] = useState("");
 			const [dirPending, setDirPending] = useState(false);
 			const [dirError, setDirError] = useState("");
-			const briefModes = [
-				"always",
-				"when-empty",
-				"never"
-			];
+			const [approvalPending, setApprovalPending] = useState(false);
+			const [approvalError, setApprovalError] = useState("");
+			const [roundsPending, setRoundsPending] = useState(false);
+			const [roundsError, setRoundsError] = useState("");
+			const briefModes = REVIEW_BRIEF_MODES;
+			const approvalModes = APPROVAL_MODES;
 			const currentBrief = cfg && typeof cfg.panelBriefMode === "string" ? cfg.panelBriefMode : "";
 			const currentDir = cfg && typeof cfg.panelWorkingDir === "string" ? cfg.panelWorkingDir : "";
+			const currentApproval = cfg && typeof cfg.panelApprovalMode === "string" ? cfg.panelApprovalMode : "";
+			const currentRounds = cfg && typeof cfg.panelAskMaxRounds === "number" ? cfg.panelAskMaxRounds : "";
+			const currentRoundsStr = currentRounds === "" ? "" : String(currentRounds);
 			const tagFor = (key, resolved, shippedDefault) => {
 				const authored = cfg && cfg.authored && typeof cfg.authored === "object" ? cfg.authored : null;
 				return boundaryTag(boundaryVerdict(authored, key, resolved, shippedDefault));
@@ -1500,6 +1568,12 @@
 			if (currentDir !== lastServerDir.current) {
 				lastServerDir.current = currentDir;
 				setDirValue(currentDir);
+			}
+			const [roundsValue, setRoundsValue] = useState(currentRoundsStr);
+			const lastServerRounds = useRef(currentRounds);
+			if (currentRounds !== lastServerRounds.current) {
+				lastServerRounds.current = currentRounds;
+				setRoundsValue(currentRoundsStr);
 			}
 			const onBriefChange = async (event) => {
 				const value = event && event.target ? event.target.value : "";
@@ -1524,6 +1598,33 @@
 				setDirPending(false);
 				if (!result.ok) {
 					setDirError("保存失败：" + result.error);
+					return;
+				}
+				if (typeof reload === "function") reload();
+			};
+			const onApprovalChange = async (event) => {
+				const value = event && event.target ? event.target.value : "";
+				if (value === currentApproval) return;
+				setApprovalPending(true);
+				setApprovalError("");
+				const result = await postPanelSettings({ approvalMode: value === "" ? null : value });
+				setApprovalPending(false);
+				if (!result.ok) {
+					setApprovalError("保存失败：" + result.error);
+					return;
+				}
+				if (typeof reload === "function") reload();
+			};
+			/** Only saves when the value differs from the current server state. */
+			const saveRounds = async () => {
+				if (roundsValue === currentRoundsStr) return;
+				setRoundsPending(true);
+				setRoundsError("");
+				const num = roundsValue === "" ? null : parseInt(roundsValue, 10);
+				const result = await postPanelSettings({ askMaxRounds: num === null || Number.isNaN(num) ? null : num });
+				setRoundsPending(false);
+				if (!result.ok) {
+					setRoundsError("保存失败：" + result.error);
 					return;
 				}
 				if (typeof reload === "function") reload();
@@ -1586,98 +1687,63 @@
 				},
 				disabled: dirPending || dirValue.trim() === currentDir,
 				onClick: saveDir
-			}, dirPending ? "…" : "保存")))), dirError ? h("span", { style: S.valWarn }, dirError) : null, (() => {
-				const approvalModes = [
-					"build",
-					"accept_edits",
-					"bypass",
-					"plan"
-				];
-				const currentApproval = cfg && typeof cfg.panelApprovalMode === "string" ? cfg.panelApprovalMode : "";
-				const onApprovalChange = async (event) => {
-					const value = event && event.target ? event.target.value : "";
-					if (value === currentApproval) return;
-					setBriefPending(true);
-					const result = await postPanelSettings({ approvalMode: value === "" ? null : value });
-					setBriefPending(false);
-					if (!result.ok) {
-						setBriefError("保存失败：" + result.error);
-						return;
-					}
-					if (typeof reload === "function") reload();
-				};
-				return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
-					style: S.provLabel,
-					title: "这里的选择优先于插件配置里的 approval_mode；选「不覆盖」就回到配置值。含义：AtomCode 自动执行工具时受多大限制。注意：当前 daemon 对后台调用一律自动放行，切换这里实际不改变行为"
-				}, "AtomCode 自动执行权限"), h("span", { style: tagStyle }, tagFor("approvalMode", cfg && cfg.approvalMode, cfg && cfg.defaults && cfg.defaults.approvalMode)), h("select", {
-					style: {
+			}, dirPending ? "…" : "保存")))), dirError ? h("span", { style: S.valWarn }, dirError) : null, h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
+				style: S.provLabel,
+				title: "这里的选择优先于插件配置里的 approval_mode；选「不覆盖」就回到配置值。含义：AtomCode 自动执行工具时受多大限制。注意：当前 daemon 对后台调用一律自动放行，切换这里实际不改变行为"
+			}, "AtomCode 自动执行权限"), h("span", { style: tagStyle }, tagFor("approvalMode", cfg && cfg.approvalMode, cfg && cfg.defaults && cfg.defaults.approvalMode)), h("select", {
+				style: {
+					...approvalPending ? {
 						...S.select,
-						flex: "1 1 auto",
-						minWidth: 0
-					},
-					value: currentApproval,
-					disabled: briefPending,
-					onChange: onApprovalChange,
-					"aria-label": "AtomCode 自动执行权限"
-				}, h("option", { value: "" }, "不覆盖（用配置 " + (cfg && typeof cfg.approvalMode === "string" ? cfg.approvalMode : "bypass") + "）"), approvalModes.map((m) => h("option", {
-					key: m,
-					value: m
-				}, m)))));
-			})(), (() => {
-				const currentRounds = cfg && typeof cfg.panelAskMaxRounds === "number" ? cfg.panelAskMaxRounds : "";
-				const [roundsValue, setRoundsValue] = useState(currentRounds === "" ? "" : String(currentRounds));
-				const saveRounds = async () => {
-					const num = roundsValue === "" ? null : parseInt(roundsValue, 10);
-					if (num === currentRounds) return;
-					setBriefPending(true);
-					setBriefError("");
-					const result = await postPanelSettings({ askMaxRounds: num === null || Number.isNaN(num) ? null : num });
-					setBriefPending(false);
-					if (!result.ok) {
-						setBriefError("保存失败：" + result.error);
-						return;
-					}
-					if (typeof reload === "function") reload();
-				};
-				return h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
-					style: S.provLabel,
-					title: "这里填的数字优先于插件配置里的 ask_max_rounds；0 = 不设上限（交给 daemon 治理）；留空 = 不覆盖。含义：一次「问 AtomCode」最多让它自己循环多少轮"
-				}, "单次咨询最多轮数"), h("span", { style: tagStyle }, tagFor("askMaxRounds", cfg && cfg.askMaxRounds, cfg && cfg.defaults && cfg.defaults.askMaxRounds)), h("div", { style: {
-					display: "flex",
-					gap: 4,
+						...S.selectOff
+					} : S.select,
 					flex: "1 1 auto",
 					minWidth: 0
-				} }, h("input", {
-					style: {
-						...S.select,
-						flex: "1 1 auto",
-						minWidth: 0,
-						padding: "2px 6px",
-						fontSize: 12
-					},
-					value: roundsValue,
-					placeholder: "不覆盖（" + (cfg && typeof cfg.askMaxRounds === "number" ? cfg.askMaxRounds : "25") + "）",
-					disabled: briefPending,
-					type: "number",
-					min: 0,
-					max: 1e3,
-					onChange: (e) => setRoundsValue(e.target ? e.target.value : ""),
-					onKeyDown: (e) => {
-						if (e.key === "Enter") saveRounds();
-					},
-					"aria-label": "单次咨询最多轮数"
-				}), h("button", {
-					style: {
-						...S.select,
-						width: "auto",
-						flex: "0 0 auto",
-						fontSize: 11,
-						cursor: briefPending ? "wait" : "pointer"
-					},
-					disabled: briefPending || roundsValue === (currentRounds === "" ? "" : String(currentRounds)),
-					onClick: saveRounds
-				}, "保存"))));
-			})());
+				},
+				value: currentApproval,
+				disabled: approvalPending,
+				onChange: onApprovalChange,
+				"aria-label": "AtomCode 自动执行权限"
+			}, h("option", { value: "" }, "不覆盖（用配置 " + (cfg && typeof cfg.approvalMode === "string" ? cfg.approvalMode : "bypass") + "）"), approvalModes.map((m) => h("option", {
+				key: m,
+				value: m
+			}, m))))), approvalError ? h("span", { style: S.valWarn }, approvalError) : null, h("div", { style: S.provCell }, h("div", { style: S.provFieldRow }, h("span", {
+				style: S.provLabel,
+				title: "这里填的数字优先于插件配置里的 ask_max_rounds；0 = 不设上限（交给 daemon 治理）；留空 = 不覆盖。含义：一次「问 AtomCode」最多让它自己循环多少轮"
+			}, "单次咨询最多轮数"), h("span", { style: tagStyle }, tagFor("askMaxRounds", cfg && cfg.askMaxRounds, cfg && cfg.defaults && cfg.defaults.askMaxRounds)), h("div", { style: {
+				display: "flex",
+				gap: 4,
+				flex: "1 1 auto",
+				minWidth: 0
+			} }, h("input", {
+				style: {
+					...S.select,
+					flex: "1 1 auto",
+					minWidth: 0,
+					padding: "2px 6px",
+					fontSize: 12
+				},
+				value: roundsValue,
+				placeholder: "不覆盖（" + (cfg && typeof cfg.askMaxRounds === "number" ? cfg.askMaxRounds : "25") + "）",
+				disabled: roundsPending,
+				type: "number",
+				min: 0,
+				max: 1e3,
+				onChange: (e) => setRoundsValue(e.target ? e.target.value : ""),
+				onKeyDown: (e) => {
+					if (e.key === "Enter") saveRounds();
+				},
+				"aria-label": "单次咨询最多轮数"
+			}), h("button", {
+				style: {
+					...S.select,
+					width: "auto",
+					flex: "0 0 auto",
+					fontSize: 11,
+					cursor: roundsPending ? "wait" : "pointer"
+				},
+				disabled: roundsPending || roundsValue === currentRoundsStr,
+				onClick: saveRounds
+			}, roundsPending ? "…" : "保存")))), roundsError ? h("span", { style: S.valWarn }, roundsError) : null);
 		}
 		return PanelSettingsControls;
 	}

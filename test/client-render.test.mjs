@@ -1426,17 +1426,26 @@ describe('client render — the panel-settings controls POST the fields the rout
         // Hook order for a page render: `useStats`(3), then `ProviderSelectRow`
         // (note, pending, effortPending, effortError), then
         // `PanelSettingsControls` (briefPending, briefError, dirPending,
-        // dirError, dirValue, roundsValue). The save handler closes over
-        // `roundsValue`, so it must be seeded at RENDER time — driving the input
-        // alone only publishes a new value into `published`, and this recording
-        // React never re-renders on a setState.
+        // dirError, approvalPending, approvalError, roundsPending, roundsError,
+        // dirValue, roundsValue). The save handler closes over `roundsValue`,
+        // so it must be seeded at RENDER time — driving the input alone only
+        // publishes a new value into `published`, and this recording React
+        // never re-renders on a setState.
         const handle = await mount({
-          script: [FULL, null, NOW, false, '', false, '', false, '', false, '', '', '12'],
+          // briefPending (index 8) is TRUE: the old code disabled the rounds
+          // input and the approval select while a brief save was in flight
+          // (cross-row pending state). The fix gives every row its own
+          // pending/error pair, so the assertions below must all hold.
+          script: [FULL, null, NOW, false, '', false, '', true, '', false, '', false, '', false, '', '', '12'],
         });
         const tree = handle.panel({ view: 'page' });
         const input = find(tree, (n) => n.type === 'input' && n.props['aria-label'] === ROUNDS_LABEL);
         assert.ok(input, 'the rounds input must render');
         assert.equal(input.props.value, '12', 'the seeded state must be what the input shows');
+        assert.equal(input.props.disabled, false, 'a pending brief save must not disable the rounds input');
+
+        const approval = find(tree, (n) => n.type === 'select' && n.props['aria-label'] === APPROVAL_LABEL);
+        assert.equal(approval.props.disabled, false, 'a pending brief save must not disable the approval select');
 
         const flex = find(tree, (n) => Array.isArray(n.children) && n.children.includes(input));
         const save = flex.children.find((c) => c && typeof c === 'object' && c.type === 'button');
@@ -1453,6 +1462,27 @@ describe('client render — the panel-settings controls POST the fields the rout
         );
       },
     );
+  });
+
+  it('the approval and rounds option lists are the SHARED closed sets, not a client-side copy', async () => {
+    const { APPROVAL_MODES, REVIEW_BRIEF_MODES } = await import('../lib/closed-sets.js');
+    const handle = await renderPanel(FULL);
+    const tree = handle.tree;
+    const approval = find(tree, (n) => n.type === 'select' && n.props['aria-label'] === APPROVAL_LABEL);
+    assert.ok(approval, 'the approval-mode dropdown must render');
+    // `collect` recurses: the mapped options arrive as an ARRAY child of the
+    // select, not as direct element siblings.
+    const approvalOptions = collect(approval, (n) => n.type === 'option')
+      .map((c) => c.props.value)
+      .filter((v) => v !== '');
+    assert.deepEqual(approvalOptions, [...APPROVAL_MODES], 'the dropdown must offer exactly the host-accepted modes');
+
+    const brief = find(tree, (n) => n.type === 'select' && n.props['aria-label'] === '评审时自动补提示词');
+    assert.ok(brief, 'the brief-mode dropdown must render');
+    const briefOptions = collect(brief, (n) => n.type === 'option')
+      .map((c) => c.props.value)
+      .filter((v) => v !== '');
+    assert.deepEqual(briefOptions, [...REVIEW_BRIEF_MODES], 'the dropdown must offer exactly the host-accepted modes');
   });
 });
 

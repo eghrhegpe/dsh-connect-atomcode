@@ -122,9 +122,12 @@ src/host/stats.ts           → lib/stats.js           buildStatsBody：把 daem
 src/host/usage-store.ts     → lib/usage-store.js     「工具调用统计」卡的持久半边：ask 五个计数（calls/ok/err/msTotal/tokens）
                                                        读写 usage.json（挂载时读入 seed，每次 ask 回合后写回，跨重启累计）；inFlight 不上盘
 
-# shared —— 被两半同时读的模块（"这个 base_url 是不是本机端点" / "这份快照的字段契约" 是同一个事实）
+# shared —— 被两半同时读的模块（"这个 base_url 是不是本机端点" / "这份快照的字段契约" / "这两个枚举的合法值" 是同一个事实）
 src/shared/loopback.ts      → lib/loopback.js        isLoopbackBaseUrl：判断"这个 base_url 是不是本机端点"（两个 consumer 已随
                                                         review CLI 消失，predicate 保留并仍被 client 侧导出为 isLoopbackEndpoint）
+src/shared/closed-sets.ts   → lib/closed-sets.js     APPROVAL_MODES / REVIEW_BRIEF_MODES 两个封闭枚举的唯一真源（host 的
+                                                        config / panel-settings-store / runtime 与 client 的 panel-controls 共用，
+                                                        消灭了第三份硬编码；client-render 测试把下拉选项钉到 lib/closed-sets.js）
 src/shared/stats.ts         (inlined both sides)     StatsSnapshot 及其分支的共享类型契约（只有类型，无运行时产物）
 
 # client —— 渲染端半身，下面每个源文件都被 bundle 进同一个 client.js（IIFE）

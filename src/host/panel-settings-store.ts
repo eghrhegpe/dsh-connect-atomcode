@@ -41,18 +41,19 @@ import {
   writeVersionedDoc,
   foreignVersionRefusal,
 } from './state-file.ts';
+import { APPROVAL_MODES, REVIEW_BRIEF_MODES } from '../shared/closed-sets.ts';
 
 /** Shape version this build writes. */
 export const PANEL_SETTINGS_VERSION = 1;
 /** Versions this build may read and write. */
 export const KNOWN_PANEL_SETTINGS_VERSIONS = [PANEL_SETTINGS_VERSION];
 
-/** The closed set `review_brief_mode` accepts (mirrors config.ts). */
-export const PANEL_BRIEF_MODES = ['always', 'when-empty', 'never'] as const;
+/** The closed set `review_brief_mode` accepts (single source: shared/closed-sets.ts). */
+export const PANEL_BRIEF_MODES = REVIEW_BRIEF_MODES;
 export type PanelBriefMode = (typeof PANEL_BRIEF_MODES)[number];
 
-/** The closed set `approval_mode` accepts (mirrors config.ts APPROVAL_MODES). */
-export const PANEL_APPROVAL_MODES = ['build', 'accept_edits', 'bypass', 'plan'] as const;
+/** The closed set `approval_mode` accepts (single source: shared/closed-sets.ts). */
+export const PANEL_APPROVAL_MODES = APPROVAL_MODES;
 export type PanelApprovalMode = (typeof PANEL_APPROVAL_MODES)[number];
 
 /** A state-file reading. */

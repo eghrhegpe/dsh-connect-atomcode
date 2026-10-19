@@ -96,6 +96,15 @@ export default defineConfig([
       // "one artifact per source module" naming this config promises (see the
       // header).
       loopback: "src/shared/loopback.ts",
+      // The closed enums (`approval_mode` / `review_brief_mode` legal values).
+      // Read by BOTH halves — `src/host/{config,panel-settings-store,runtime}.ts`
+      // and `src/client/panel-controls.ts` — so it needs its own entry for the
+      // same reason as `loopback`: a stable path instead of an inlined re-export
+      // shell. This is where the third spelling of the enums used to live (the
+      // client hardcoded its own copies, and nothing pinned them to the host
+      // list), and `test/client-render.test.mjs` pins the dropdown options to
+      // `lib/closed-sets.js`.
+      "closed-sets": "src/shared/closed-sets.ts",
     },
     outDir: "lib",
     format: "esm",
