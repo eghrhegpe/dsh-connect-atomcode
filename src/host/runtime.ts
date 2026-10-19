@@ -126,6 +126,24 @@ export function createRuntime({
     tokens: stats.ask.tokens,
   });
   /**
+   * One in-flight review per session.
+   *
+   * A review is a full autonomous agent turn that can run for minutes. Without
+   * this guard, holding Enter on the composer would start N concurrent reviewers
+   * on the same tree, each burning a real AtomCode turn. Keyed by session id,
+   * because "one review per conversation" is the scope a human expects.
+   *
+   * It lives HERE rather than as a module-level set in `command.ts` so that
+   * unmounting the plugin clears it: a module-level set survives a hot reload,
+   * and a review abandoned mid-turn by a teardown would leave its session id
+   * blocked forever — "already one AtomCode review running" with no review
+   * running at all. `dispose()` below is the one place that releases it.
+   */
+  const reviewInFlight = new Set<string>();
+  const isReviewInFlight = (sessionId: string) => reviewInFlight.has(sessionId);
+  const beginReview = (sessionId: string) => reviewInFlight.add(sessionId);
+  const endReview = (sessionId: string) => reviewInFlight.delete(sessionId);
+  /**
    * The panel settings store is total by design (never throws). A throw means the
    * state dir was swapped mid-run; it degrades to "no panel override" AND names
    * itself in the log (红线 3: silence reads as "the user never chose anything").
@@ -681,6 +699,19 @@ export function createRuntime({
       }
     },
     listSessions: () => listSessions(port),
+    // The review guard (one in-flight review per session) lives here so teardown
+    // can release it — see the note at the set above.
+    isReviewInFlight,
+    beginReview,
+    endReview,
+    /**
+     * Release everything this runtime accumulated while mounted. Called from the
+     * plugin's teardown. Without it the review guard's session ids outlive the
+     * mount and a hot-reloaded plugin refuses reviews that are no longer running.
+     */
+    dispose: () => {
+      reviewInFlight.clear();
+    },
   };
 }
 

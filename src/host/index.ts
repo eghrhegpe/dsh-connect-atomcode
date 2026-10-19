@@ -88,19 +88,14 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
   // this plugin without the route service rather than failing the whole mount.
   const webServer = ctx.get ? ctx.get('webServer') : ctx.webServer;
   // The routes — the stats read, the panel's provider write, the session index,
-  // the reasoning-effort write and the answer-delivery POST — live in
+  // the reasoning-effort write and the panel-settings write — live in
   // mountRoutes(): they share the runtime, so they are mounted and disposed as
-  // one unit. (The `/ask` route is gone: 方针 A deleted the private popover that
-  // was its only caller — see `./routes.ts`.)
-  //
-  // `agents` is the one service only `/inject` needs. `agent.inject(message)` is
-  // the public "queue model-facing context for the next pre-step" channel the
-  // delivery uses (see `./inject.ts`); the message FACTORY resolves from the
-  // Host's own module graph inside that module, so the registry is the whole
-  // dependency. Looked up optionally — a Host without it still serves the other
-  // routes and `/inject` refuses by name.
-  const agents = ctx.get ? ctx.get('agents') : ctx.agents;
-  const disposeRoutes = mountRoutes({ webServer, runtime, log, agents });
+  // one unit. (The `/ask` and `/inject` routes are gone: 方针 A deleted the
+  // private popover that was `/ask`'s only caller, and `/inject` carried no
+  // caller AND no identity gate — see `./routes.ts`. Delivery still reaches a
+  // session's model through `./inject.ts`, called host-side by `/atomcode-review`
+  // continuation.)
+  const disposeRoutes = mountRoutes({ webServer, runtime, log });
 
   // `/atomcode-review` — the one channel that can run a review WITHOUT the
   // session's model in the loop and still leave something the human sees.
@@ -131,6 +126,9 @@ export function apply(ctx: any, rawConfig: Record<string, any> = {}) {
       // that used to live on these lines let a fifth disposer go missing).
       disposeRoutes();
       disposeCommand();
+      // Releases whatever the runtime accumulated — today the review guard, so
+      // a hot reload does not leave a session id blocked as "already reviewing".
+      runtime.dispose();
     };
   });
 }

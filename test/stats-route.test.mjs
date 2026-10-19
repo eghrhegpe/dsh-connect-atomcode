@@ -11,7 +11,6 @@
  */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -24,13 +23,6 @@ const BRIDGE = join(ROOT, 'lib', 'index.js');
 const SESSIONS = join(ROOT, 'lib', 'sessions.js');
 const mod = await import(pathToFileURL(BRIDGE).href);
 const { createSessionStore } = await import(pathToFileURL(SESSIONS).href);
-// The `/inject` route builds its own deps, so the message factory it ends up
-// reaching cannot be handed to it as a parameter — this module's override is
-// that one path's seam. Imported by PATH so it is the very same module instance
-// `lib/routes.js` imports; a second copy would install a stand-in nobody calls
-// (the same trap the host `lib/` shape exists to avoid, see AGENTS.md).
-const INJECT = join(ROOT, 'lib', 'inject.js');
-const { setCreateUserMessageOverride } = await import(pathToFileURL(INJECT).href);
 
 /**
  * A loopback port nothing listens on, so /health fails fast and hermetically.
@@ -42,7 +34,6 @@ const CLOSED_PORT = await requireDeadPort(sentinelPort(1));
 const STATS_PATH = '/api/atomcode-bridge/stats';
 
 const PROVIDER_PATH = '/api/atomcode-bridge/provider';
-const INJECT_PATH = '/api/atomcode-bridge/inject';
 const REASONING_EFFORT_PATH = '/api/atomcode-bridge/reasoning-effort';
 const SESSIONS_PATH = '/api/atomcode-bridge/sessions';
 const PANEL_SETTINGS_PATH = '/api/atomcode-bridge/panel-settings';
@@ -83,8 +74,8 @@ function captureRoutes({ statePath, port = CLOSED_PORT, extra = {}, toolSink, ag
   mod.apply(ctx, { auto_start: false, port, state_path: statePath, ...extra });
   assert.deepEqual(
     routes.map((r) => r.path).sort(),
-    [INJECT_PATH, PANEL_SETTINGS_PATH, PROVIDER_PATH, REASONING_EFFORT_PATH, SESSIONS_PATH, STATS_PATH].sort(),
-    'all six routes must be registered: the stats read, the provider write, the answer delivery, the reasoning-effort write, the sessions read, and the panel-settings write',
+    [PANEL_SETTINGS_PATH, PROVIDER_PATH, REASONING_EFFORT_PATH, SESSIONS_PATH, STATS_PATH].sort(),
+    'all five routes must be registered: the stats read, the provider write, the reasoning-effort write, the sessions read, and the panel-settings write',
   );
   return routes;
 }
@@ -93,12 +84,14 @@ function captureRoutes({ statePath, port = CLOSED_PORT, extra = {}, toolSink, ag
  * Mount the plugin and return ONE captured route.
  *
  * Five routes are registered now — the read-only snapshot, the panel's own
- * provider write, the answer delivery, the reasoning-effort write, and the
- * sessions read — so the harness
+ * provider write, the reasoning-effort write, the sessions read, and the
+ * panel-settings write — so the harness
  * selects by path instead of assuming there is only one. Asserting the exact set
  * stays here on purpose: a route silently dropped by a mount change is otherwise
- * invisible until a user clicks a button that does nothing. (The ask POST was the
- * sixth until 方针 A removed the plugin's own channel; the review path is the
+ * invisible until a user clicks a button that does nothing. (The ask POST was a
+ * sixth until 方针 A removed the plugin's own channel; the `/inject` delivery POST
+ * was another, deleted 2026-10-19 for having no caller and no identity gate —
+ * delivery still runs host-side through `lib/inject.js`. The review path is the
  * `/atomcode-review` command and the `atomcode_ask` / `atomcode_review` tools.)
  */
 function mountRoute({ statePath, port = CLOSED_PORT, extra = {}, path = STATS_PATH, agents }) {
@@ -1587,170 +1580,5 @@ describe('stats route — a degraded session store is named, not hidden', () => 
     store.get('C:\\repo');
     store.count();
     assert.equal(seen.length, before, 'the same failure must not be reported twice');
-  });
-});
-
-describe('inject route — an AtomCode answer reaches the session it came from', () => {
-  /**
-   * A stand-in for the Host's `createUserMessage`, in force for THIS block only.
-   *
-   * The route resolves the Host's copy, which a machine without a DSH install
-   * cannot have — which is every CI runner. Without the stand-in the three
-   * delivery cases below answer `llm-unavailable` and never reach the wire
-   * translation they exist to pin. Installed through the module's own seam, so
-   * the route, the handler and both snake_case translations stay the real ones.
-   */
-  let stubSeq = 0;
-  const stubMessageFactory = (input) => {
-    stubSeq += 1;
-    return {
-      id: `stub-message-${stubSeq}`,
-      role: 'user',
-      content: input.content,
-      source: input.source,
-    };
-  };
-  before(() => setCreateUserMessageOverride(stubMessageFactory));
-  after(() => setCreateUserMessageOverride(undefined));
-
-  /** A registry holding one live agent, recording what was injected. */
-  function stubAgents(hooks = {}) {
-    const calls = [];
-    const agent = {
-      // The module picks its method from this getter: idle → steer(), anything
-      // else → inject(). Pinned `running` here so this block tests the
-      // attach-without-interrupting path; the idle wake has its own case below.
-      status: hooks.status ?? 'running',
-      inject(message) {
-        if (hooks.throwOnInject) throw new Error(hooks.throwOnInject);
-        calls.push(message);
-      },
-      // Present so the assertion can prove they are NOT used while running:
-      // steer/followup would wake or interrupt the driver mid-turn.
-      steer(message) { calls.push({ ...message, steer: true }); },
-      followup(message) { calls.push({ ...message, followup: true }); },
-    };
-    return { calls, agents: { get: (id) => (id === 'live-session' ? agent : undefined) } };
-  }
-
-  it('delivers and reports the message id', async () => {
-    const { calls, agents } = stubAgents();
-    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
-    const result = await callRoute(route, {
-      method: 'POST',
-      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
-      body: { session_id: 'live-session', text: '这段代码有问题。' },
-    });
-    assert.equal(result.status, 200);
-    assert.equal(result.body.ok, true);
-    assert.equal(result.body.woke, false, 'a running session was not woken');
-    // snake_case on the wire, in both directions — the same rule `/ask` follows
-    // with `working_dir`. This assertion is why the outbound translation cannot
-    // silently go missing again: it used to read `message_id` off a body that
-    // only ever carried the camelCase `messageId`.
-    assert.equal(typeof result.body.message_id, 'string');
-    assert.equal(typeof calls[0].id, 'string');
-    assert.equal(result.body.message_id, calls[0].id, 'the reported id must be the id that was actually delivered');
-    assert.equal(result.body.session_id, 'live-session');
-    assert.equal(result.body.delivered, 'next-step');
-    assert.equal(result.body.messageId, undefined, 'the camelCase internal name must not leak onto the wire');
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].steer, undefined);
-    assert.equal(calls[0].source.kind, 'atomcode-bridge');
-  });
-
-  // The bug this pins shipped silently: on an idle session `inject()` never
-  // wakes the driver, so the answer parked in the inbox and the click looked
-  // dead. The route must therefore steer, and say that it woke something.
-  it('wakes an idle session with steer() and reports woke: true', async () => {
-    const { calls, agents } = stubAgents({ status: 'idle' });
-    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
-    const result = await callRoute(route, {
-      method: 'POST',
-      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
-      body: { session_id: 'live-session', text: '这段回答要进对话。' },
-    });
-    assert.equal(result.status, 200);
-    assert.equal(result.body.ok, true);
-    assert.equal(result.body.delivered, 'new-turn');
-    assert.equal(result.body.woke, true, 'the caller must be able to tell a turn was started');
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].steer, true, 'an idle session needs steer(), not inject()');
-    assert.equal(result.body.message_id, calls[0].id);
-  });
-
-  it('refuses GET and HEAD without touching the agent', async () => {
-    const { calls, agents } = stubAgents();
-    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
-    for (const method of ['GET', 'HEAD']) {
-      const result = await callRoute(route, { method });
-      assert.equal(result.status, 405, `${method} must be refused`);
-      assert.equal(result.headers.allow, 'POST');
-    }
-    assert.equal(calls.length, 0);
-  });
-
-  it('refuses a cross-origin POST', async () => {
-    const { calls, agents } = stubAgents();
-    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
-    const result = await callRoute(route, {
-      method: 'POST',
-      headers: { origin: 'https://evil.invalid' },
-      body: { session_id: 'live-session', text: 'x' },
-    });
-    assert.equal(result.status, 403);
-    assert.equal(calls.length, 0);
-  });
-
-  it('names a missing text instead of delivering an empty message', async () => {
-    const { calls, agents } = stubAgents();
-    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
-    const result = await callRoute(route, {
-      method: 'POST',
-      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
-      body: { session_id: 'live-session', text: '   ' },
-    });
-    // 200 with a NAMED refusal: the request was understood. A 4xx here would make
-    // "the session is not open" and "your body is malformed" look the same.
-    assert.equal(result.status, 200);
-    assert.equal(result.body.ok, false);
-    assert.equal(result.body.code, 'text-required');
-    assert.equal(calls.length, 0);
-  });
-
-  it('reports agent-not-live for a session that is not open', async () => {
-    const { agents } = stubAgents();
-    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
-    const result = await callRoute(route, {
-      method: 'POST',
-      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
-      body: { session_id: 'some-closed-session', text: 'x' },
-    });
-    assert.equal(result.status, 200);
-    assert.equal(result.body.ok, false);
-    assert.equal(result.body.code, 'agent-not-live');
-  });
-
-  it('reports agents-unavailable rather than 500ing when the host has no registry', async () => {
-    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH });
-    const result = await callRoute(route, {
-      method: 'POST',
-      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
-      body: { session_id: 'live-session', text: 'x' },
-    });
-    assert.equal(result.status, 200);
-    assert.equal(result.body.ok, false);
-    assert.equal(result.body.code, 'agents-unavailable');
-  });
-
-  it('marks the response no-store: an answer is per-session, never cacheable', async () => {
-    const { agents } = stubAgents();
-    const route = mountRoute({ statePath: join(tmpdir(), `inject-${randomUUID()}.json`), path: INJECT_PATH, agents });
-    const result = await callRoute(route, {
-      method: 'POST',
-      headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' },
-      body: { session_id: 'live-session', text: 'x' },
-    });
-    assert.equal(result.headers['cache-control'], 'no-store');
   });
 });

@@ -43,16 +43,6 @@ import type { Runtime } from './runtime.ts';
 export const REVIEW_COMMAND_NAME = 'atomcode-review';
 
 /**
- * One in-flight review per session.
- *
- * A review is a full autonomous agent turn that can run for minutes. Without
- * this guard, holding Enter on the composer would start N concurrent reviewers
- * on the same tree, each burning a real AtomCode turn. Keyed by session id,
- * because "one review per conversation" is the scope a human expects.
- */
-const inFlight = new Set<string>();
-
-/**
  * The review brief `composeReviewPrompt` fills in — which depends on the plugin
  * config `review_brief_mode` (always / when-empty / never, see that function's
  * doc block). Historically the brief was sent on EVERY invocation, and that is
@@ -158,7 +148,7 @@ export async function runReviewCommand(
   const sessionId = typeof invocation?.agent?.id === 'string' ? invocation.agent.id : '';
   const raw = typeof invocation?.rawInput === 'string' ? invocation.rawInput.trim() : '';
 
-  if (sessionId !== '' && inFlight.has(sessionId)) {
+  if (sessionId !== '' && runtime.isReviewInFlight(sessionId)) {
     return {
       kind: 'error',
       text: '这个会话已有一个 AtomCode 审查在跑，等它结束再发一次。',
@@ -184,7 +174,9 @@ export async function runReviewCommand(
     };
   }
 
-  if (sessionId !== '') inFlight.add(sessionId);
+  // The guard is runtime-owned (not a module-level set) so teardown releases a
+  // session id left mid-review by an unmount — see `runtime.ts`.
+  if (sessionId !== '') runtime.beginReview(sessionId);
   const startedAt = Date.now();
   try {
     const outcome = await runAsk(
@@ -218,7 +210,7 @@ export async function runReviewCommand(
     log(`command /${REVIEW_COMMAND_NAME} threw: ${message}`);
     return { kind: 'error', text: `AtomCode 审查异常终止：${message}` };
   } finally {
-    if (sessionId !== '') inFlight.delete(sessionId);
+    if (sessionId !== '') runtime.endReview(sessionId);
   }
 }
 

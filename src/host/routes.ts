@@ -1,8 +1,8 @@
 /**
  * The HTTP routes this plugin serves: the read-only stats snapshot the detail
- * page polls, the write endpoint behind the model dropdown, the `/inject`
- * endpoint that hands an AtomCode answer to a session's model, the
- * reasoning-effort write point, and the daemon session index.
+ * page polls, the write endpoint behind the model dropdown, the
+ * reasoning-effort write point, the panel-settings write point, and the daemon
+ * session index.
  *
  * The `/ask` route is GONE (2026-10-18): the 锐评 officialization (方针 A)
  * deleted the panel's private ask button + popover — one-click review now goes
@@ -11,6 +11,16 @@
  * route's only consumer was
  * the private popover; keeping a route with zero callers is how a dead ABI
  * surface survives to confuse the next reader.
+ *
+ * The `/inject` route is GONE (2026-10-19) for the same reason: 方针 A left it
+ * with no in-repo caller, it carried no authentication (same-origin is a CSRF
+ * gate, not an identity gate, and every plugin's client bundle shares the one
+ * origin), and it could wake an idle session's driver for the price of a POST.
+ * The delivery it wired is still reachable — `injectAtomcodeAnswer` /
+ * `injectReviewContinuation` live in `./inject.ts` and the `/atomcode-review`
+ * continuation calls them host-side, without an HTTP surface at all. A route
+ * with zero callers and a cross-session write surface is exactly the dead ABI
+ * the `/ask` note above warns about.
  *
  * Extracted from `src/host/index.ts` (apply() split). They are mounted together
  * because they share everything that matters — one `webServer` registration
@@ -30,14 +40,8 @@
 import { PROVIDER_SLOT, normalizeProviderName } from './provider-store.ts';
 import { buildStatsBody, sameOrigin, writeJson } from './stats.ts';
 import type { Runtime } from './runtime.ts';
-import { injectAtomcodeAnswer } from './inject.ts';
 
 const PROVIDER_BODY_LIMIT = 4096;
-// The inject route takes a whole MESSAGE — often a report the caller wants a
-// second opinion on — so it gets its own, much larger budget. The provider
-// route stays at 4 KiB: its body is a slot name and a provider name, nothing
-// more, and a large body there is always a bug worth refusing.
-const INJECT_BODY_LIMIT = 65536;
 
 /**
  * Read and parse a bounded JSON body; the route then judges its fields.
@@ -77,7 +81,7 @@ async function readJsonBody(request: any, limit: number = PROVIDER_BODY_LIMIT) {
  * Mount one exact route and hand back its disposer.
  *
  * Every route in this file is registered the same way, so a host without
- * `webServer` (or without `register`) degrades all six to a no-op through ONE
+ * `webServer` (or without `register`) degrades all routes to a no-op through ONE
  * guard. This replaced six copies of the same ternary, one of which (`/inject`)
  * had drifted to a bare truthiness check — the single place a host exposing
  * `webServer` without `register` would have thrown instead of degrading.
@@ -85,16 +89,43 @@ async function readJsonBody(request: any, limit: number = PROVIDER_BODY_LIMIT) {
  * this function's return value, not a local someone must remember to call in
  * the teardown at the bottom.
  *
+ * `methods` is the ONE place the method gate lives. Each handler used to write
+ * its own copy, and they drifted: `/stats` and `/provider` refused a MISSING
+ * method, `/inject` and `/reasoning-effort` read it as POST, `/sessions`
+ * checked nothing at all — one file, one author, several answers to the same
+ * malformed request. A handler that forgets the gate here is caught by the
+ * `allow` header this wrapper writes, so a new route cannot silently guess.
+ *
  * @param webServer - `ctx.webServer`, or anything falsy on a host without it.
- * @param descriptor - `{ kind: 'exact', path, handler }` for one route.
+ * @param descriptor - `{ kind: 'exact', path, methods, handler }` for one route;
+ *   `methods` is the request-method whitelist that the handler may read back.
  * @returns the disposer, never undefined.
  */
 function mountRoute(
   webServer: any,
-  descriptor: { kind: 'exact'; path: string; handler: (request: any, response: any) => any },
+  descriptor: {
+    kind: 'exact';
+    path: string;
+    methods: readonly string[];
+    handler: (request: any, response: any) => any;
+  },
 ): () => void {
   if (!webServer || typeof webServer.register !== 'function') return () => {};
-  return webServer.register(descriptor);
+  const { path, methods, handler } = descriptor;
+  return webServer.register({
+    kind: 'exact',
+    path,
+    handler: (request: any, response: any) => {
+      // A MISSING method is a malformed request, not a GET (red-line 3: no
+      // silent default). The `allow` header names the whitelist the route owns,
+      // so a caller sees what it may send instead of an opaque 405.
+      if (!request || !request.method || !methods.includes(request.method)) {
+        writeJson(response, 405, { ok: false, error: 'method not allowed' }, { allow: methods.join(', ') });
+        return;
+      }
+      return handler(request, response);
+    },
+  });
 }
 
 /**
@@ -134,14 +165,10 @@ export function mountRoutes({
   webServer,
   runtime,
   log,
-  agents,
 }: {
   webServer: any;
   runtime: Runtime;
   log: (message: any) => void;
-  // Optional because the `/inject` route degrades to a NAMED refusal when the
-  // host has no agent service — the other routes keep working.
-  agents?: any;
 }) {
   const {
     stats,
@@ -158,16 +185,8 @@ export function mountRoutes({
   const disposeStats = mountRoute(webServer, {
         kind: 'exact',
         path: '/api/atomcode-bridge/stats',
+        methods: ['GET', 'HEAD'],
         handler: async (request: any, response: any) => {
-          // A MISSING method is a malformed request, not a GET. This route used
-          // to read `!request.method` as "fine, carry on", while /stats refused
-          // it with a 405 — one file, one author, two answers to the same
-          // malformed request. Both refuse now (red-line 3: no silent default).
-          if (!request || !request.method || (request.method !== 'GET' && request.method !== 'HEAD')) {
-            response.writeHead(405, { allow: 'GET, HEAD' });
-            response.end();
-            return;
-          }
           if (!sameOrigin(request)) {
             response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
             response.end('forbidden');
@@ -223,11 +242,8 @@ export function mountRoutes({
   const disposeProvider = mountRoute(webServer, {
         kind: 'exact',
         path: '/api/atomcode-bridge/provider',
+        methods: ['GET', 'HEAD', 'POST'],
         handler: async (request: any, response: any) => {
-          if (!request || !request.method || (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'POST')) {
-            writeJson(response, 405, { ok: false, error: 'method not allowed' }, { allow: 'GET, HEAD, POST' });
-            return;
-          }
           const method = request.method;
           if (refuseCrossOrigin(request, response)) return;
           if (method === 'POST') {
@@ -293,82 +309,6 @@ export function mountRoutes({
         },
       });
 
-  // Deliver one text to a session's model — the HTTP wire form of the delivery
-  // primitive `injectAtomcodeAnswer` implements. It used to be the second half
-  // of the panel's 问 Atom button; that button and its popover are gone (方针 A,
-  // 2026-10-18), and `/atomcode-review`'s continuation now runs host-side, so
-  // this route currently has NO in-repo caller. It is kept deliberately as the
-  // documented, tested wire form of the primitive — delete it when the wire
-  // form itself stops mattering.
-  //
-  // Kept a SEPARATE route from the ask that produces the text on purpose — the
-  // ask costs a real AtomCode turn and the delivery is free and local, so a
-  // caller can retry delivery (session not open yet) without paying twice.
-  const disposeInject = mountRoute(webServer, {
-        kind: 'exact',
-        path: '/api/atomcode-bridge/inject',
-        handler: async (request: any, response: any) => {
-          if (request && request.method && request.method !== 'POST') {
-            response.writeHead(405, { allow: 'POST' });
-            response.end();
-            return;
-          }
-          if (refuseCrossOrigin(request, response)) return;
-          const body = await readBodyOr400(request, response, INJECT_BODY_LIMIT);
-          if (!body) return;
-          // `injectAtomcodeAnswer` resolves the Host's own `createUserMessage`
-          // (it is a `neverBundle` external, so `require` inside that module
-          // reaches the copy the Host loaded rather than a bundled duplicate).
-          // This route therefore supplies only the agent service; a Host whose
-          // module graph lacks `dsh-llm` gets a named `llm-unavailable` refusal
-          // from inside, not a 500 that blames the caller.
-          //
-          // 200 even on refusal: the request was understood and answered; the
-          // `ok:false` + named `code` is what the chip renders. A 4xx here would
-          // make "the session is not open yet" look like a malformed request.
-          // HTTP bodies use snake_case throughout this plugin (`/inject` takes
-          // `session_id`/`atomcode_session_id` and answers with `message_id`,
-          // `/provider` takes `slot`/`provider`), while the delivery
-          // function speaks camelCase like the rest of the host code. The
-          // translation lives here, at the one place the wire meets the logic —
-          // and `sessionId` is accepted as an alias only because the two names
-          // are otherwise one typo apart and the failure ("session-id-required"
-          // for a body that clearly carries an id) is genuinely confusing.
-          const fields = body.value && typeof body.value === 'object' ? body.value : {};
-          const outcome = injectAtomcodeAnswer(
-            { agents },
-            {
-              sessionId: fields.session_id ?? fields.sessionId,
-              text: fields.text,
-              model: fields.model,
-              atomcodeSessionId: fields.atomcode_session_id ?? fields.atomcodeSessionId,
-            },
-          );
-          // The outbound half of the same translation, and the one that is easy
-          // to forget: the wire speaks snake_case in BOTH directions, not only
-          // on the way in. Passing the camelCase outcome straight to writeJson
-          // is how `message_id` silently became `undefined` — a caller reading
-          // the documented field sees "delivered" with no id to point at.
-          writeJson(
-            response,
-            200,
-            outcome.ok
-              ? {
-                  ok: true,
-                  message_id: outcome.messageId,
-                  session_id: outcome.sessionId,
-                  delivered: outcome.delivered,
-                  woke: outcome.woke,
-                }
-              : outcome,
-            { 'cache-control': 'no-store' },
-          );
-          if (outcome.ok) {
-            log(`delivered an AtomCode answer to session "${outcome.sessionId}" (next-step, not woken)`);
-          }
-        },
-      });
-
   // ── Set the persistent reasoning-effort on the daemon ─────────────────────
   // POST /api/atomcode-bridge/reasoning-effort  { effort: "low"|"medium"|... }
   // The daemon's /live/reasoning_effort endpoint sets a per-provider persistent
@@ -377,12 +317,8 @@ export function mountRoutes({
   const disposeReasoningEffort = mountRoute(webServer, {
         kind: 'exact',
         path: '/api/atomcode-bridge/reasoning-effort',
+        methods: ['POST'],
         handler: async (request: any, response: any) => {
-          if (request && request.method && request.method !== 'POST') {
-            response.writeHead(405, { allow: 'POST' });
-            response.end();
-            return;
-          }
           if (refuseCrossOrigin(request, response)) return;
           const body = await readBodyOr400(request, response);
           if (!body) return;
@@ -404,6 +340,7 @@ export function mountRoutes({
   const disposeSessions = mountRoute(webServer, {
         kind: 'exact',
         path: '/api/atomcode-bridge/sessions',
+        methods: ['GET'],
         handler: async (_request: any, response: any) => {
           if (refuseCrossOrigin(_request, response)) return;
           try {
@@ -426,11 +363,8 @@ export function mountRoutes({
   const disposePanelSettings = mountRoute(webServer, {
         kind: 'exact',
         path: '/api/atomcode-bridge/panel-settings',
+        methods: ['GET', 'HEAD', 'POST'],
         handler: async (request: any, response: any) => {
-          if (!request || !request.method || (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'POST')) {
-            writeJson(response, 405, { ok: false, error: 'method not allowed' }, { allow: 'GET, HEAD, POST' });
-            return;
-          }
           if (refuseCrossOrigin(request, response)) return;
           const method = request.method;
           if (method === 'POST') {
@@ -476,7 +410,6 @@ export function mountRoutes({
   return () => {
     disposeStats();
     disposeProvider();
-    disposeInject();
     disposeReasoningEffort();
     disposeSessions();
     disposePanelSettings();

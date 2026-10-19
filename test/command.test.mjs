@@ -70,6 +70,11 @@ function recordingAgent({ id = 'session-a', cwd = 'C:\\work\\repo', sessionless 
  * the HostConfig field derived from the patch config.
  */
 function sandboxDeps({ defaultWorkingDir = '', reviewBriefMode = 'when-empty', log } = {}) {
+  // The one-in-flight-review guard moved from a module-level set in `command.ts`
+  // into the runtime (2026-10-19) so a hot reload releases a session id whose
+  // review an unmount abandoned. The stub carries the same three methods so the
+  // command path is exercised for real; per-call state keeps the tests apart.
+  const reviewGuard = new Set();
   return {
     config: {
       port: 0,
@@ -92,6 +97,10 @@ function sandboxDeps({ defaultWorkingDir = '', reviewBriefMode = 'when-empty', l
       // after every ask turn (including refusals). A stub that omits it makes the
       // refusal path throw instead of returning its message.
       persistAskUsage: () => {},
+      // The review guard, moved into the runtime — see the note above.
+      isReviewInFlight: (sessionId) => reviewGuard.has(sessionId),
+      beginReview: (sessionId) => reviewGuard.add(sessionId),
+      endReview: (sessionId) => reviewGuard.delete(sessionId),
     },
     log: log ?? (() => {}),
   };
