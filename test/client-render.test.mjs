@@ -37,8 +37,11 @@
  */
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { requireDeadPort, sentinelPort } from './dead-port.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLIENT = join(ROOT, 'client.js');
@@ -305,21 +308,33 @@ const FULL = {
     starting: false,
     spawnTried: true,
     spawnFailures: 0,
+    spawnAttempts: 0,
     lastCheckedAt: NOW,
     downMessage: '',
   },
-  binary: { configured: 'D:\\tools\\atomcode.exe', env: '' },
+  binary: { configured: 'D:\\tools\\atomcode.exe', env: '', source: 'path' },
   config: {
     approvalMode: 'bypass',
     approvalModeRejected: null,
     defaultWorkingDir: 'D:\\repo',
-    reviewWorkingDir: '',
     defaultProvider: '',
-    reviewDefaultProvider: '',
     askMaxRounds: 25,
     daemonRetrySecs: 0,
     authored: { approvalMode: false, workingDir: true, askMaxRounds: false },
     defaults: { approvalMode: 'bypass', askMaxRounds: 25 },
+    // The panel's own overrides — a namespace SEPARATE from the mounted patch
+    // fields above (the review CLI died, so `reviewWorkingDir` /
+    // `reviewDefaultProvider` no longer exist in the snapshot; the one surviving
+    // review knob is `reviewBriefMode`). null = the user never touched the
+    // control, so it must render as "不覆盖", never as data.
+    panelApprovalMode: null,
+    panelAskMaxRounds: null,
+    panelBriefMode: null,
+    panelWorkingDir: null,
+    panelSettingsError: null,
+    panelSettingsStorePath: 'C:\\Users\\x\\.dsh\\atomcode-bridge\\panel-settings.json',
+    reviewBriefMode: null,
+    reviewBriefModeRejected: null,
   },
   // ONE branch, not two namespaces. `panel`/`effective`/`source`/`catalog` sit
   // on the object itself — the host flattened them when the review CLI died, and
@@ -351,6 +366,22 @@ const FULL = {
     limited: false,
     reason: null,
     raw: { usageLine: 'usage 12%', planLine: 'plan CodingPlan' },
+    // `source` names which of the two upstream shapes produced the reading, and
+    // `drift` is the lamp for a vocabulary the host can no longer parse — both
+    // drive the pane's markers, so both must be present even when quiet.
+    source: 'codingplan',
+    drift: false,
+    sourceNote: null,
+    parseIssue: null,
+    resetIn: '5m0s',
+    upstreamFailure: null,
+    // The window size is the structured source's bonus, so this reading has
+    // none of it. The populated variants are their own cases below — `null`
+    // here is the "no window to print" state those cases start from.
+    windowHours: null,
+    windowLimit: null,
+    windowMetric: null,
+    windowUsed: null,
   },
   sessions: { tracked: 2, oldestAgeMs: 900_000, error: null },
   // Per-day usage history (the daemon's structured `usage/daily`). Three rows so
@@ -358,6 +389,7 @@ const FULL = {
   usageTrend: {
     available: true,
     days: 60,
+    startDate: '2026-09-19',
     endDate: '2026-10-19',
     models: ['glm5.3-flash', 'qwen3.8-27b'],
     rows: [
@@ -365,6 +397,11 @@ const FULL = {
       { date: '2026-10-18', tokens: 23851383, requests: 569 },
       { date: '2026-10-19', tokens: 950827, requests: 18 },
     ],
+    fetchedAt: NOW,
+    reason: null,
+    // The structured summary carries its own schema marker and the window start;
+    // they describe the reading's shape even when the rows themselves are missing.
+    schemaVersion: 1,
   },
   ask: { calls: 3, ok: 3, err: 0, msTotal: 3_000, tokens: 1_234, inFlight: null },
   review: { calls: 1, ok: 1, err: 0, msTotal: 500 },
@@ -1412,5 +1449,84 @@ describe('client render — the panel-settings controls POST the fields the rout
         );
       },
     );
+  });
+});
+
+// ── fixture fidelity ─────────────────────────────────────────────────────────
+//
+// The panel is only as good as the snapshot it is given, so `FULL` is the
+// contract between the host and the client. That contract used to be prose, and
+// prose drifted twice without a gate: the fixture still carried
+// `reviewWorkingDir` / `reviewDefaultProvider` long after the review CLI died,
+// and it never grew `panelApprovalMode` / `panelAskMaxRounds` while the panel
+// grew two controls that write them. The guard below is the route bug's lesson
+// made mechanical — build the snapshot through the REAL host (`apply`, the real
+// stats handler) and require `FULL` to be a superset of every key it emits.
+// Fixture stale → red. Fixture short → red. No prose to trust.
+describe('fixture fidelity — FULL must be a superset of the real snapshot', () => {
+  const BRANCHES = ['binary', 'config', 'daemon', 'protocol', 'provider', 'quota', 'sessions', 'usageTrend', 'ask', 'review'];
+
+  it('drives the real host and requires FULL to cover it both ways', async () => {
+    // A DEAD sentinel port, not 13459: `readUsageTrend` / `readQuota` reach for
+    // the daemon, so a real listening AtomCode would hand this test a different
+    // snapshot shape (the populated trend branch) and the assertions below would
+    // pass on one machine and fail on another. The suite is offline-hermetic —
+    // the snapshot shape under test is the one the host sends when the daemon is
+    // NOT there, which is also the shape a fresh install produces.
+    const port = await requireDeadPort(sentinelPort(13));
+
+    const host = await import(pathToFileURL(join(ROOT, 'lib', 'index.js')).href);
+    const dir = mkdtempSync(join(tmpdir(), 'fixture-'));
+    const routes = [];
+    const ctx = {
+      get: (name) => {
+        if (name === 'tools') return { register: () => () => {} };
+        if (name === 'webServer') return { register: (r) => { routes.push(r); return () => {}; } };
+        return undefined;
+      },
+      logger: { warn() {}, error() {}, info() {} },
+      inject() {},
+      effect() {},
+      on() {},
+    };
+    host.apply(ctx, { auto_start: false, port, state_path: join(dir, 'sessions.json') });
+    const stats = routes.find((r) => r.path === '/api/atomcode-bridge/stats');
+    assert.ok(stats, 'the stats route must be registered');
+    let body = null;
+    await stats.handler(
+      { method: 'GET', headers: { host: '127.0.0.1:3080' } },
+      { writeHead() {}, end: (p) => { body = JSON.parse(p); } },
+    );
+    assert.ok(body && body.ok === true, 'the host must answer with a snapshot');
+
+    // Reverse-direction limit. A branch the host only fills ONCE THE DAEMON
+    // ANSWERS cannot be checked for corpses here — `quota` and `usageTrend` come
+    // back as `{ available, fetchedAt, reason }` in the shape under test, and
+    // `binary.env` is absent (never null) when the variable is unset. The
+    // allowlist that comparison would need is most of the schema, and a broad
+    // allowlist is exactly what hides the corpse it exists to catch. So the
+    // reverse check runs only on the branches the host populates in EVERY state,
+    // which is also where the corpse actually lived (`config`).
+    const FULLY_POPULATED = ['config', 'daemon', 'provider', 'protocol', 'sessions', 'ask', 'review'];
+
+    for (const branch of BRANCHES) {
+      assert.ok(body[branch] && typeof body[branch] === 'object', `the host must send a ${branch} branch`);
+      assert.ok(FULL[branch] && typeof FULL[branch] === 'object', `the fixture must carry a ${branch} branch`);
+
+      const short = Object.keys(body[branch]).filter((k) => !(k in FULL[branch]));
+      assert.deepEqual(
+        short,
+        [],
+        `the ${branch} branch: the fixture is missing keys the host emits — ${short.join(', ')}`,
+      );
+
+      if (!FULLY_POPULATED.includes(branch)) continue;
+      const stale = Object.keys(FULL[branch]).filter((k) => !(k in body[branch]));
+      assert.deepEqual(
+        stale,
+        [],
+        `the ${branch} branch: the fixture carries keys the host never emits — ${stale.join(', ')}`,
+      );
+    }
   });
 });
