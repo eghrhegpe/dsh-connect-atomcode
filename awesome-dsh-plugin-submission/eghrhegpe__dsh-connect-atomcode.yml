@@ -1,30 +1,19 @@
 # Submission draft for awesome-dsh-plugin.
 #
 # Copy this file to `data/plugins/eghrhegpe__dsh-connect-atomcode.yml` in a fork of
-# awesome-dsh-plugin/awesome-dsh-plugin and open a PR that adds only it. Do not edit that
-# repository's READMEs — both are generated from data/plugins/. Do not add an `npm:` field
-# (market CI rejects it); do not add screenshots here (the market reads this repo's root
-# screenshots.json instead).
+# awesome-dsh-plugin/awesome-dsh-plugin and open a PR that touches only it.
+# Do not edit that repository's READMEs (they are generated), do not add an `npm:` field,
+# do not put screenshots here (the market reads this repo's `screenshots.json`).
+# Rules live in `./contributing.md` (upstream copy) — do not restate them anywhere.
 #
-# The description is read as a claim and checked against the code line by line, so every noun
-# below is one the source actually has:
-#   "locally signed-in AtomCode" — the bridge never asks for an API key: `atomcode_ask` and the
-#     `/atomcode-review` command authenticate with the local daemon token (~/.atomcode/daemon-13459.json).
-#     See README "无 API Key" and cordis.patch.yml "There is no BRIDGE-side API key".
-#   "one model tool plus one command" — `apply` in src/host/index.ts registers exactly ONE model
-#     tool, atomcode_ask (side-conversation relay over daemon POST /chat SSE, with per-working_dir
-#     session continuity), and registers one slash command, /atomcode-review (bounded code review
-#     executed host-side against the same runAsk, so it spends no model turn).
-#   "no model takeover" — v0.3 deliberately DROPPED the original provider takeover; README
-#     "定位说明（v0.3 有意去接管）" and docs/DECISIONS.md state the reasons. What the plugin
-#     adds instead is a read-only CodingPlan quota read-out on the settings card (quota parsed
-#     from the daemon's POST /command {"command":"status"} localized text, src/host/quota.ts).
-#   "one model knob" — atomcode_ask and /atomcode-review now go through the
-#     same daemon /chat channel (single-channel decision, 2026-10). One dropdown on the panel,
-#     one config field (default_provider), one namespace (model profile name from GET /models).
+# `description.zh` is the text of record; `description.en` is its sentence-by-sentence
+# counterpart. Re-check a claim against these modules, not against this comment:
+#   atomcode_ask tool               src/host/tools.ts
+#   /atomcode-review command        src/host/command.ts
+#   local daemon login state        src/host/daemon.ts, cordis.patch.yml
 url: https://github.com/eghrhegpe/dsh-connect-atomcode
 name: eghrhegpe/dsh-connect-atomcode
 category: tools
 description:
-  en: 'Bridges the AtomCode terminal AI coding assistant already signed in on this machine into DeepSeek Harness as one model tool plus one slash command: atomcode_ask (a side-conversation relay with per-working-directory session continuity) and /atomcode-review (a host-side, bounded code review that spends no model turn). No API key to configure and no model takeover — the settings card just adds a read-only CodingPlan quota read-out and one model picker shared by both paths.'
-  zh: '用你本机已登录的 AtomGit 免费额度，请 AtomCode 给代码做一次独立代码审查：模型通过`atomcode_ask` 工具自主调用审查；你也可以使用`/atomcode-review`命令，一键评审未提交改动 / 分支 / PR。本插件不读取 API key。'
+  en: 'Use the free AtomGit quota already signed in on this machine to have AtomCode run an independent code review: the model calls the atomcode_ask tool on its own, and you can also use the /atomcode-review command to review uncommitted changes, a branch or a PR in one click. The plugin reads no API key; a usage pill below the input box shows the CodingPlan quota.'
+  zh: '用你本机已登录的 AtomGit 免费额度，请 AtomCode 给代码做一次独立代码审查：模型通过`atomcode_ask` 工具自主调用审查；你也可以使用`/atomcode-review`命令，一键评审未提交改动 / 分支 / PR。本插件不读取 API key；输入框下方有用量胶囊显示 CodingPlan 额度。'

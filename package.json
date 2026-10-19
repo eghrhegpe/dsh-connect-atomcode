@@ -2,8 +2,8 @@
   "name": "dsh-connect-atomcode",
   "displayName": "DSH AtomCode Bridge",
   "icon": "./icon.svg",
-  "version": "0.6.0",
-  "description": "Spend your locally signed-in AtomGit's free quota on an independent code review: `atomcode_ask` is the model-side tool (its own tool loop — it decides which files to read); `/atomcode-review` is your one-click command for a diff self-check on uncommitted changes, a branch, or a PR. No API key, no model takeover.",
+  "version": "0.6.1",
+  "description": "Use the free AtomGit quota already signed in on this machine to have AtomCode run an independent code review: the model calls the atomcode_ask tool on its own, and you can also use the /atomcode-review command to review uncommitted changes, a branch or a PR in one click. The plugin reads no API key; a usage pill below the input box shows the CodingPlan quota.",
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
