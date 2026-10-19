@@ -320,20 +320,22 @@ const FULL = {
     defaultProvider: '',
     askMaxRounds: 25,
     daemonRetrySecs: 0,
-    authored: { approvalMode: false, workingDir: true, askMaxRounds: false },
-    defaults: { approvalMode: 'bypass', askMaxRounds: 25 },
+    authored: { approvalMode: false, workingDir: true, askMaxRounds: false, reviewBriefMode: false },
+    defaults: { approvalMode: 'bypass', askMaxRounds: 25, reviewBriefMode: 'when-empty' },
     // The panel's own overrides — a namespace SEPARATE from the mounted patch
     // fields above (the review CLI died, so `reviewWorkingDir` /
-    // `reviewDefaultProvider` no longer exist in the snapshot; the one surviving
-    // review knob is `reviewBriefMode`). null = the user never touched the
-    // control, so it must render as "不覆盖", never as data.
+    // `reviewDefaultProvider` no longer exist in the snapshot). `null` here means
+    // the user never touched the control, so it renders as "不覆盖", never as data.
+    // `reviewBriefMode` below is NOT in this namespace: it is a resolved config
+    // field the host always sends as a string, and `null` there makes the panel
+    // print "—" instead of the mode.
     panelApprovalMode: null,
     panelAskMaxRounds: null,
     panelBriefMode: null,
     panelWorkingDir: null,
-    panelSettingsError: null,
+    panelSettingsError: '',
     panelSettingsStorePath: 'C:\\Users\\x\\.dsh\\atomcode-bridge\\panel-settings.json',
-    reviewBriefMode: null,
+    reviewBriefMode: 'when-empty',
     reviewBriefModeRejected: null,
   },
   // ONE branch, not two namespaces. `panel`/`effective`/`source`/`catalog` sit
@@ -351,7 +353,7 @@ const FULL = {
     catalog: ['Fake-A', 'Fake-B'],
     catalogError: null,
   },
-  protocol: { daemonVersion: '5.2.3', verifiedGeneration: 3, quotaTextDrift: false, unknownTypes: [] },
+  protocol: { daemonVersion: '5.2.3', verifiedGeneration: '5.x', quotaTextDrift: false, unknownTypes: [] },
   quota: {
     available: true,
     usagePercent: 12,
@@ -366,10 +368,12 @@ const FULL = {
     limited: false,
     reason: null,
     raw: { usageLine: 'usage 12%', planLine: 'plan CodingPlan' },
-    // `source` names which of the two upstream shapes produced the reading, and
-    // `drift` is the lamp for a vocabulary the host can no longer parse — both
-    // drive the pane's markers, so both must be present even when quiet.
-    source: 'codingplan',
+    // `source` names which of the two upstream shapes produced the reading. The
+    // panel never branches on it — it renders `sourceNote`, and the drift lamp it
+    // does read is `protocol.quotaTextDrift`. It still has to be a value the host
+    // actually stamps, so a future reader finds a real one: `summaryQuotaReport`
+    // writes `codingplan-json`, not the older bare `codingplan`.
+    source: 'codingplan-json',
     drift: false,
     sourceNote: null,
     parseIssue: null,
@@ -495,7 +499,7 @@ describe('client render — the detail panel', () => {
     const { tree } = await renderPanel(structured);
     assert.equal(rowValue(tree, '本窗口'), '0 / 200 次（每 5 小时）');
     const { tree: textOnly } = await renderPanel(FULL);
-    assert.equal(rowValue(textOnly, '本窗口'), null, 'a text reading has no window size to print');
+    assert.equal(rowValue(textOnly, '本窗口'), null, 'a reading without a window has no window size to print');
   });
 
   it('says out loud when the reading came from the status text instead', async () => {
@@ -1504,28 +1508,76 @@ describe('fixture fidelity — FULL must be a superset of the real snapshot', ()
     // back as `{ available, fetchedAt, reason }` in the shape under test, and
     // `binary.env` is absent (never null) when the variable is unset. The
     // allowlist that comparison would need is most of the schema, and a broad
-    // allowlist is exactly what hides the corpse it exists to catch. So the
-    // reverse check runs only on the branches the host populates in EVERY state,
-    // which is also where the corpse actually lived (`config`).
+    // allowlist is exactly what hides the corpse it exists to catch. So the reverse
+    // and the type check run only on the branches the host populates in EVERY
+    // state, which is also where the corpses actually lived (`config`).
     const FULLY_POPULATED = ['config', 'daemon', 'provider', 'protocol', 'sessions', 'ask', 'review'];
 
     for (const branch of BRANCHES) {
       assert.ok(body[branch] && typeof body[branch] === 'object', `the host must send a ${branch} branch`);
       assert.ok(FULL[branch] && typeof FULL[branch] === 'object', `the fixture must carry a ${branch} branch`);
 
-      const short = Object.keys(body[branch]).filter((k) => !(k in FULL[branch]));
+      if (!FULLY_POPULATED.includes(branch)) {
+        // The forward direction only, for a branch the daemon's absence empties.
+        const short = Object.keys(body[branch]).filter((k) => !(k in FULL[branch]));
+        assert.deepEqual(
+          short,
+          [],
+          `the ${branch} branch: the fixture is missing keys the host emits — ${short.join(', ')}`,
+        );
+        continue;
+      }
+
+      // Both directions, and recursively — flat keys are not the whole contract.
+      // `authored` and `defaults` are objects inside an object, and this fixture's
+      // second corpse (a missing `authored.reviewBriefMode`, which made the panel
+      // print "—" for a knob the host always resolves) sat exactly there, past the
+      // flat check. Types too: a value the host stamps with a string and the
+      // fixture stamps with a number renders identically, because the panel reads
+      // neither — so key-set equality alone lets it drift. A `null` on either side
+      // skips the type comparison: a field that collapses to `null` while the daemon
+      // is down has no meaningful type to compare against.
+      const short = [];
+      const stale = [];
+      const mistyped = [];
+      const scan = (hostObj, fixtureObj, prefix) => {
+        for (const k of Object.keys(hostObj)) {
+          if (!(k in fixtureObj)) {
+            short.push(`${prefix}${k}`);
+            continue;
+          }
+          const hv = hostObj[k];
+          const fv = fixtureObj[k];
+          if (hv === null || fv === null) continue;
+          if (typeof hv === 'object' && typeof fv === 'object') {
+            if (Array.isArray(hv) !== Array.isArray(fv)) {
+              mistyped.push(`${prefix}${k}`);
+            } else if (!Array.isArray(hv)) {
+              scan(hv, fv, `${prefix}${k}.`);
+            }
+          } else if (typeof hv !== typeof fv) {
+            mistyped.push(`${prefix}${k}`);
+          }
+        }
+        for (const k of Object.keys(fixtureObj)) {
+          if (!(k in hostObj)) stale.push(`${prefix}${k}`);
+        }
+      };
+      scan(body[branch], FULL[branch], '');
       assert.deepEqual(
         short,
         [],
         `the ${branch} branch: the fixture is missing keys the host emits — ${short.join(', ')}`,
       );
-
-      if (!FULLY_POPULATED.includes(branch)) continue;
-      const stale = Object.keys(FULL[branch]).filter((k) => !(k in body[branch]));
       assert.deepEqual(
         stale,
         [],
         `the ${branch} branch: the fixture carries keys the host never emits — ${stale.join(', ')}`,
+      );
+      assert.deepEqual(
+        mistyped,
+        [],
+        `the ${branch} branch: the fixture drifts from the host's type — ${mistyped.join(', ')}`,
       );
     }
   });
