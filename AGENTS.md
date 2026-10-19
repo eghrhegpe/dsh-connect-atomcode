@@ -116,7 +116,7 @@ Host（Node/cordis）只做五件事：注册工具（+ 一个 `/atomcode-review
 
 ## 面板的显示纪律（2026-10 那张卡被用户嫌弃"又丑又多字"之后写的）
 
-**元纪律：注释也是契约，而注释没有测试。** 契约注释住在 `src/`（产物 `client.js` 会被打包器抹掉函数体注释，见「工作目录与装载方式」）。`wiring.test.mjs` 有一条注释一致性测试：`default_provider` 只许出现一次 `Precedence:` 且必须含面板。**改了字段行为就顺手改注释，否则那条测试会红。**（同一个套件里还有一条**版本号一致性**测试，
+**元纪律：注释也是契约，而注释没有测试。** 契约注释住在 `src/`（产物 `client.js` 会被打包器抹掉函数体注释，见「工作目录与装载方式」）。`wiring.test.mjs` 有一条注释一致性测试：`default_provider` 只许出现一次 `Precedence:` 且必须含面板。**改了字段行为就顺手改注释，否则那条测试会红。**（同一个套件里还有一条 **version-truth** 测试——manifest 是版本唯一声明、产物运行时读回；
 见「已知缺口」——那条是 2026-10-16 补的。）
 数字同理：**别把会变的计数写进文档**。
 
@@ -285,18 +285,18 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 - **没有 `docs/PITFALLS.md` 与 `docs/ARCHITECTURE.md`**——本插件没有兄弟插件那套事故史账本；
   三条事实 + 红线 + `docs/DECISIONS.md` 就是全部的判断依据。别照抄一份空的出来占位。
   （事故卷宗只有一份，按主题拆在 `docs/AtomGit-网关与-review-通路.md` 里。）
-- **发版手册在 `docs/RELEASING.md`**（状态判定表 + 不可逆点 + 动作顺序 + 本仓库特有坑，含 npm 内容核验与 GitHub Release 步骤）。核心纪律：版本号**两处手改**：
-  `package.json` 的 `version`
-  与 `src/host/index.ts` 里 stats body 的 `version`。两处必须一致，断言在 `test/wiring.test.mjs`
-  （产物 `lib/index.js` 由构建生成，手改它等于没改）。
+- **发版手册在 `docs/RELEASING.md`**（状态判定表 + 不可逆点 + 动作顺序 + 本仓库特有坑，含 npm 内容核验与 GitHub Release 步骤）。核心纪律：版本号**单一真源**：
+  `package.json` 的 `version`；`src/host/index.ts` 运行时读它、不存字面量。
+  断言在 `test/wiring.test.mjs` 的 version-truth 套件（任何 src/host 文件再出现版本字面量就红；
+  产物 `lib/index.js` 由构建生成，手改它等于没改）。
   **2026-10-16 补上这条断言**：此前这条纪律只写在文档里，而 `build-gate` 只比 `lib/` 与 `src/`、
-  从不看 manifest——「只改一处」就是那样能悄悄漂开的。`cordis.patch.yml` 没有 version 字段。
+  从不看 manifest——「只改一处」就是那样能悄悄漂开的；后来两处字面量进一步收敛成单一真源。`cordis.patch.yml` 没有 version 字段。
   **第三处是禁止的**：注释/文档字符串里不许写 `vX.Y.Z` 标签（写事件名——
   `the apply() split` / `the abort path`，不写版本号）。旧纪律是「发版时 grep 一遍对齐」，
   它失效过一次：手册把数量写死成 8 处，真去数时已经是 13 处。现在由 `test/wiring.test.mjs` 的
   「no src/ or test/ file carries a vX.Y.Z release label in prose」断言（扫 `src/` + `test/` + `tsdown.config.mjs`），
   漏一处就红并报出行号；理由与迁移过程见 `docs/RELEASING.md` §3.1。
-  **发版打 git tag**：`git tag v<package.json version>`（两处手改 + `npm run build` 产物落定后再打；
+  **发版打 git tag**：`git tag v<package.json version>`（版本号改定 + `npm run build` 产物落定后再打；
   推荐先等 push master 的 CI 绿了再打 tag，顺序见 `docs/RELEASING.md` §6.1）。
   「某版本是哪次提交」回看 `git tag`，行为史靠 `CHANGELOG.md` + `git log --date=short`。
   发布形态与兄弟插件同款：`package.json` 的 `prepack: npm run build` + `files` 白名单 + `publishConfig.access`；

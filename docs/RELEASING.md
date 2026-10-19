@@ -78,12 +78,12 @@ npm view dsh-connect-atomcode versions      # 目标版本已在列？→ 不可
 gh release view vX.Y.Z --json tagName       # Release 已存在？→ 不可移
 ```
 
-## 3. 版本号两处手改
+## 3. 版本号单一真源（package.json）
 
-- `package.json` 的 `version`
-- `src/host/index.ts` stats body 的 `version: '...'`
+- 唯一手改点：`package.json` 的 `version`
+- `src/host/index.ts` 在运行时读它（`JSON.parse(readFileSync(join(packageDir, "..", "package.json"), "utf8")).version`），**不存字面量**
 
-两处必须一致。断言在 `test/wiring.test.mjs`；产物 `lib/index.js` 由构建生成，**手改产物无效**（下一次构建就抹掉）。`cordis.patch.yml` 没有 version 字段。
+（早年这里是「两处手改、两处必须一致」；后来改成运行时读 manifest，真源收敛成一处。断言在 `test/wiring.test.mjs` 的 version-truth 套件：`package.json is the only version declaration in the host half`——任何 src/host 文件里再出现版本字面量就红；`the committed artifact reports the manifest version at runtime` 钉住产物读的是 manifest。）产物 `lib/index.js` 由构建生成，**手改产物无效**（下一次构建就抹掉）。`cordis.patch.yml` 没有 version 字段。
 
 **号规：破坏性改动不许落在 patch 号上。** 最新 CHANGELOG 节若声明了「破坏性改动」（`### 破坏性改动` 一类小标题），
 版本号的第三段**必须为 0**——也就是必须升 minor。理由不是仪式感：按 semver 取「安全小版本」的更新通道
@@ -109,7 +109,7 @@ gh release view vX.Y.Z --json tagName       # Release 已存在？→ 不可移
 
 - 断言：`test/wiring.test.mjs` 的「no src/ or test/ file carries a vX.Y.Z release label in prose」——
   任何一处漏网就红，报出 `文件:行号`。所以**不需要再 grep**。
-- 版本号只有两处手改（§3 上面两条）+ `CHANGELOG.md`（那是发布史，本来就该写号）；
+- 版本号只有一处手改（§3：`package.json`，`src/host/index.ts` 运行时读它）+ `CHANGELOG.md`（那是发布史，本来就该写号）；
   产物里的号由构建生成，手改无效。
 - 想知道「某次改动属于哪个版本」：`git log` / `git tag` / `CHANGELOG.md`。注释不是发布史。
 
@@ -204,7 +204,7 @@ tar -xzf tmp/dsh-connect-atomcode-X.Y.Z.tgz -C tmp     # 解包到 tmp/package/
 | 检查 | 为什么是这条 |
 |---|---|
 | `tmp/package/` 全部文件（`lib/`、`client.js`、白名单内其余）与本机 SHA256 一致 | "同一份内容"的唯一硬证据；文件数相同只是必要条件 |
-| `tmp/package/lib/index.js` 含 `version: "X.Y.Z"` | 证明构建来自本版源码，不是缓存旧产物 |
+| `tmp/package/lib/index.js` 含运行时版本读码（`JSON.parse(readFileSync(join(packageDir, "..", "package.json"), "utf8")).version` 那一行） | 证明构建来自本版源码，不是缓存旧产物。单源版本制下 lib 产物里**没有** `version` 字面量可 grep（版本在运行时从 `package.json` 读，见 §3），所以这一条验的是读码行仍在，不是版本号本身 |
 | `tmp/package/CHANGELOG.md` 含本版节 | 证明版本文件同步进了包 |
 | `tmp/package/package.json.version` == X.Y.Z | 最低限度 |
 
@@ -267,7 +267,7 @@ gh release create vX.Y.Z \
 
 - [ ] **仓库可查**：`vX.Y.Z` tag 存在，且 `git rev-list -n1 vX.Y.Z` 指向本次要发布的 commit。
 - [ ] **master 可查**：该 commit 已在 `origin/master`，`git log --oneline -5` 能追到版本提交。
-- [ ] **版本文件可查**：`package.json` 与 `src/host/index.ts` 两处版本一致（`npm test` 的 version-truth 断言绿）；`CHANGELOG.md` 顶部已有该版本节。
+- [ ] **版本文件可查**：`package.json` 是版本单一真源、`src/host/index.ts` 运行时读它（`npm test` 的 version-truth 断言绿）；`CHANGELOG.md` 顶部已有该版本节。
 - [ ] **npm 可查**：`npm view dsh-connect-atomcode version` 返回目标版本。
 - [ ] **GitHub Release 可查**：`gh release view vX.Y.Z --json tagName` 能查到，且 `isDraft=false`、`isPrerelease=false`、`assets=[]`。
 - [ ] **发布提交上 CI 绿**：`gh run list` 里该 commit 的 run 结论是 `success`。它**不进上面 5 条的「完整发布」判定**
