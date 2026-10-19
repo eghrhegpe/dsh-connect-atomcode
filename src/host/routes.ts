@@ -176,6 +176,7 @@ export function mountRoutes({
     refreshHealth,
     ensureDaemonStarted,
     readQuota,
+    readUsageTrend,
     refreshPanelState,
     refreshModelCatalog,
     providerStore,
@@ -226,6 +227,9 @@ export function mountRoutes({
           // list. Sync read of a ~200-byte file, then one cached metadata call.
           refreshPanelState();
           await refreshModelCatalog();
+          // Per-day usage history for the trend card. Cached for minutes, so on
+          // the panel's 5s poll this is a closure read, not a daemon call.
+          await readUsageTrend();
           // HEAD gets headers only — a body on HEAD violates HTTP semantics.
           // (The HEAD branch above already returned; reaching here means GET.)
           writeJson(response, 200, buildStatsBody(stats, quota), { 'cache-control': 'no-store' });

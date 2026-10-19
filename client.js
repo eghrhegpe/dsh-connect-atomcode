@@ -470,6 +470,28 @@
 		if (s >= 60) return Math.floor(s / 60) + "m" + s % 60 + "s";
 		return s + "s";
 	}
+	/**
+	* Compact token count: `951K` / `23.9M` / `1.2B`.
+	*
+	* Tokens are the one quantity this panel ever shows in the tens of millions, and
+	* the daemon's own digits (`23851383`) are unreadable at a glance while a fully
+	* localized number is noise in a column of rows. One decimal below 100 of a unit,
+	* none above; `—` for anything that is not a finite non-negative number, so a
+	* missing field can never reach the panel as `NaN`.
+	*/
+	function fmtTokens(n) {
+		if (!Number.isFinite(n) || n < 0) return "—";
+		const v = n;
+		for (const [size, suffix] of [
+			[1e9, "B"],
+			[1e6, "M"],
+			[1e3, "K"]
+		]) if (v >= size) {
+			const scaled = v / size;
+			return (scaled >= 100 ? String(Math.round(scaled)) : scaled.toFixed(1)) + suffix;
+		}
+		return String(Math.round(v));
+	}
 	/** Quota colour: the window being exhausted is the only true error state. */
 	function quotaColor(percent, limited) {
 		if (limited || typeof percent === "number" && percent >= 100) return "var(--dsw-alias-state-error-primary)";
@@ -1134,6 +1156,8 @@
 				};
 				const proto = data.protocol || {};
 				const protoNotice = protocolDriftNotice(proto);
+				const trend = data.usageTrend || {};
+				const trendRows = Array.isArray(trend.rows) ? trend.rows : [];
 				const prov = data.provider || null;
 				const retryNote = cfg.daemonRetrySecs > 0 ? cfg.daemonRetrySecs + "s" : "每次轮询";
 				const liveResetSecs = liveRemaining(quota.resetInSecs, quota.fetchedAt, Date.now());
@@ -1160,7 +1184,18 @@
 				} }, pctLabel(quotaPct)), h("span", { style: S.metricLabel }, "当前时间窗口用量" + (liveResetSecs == null ? "" : " · " + fmtCountdown(liveResetSecs) + " 后重置")), h("div", { style: S.bar }, h("div", { style: {
 					width: barWidth(quotaPct) + "%",
 					background: quotaColor(quotaPct, quota.limited)
-				} }))), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.limited ? h("p", { style: S.error }, "当前 " + windowLabel(quota.planWindow) + " 窗口已用尽，回合会被限流") : null));
+				} }))), h(Row, { label: "套餐" }, quota.plan || "—"), h(Row, { label: "到期" }, quotaExpiry || "—"), h(Row, { label: "重置于" }, quota.resetAt || "—"), quota.windowLimit != null ? h(Row, { label: "本窗口" }, `${count(quota.windowUsed)} / ${count(quota.windowLimit)} ${quota.windowMetric === "calls" ? "次" : quota.windowMetric || ""}${quota.windowHours == null ? "" : `（每 ${quota.windowHours} 小时）`}`) : null, quota.limited ? h("p", { style: S.error }, "当前 " + windowLabel(quota.planWindow) + " 窗口已用尽，回合会被限流") : null, quota.sourceNote ? h("p", {
+					style: S.key,
+					title: quota.sourceNote
+				}, quota.sourceNote) : null));
+				const trendCard = h("div", { style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: 6
+				} }, trend.available === false ? h("p", { style: S.error }, trend.reason || "按天用量不可用") : trendRows.length === 0 ? h("p", { style: S.key }, "daemon 没有返回按天记录") : [...trendRows.slice(-7).reverse().map((row) => h(Row, {
+					key: "trend-" + row.date,
+					label: String(row.date).slice(5)
+				}, fmtTokens(row.tokens) + " tok · " + count(row.requests) + " 次")), h(Row, { label: "区间" }, "最近 " + Math.min(7, trendRows.length) + " 天" + (trend.endDate ? " · 数据到 " + trend.endDate : ""))]);
 				const startupCard = h("div", { style: {
 					display: "flex",
 					flexDirection: "column",
@@ -1269,6 +1304,7 @@
 									...S.paneBanner
 								} }, quotaDrift) : null,
 								h(Section, { title: "CodingPlan 额度" }, quotaCard),
+								h(Section, { title: "按天用量" }, trendCard),
 								h(Section, { title: "工具调用统计" }, toolCard)
 							]
 						},

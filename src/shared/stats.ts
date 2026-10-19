@@ -166,6 +166,17 @@ export interface QuotaBranch {
   usagePercent?: number | null;
   /** Seconds until the window resets, as of `fetchedAt`. */
   resetInSecs?: number | null;
+  /**
+   * The current window in REAL NUMBERS, from the structured source only: how
+   * many `windowMetric` units the window allows and how many are used. Absent on
+   * a reading parsed out of the localized text, which only ever carried a
+   * percentage.
+   */
+  windowLimit?: number | null;
+  windowUsed?: number | null;
+  windowHours?: number | null;
+  /** What the limit/used pair counts (`calls` on this build). */
+  windowMetric?: string | null;
   /** When the snapshot carrying `resetInSecs` was taken, for the local countdown. */
   fetchedAt?: number | null;
   /**
@@ -176,6 +187,14 @@ export interface QuotaBranch {
    * ACTION, so this field decides which of the two diagnostics is shown.
    */
   upstreamFailure?: { kind?: string | null; planName?: string | null } | null;
+  /**
+   * Which source produced this reading: the daemon's structured CodingPlan JSON
+   * (preferred — real numbers) or the localized `status` text (the fallback, and
+   * the only one whose shape can drift). Absent on a snapshot from an older host.
+   */
+  source?: 'codingplan-json' | 'status-text';
+  /** Why the preferred source was not used (host-worded; `''` when it was used). */
+  sourceNote?: string | null;
   raw?: { usageLine?: string | null; planLine?: string | null } | null;
 }
 
@@ -262,6 +281,27 @@ export interface SessionsBranch {
 }
 
 /**
+ * The `usageTrend` branch: per-day CodingPlan usage from the daemon's
+ * `GET /codingplan/usage/daily` (see the host's `codingplan.ts` for why that
+ * endpoint is preferred over the localized text).
+ *
+ * `rows` is a TRIMMED tail (the endpoint serves 60 days), oldest → newest, so a
+ * renderer shows the newest days without re-sorting. A missing reading carries
+ * `available: false` plus a host-worded `reason`, never an empty list that would
+ * read as "no usage" (红线 3).
+ */
+export interface UsageTrendBranch {
+  available?: boolean;
+  reason?: string | null;
+  fetchedAt?: number | null;
+  days?: number | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  models?: string[] | null;
+  rows?: Array<{ date: string; tokens: number; requests: number }> | null;
+}
+
+/**
  * The FULL stats snapshot served at `/api/atomcode-bridge/stats`.
  *
  * This is the single source of truth for the wire shape. The host's
@@ -280,6 +320,8 @@ export interface StatsSnapshot {
   provider?: ProviderBranch | null;
   protocol?: ProtocolBranch | null;
   quota?: QuotaBranch | null;
+  /** Per-day usage history for the trend card (a separate question from `quota`). */
+  usageTrend?: UsageTrendBranch | null;
   sessions?: SessionsBranch | null;
   /** Counters for the one model tool. */
   ask?: ToolStats | null;

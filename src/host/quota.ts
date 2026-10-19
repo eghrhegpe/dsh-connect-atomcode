@@ -149,6 +149,26 @@ export interface QuotaAvailable extends ParsedQuota {
   reason: string;
   fetchedAt: number;
   drift: boolean;
+  /**
+   * Which source produced this reading. `codingplan-json` is the daemon's
+   * structured CodingPlan endpoint (see `codingplan.ts`) — real numbers instead
+   * of prose to re-parse; `status-text` is the FALLBACK, and the only one whose
+   * shape can drift under an AtomCode upgrade. Optional: an older host sent
+   * neither, and a renderer that required it would blank those snapshots.
+   */
+  source?: 'codingplan-json' | 'status-text';
+  /**
+   * Why the preferred source was not used, already worded by the host (`''`
+   * when it was). Rendered beside the reading, so a fallback reading SAYS it is
+   * one instead of being indistinguishable from the richer source.
+   */
+  sourceNote?: string;
+  /** The current window in real numbers — only the structured source has them. */
+  windowLimit?: number | null;
+  windowUsed?: number | null;
+  windowHours?: number | null;
+  /** What `windowLimit`/`windowUsed` are counted in (`calls` on this build). */
+  windowMetric?: string | null;
 }
 
 export type QuotaReport = QuotaUnavailable | QuotaAvailable;
@@ -302,15 +322,22 @@ export function parseStatusQuota(input: unknown): ParsedQuota {
 }
 
 /**
- * Shape the quota section of the plugin stats snapshot.
+ * Shape the quota section of the plugin stats snapshot — the FALLBACK source.
+ *
+ * Preferred is the daemon's structured CodingPlan endpoint (`codingplan.ts`);
+ * this path exists for the states where that one cannot answer (an expired plan
+ * makes it 502, an older daemon may not serve it at all). Callers say WHY the
+ * fallback ran in `sourceNote`, so the panel can name it.
  *
  * @param result - a `runCommand('status')` outcome.
  * @param fetchedAt - epoch ms of the fetch (for client-side countdown).
+ * @param sourceNote - the host-worded reason the structured source was not used ('' when it was).
  * @returns the `quota` branch of the stats body.
  */
 export function buildQuotaReport(
   result: CommandOutcome | null | undefined,
   fetchedAt: number,
+  sourceNote = '',
 ): QuotaReport {
   if (!result || result.ok !== true) {
     return {
@@ -348,6 +375,10 @@ export function buildQuotaReport(
     available: true,
     ...parsed,
     fetchedAt,
+    // The fallback is named as such: a reading that came from prose must not be
+    // indistinguishable from one that came from the daemon's own numbers.
+    source: 'status-text',
+    sourceNote,
     // `limited` at 100% is the client's cue to render the warning state.
     reason: parsed.upstreamFailure
       ? UPSTREAM_REASON[parsed.upstreamFailure.kind] +

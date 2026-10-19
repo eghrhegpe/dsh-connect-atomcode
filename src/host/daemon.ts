@@ -261,6 +261,32 @@ export async function listModels(port: number = DEFAULT_PORT, signal?: AbortSign
 }
 
 /**
+ * GET /codingplan/usage/{summary,daily} — the CodingPlan quota/usage in structured
+ * form (see `codingplan.ts` for the payloads and why this source is preferred).
+ *
+ * One function for both paths because they are the same call: same auth, same
+ * JSON, same failure mode. The caller decides what a failure MEANS (the quota
+ * path falls back to the status text; the trend path publishes a named reason).
+ *
+ * @param {number} port
+ * @param {'/codingplan/usage/summary'|'/codingplan/usage/daily'} path
+ * @param {AbortSignal} [signal]
+ */
+export async function codingPlanUsage(
+  port: number = DEFAULT_PORT,
+  path: '/codingplan/usage/summary' | '/codingplan/usage/daily' = '/codingplan/usage/summary',
+  signal?: AbortSignal,
+) {
+  const res = await fetch(`${baseUrl(port)}${path}`, {
+    method: 'GET',
+    headers: bearerHeaders(port),
+    signal,
+  });
+  if (!res.ok) throw new Error(`atomcode ${path} -> HTTP ${res.status}`);
+  return res.json();
+}
+
+/**
  * One session entry from `GET /sessions`.
  *
  * The daemon keeps a per-project_hash list of sessions; each entry carries the

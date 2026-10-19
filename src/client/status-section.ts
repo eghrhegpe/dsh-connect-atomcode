@@ -37,6 +37,7 @@ import {
   barWidth,
   fmtCountdown,
   fmtDuration,
+  fmtTokens,
   liveRemaining,
   pctLabel,
   quotaColor,
@@ -313,6 +314,11 @@ export function createStatusSection(deps: StatusSectionDeps) {
       };
       const proto = data.protocol || {};
       const protoNotice = protocolDriftNotice(proto);
+      // Per-day usage history. Its OWN branch rather than more `quota` rows: it
+      // answers a different question (where the tokens went, not what is left),
+      // and it can be missing while the quota reading is fine.
+      const trend = data.usageTrend || {};
+      const trendRows = Array.isArray(trend.rows) ? trend.rows : [];
       const prov = data.provider || null;
       const retryNote = cfg.daemonRetrySecs > 0 ? cfg.daemonRetrySecs + 's' : '每次轮询';
       // Countdown is derived locally from the snapshot's own fetch time, so it
@@ -386,10 +392,60 @@ export function createStatusSection(deps: StatusSectionDeps) {
                 h(Row, { label: '套餐' }, quota.plan || '—'),
                 h(Row, { label: '到期' }, quotaExpiry || '—'),
                 h(Row, { label: '重置于' }, quota.resetAt || '—'),
+                // Only the structured source reports the window in real numbers,
+                // so this row appears exactly when they exist — the percentage
+                // above says how full the window is, this says how big it is.
+                quota.windowLimit != null
+                  ? h(
+                      Row,
+                      { label: '本窗口' },
+                      `${count(quota.windowUsed)} / ${count(quota.windowLimit)} ${
+                        quota.windowMetric === 'calls' ? '次' : quota.windowMetric || ''
+                      }${quota.windowHours == null ? '' : `（每 ${quota.windowHours} 小时）`}`
+                    )
+                  : null,
                 quota.limited
                   ? h('p', { style: S.error }, '当前 ' + windowLabel(quota.planWindow) + ' 窗口已用尽，回合会被限流')
+                  : null,
+                // A reading taken from the status TEXT says so, next to itself.
+                // Silence here means the numbers came from the daemon's JSON.
+                quota.sourceNote
+                  ? h('p', { style: S.key, title: quota.sourceNote }, quota.sourceNote)
                   : null
               )
+      );
+
+      // 按天用量 — the daemon's structured history. Seven rows read without
+      // scrolling; the host keeps fourteen, so showing more is a client change
+      // alone. A day with no usage is a REAL row (the endpoint lists every day in
+      // its range), which is what makes an idle stretch visible as such.
+      const trendCard = h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        trend.available === false
+          ? h('p', { style: S.error }, trend.reason || '按天用量不可用')
+          : trendRows.length === 0
+            ? h('p', { style: S.key }, 'daemon 没有返回按天记录')
+            : [
+                ...trendRows
+                  .slice(-7)
+                  .reverse()
+                  .map((row: { date: string; tokens: number; requests: number }) =>
+                    h(
+                      Row,
+                      { key: 'trend-' + row.date, label: String(row.date).slice(5) },
+                      fmtTokens(row.tokens) + ' tok · ' + count(row.requests) + ' 次'
+                    )
+                  ),
+                h(
+                  Row,
+                  { label: '区间' },
+                  '最近 ' +
+                    Math.min(7, trendRows.length) +
+                    ' 天' +
+                    (trend.endDate ? ' · 数据到 ' + trend.endDate : '')
+                ),
+              ]
       );
 
       // 启动情况
@@ -591,6 +647,7 @@ export function createStatusSection(deps: StatusSectionDeps) {
               pane: [
                 quotaDrift ? h('div', { style: { ...S.notice, ...S.paneBanner } }, quotaDrift) : null,
                 h(Section, { title: 'CodingPlan 额度' }, quotaCard),
+                h(Section, { title: '按天用量' }, trendCard),
                 h(Section, { title: '工具调用统计' }, toolCard),
               ],
             },

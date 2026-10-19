@@ -30,6 +30,7 @@ export type {
   StatsSnapshot,
   ToolStats,
   UnknownRecord,
+  UsageTrendBranch,
 } from '../shared/stats.ts';
 
 /** What `quotaView` decides: either "we know the number" or "we do not". */

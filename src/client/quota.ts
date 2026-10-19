@@ -32,6 +32,32 @@ export function fmtCountdown(secs: number | null | undefined): string {
   return s + 's';
 }
 
+/**
+ * Compact token count: `951K` / `23.9M` / `1.2B`.
+ *
+ * Tokens are the one quantity this panel ever shows in the tens of millions, and
+ * the daemon's own digits (`23851383`) are unreadable at a glance while a fully
+ * localized number is noise in a column of rows. One decimal below 100 of a unit,
+ * none above; `—` for anything that is not a finite non-negative number, so a
+ * missing field can never reach the panel as `NaN`.
+ */
+export function fmtTokens(n: number | null | undefined): string {
+  if (!Number.isFinite(n) || (n as number) < 0) return '—';
+  const v = n as number;
+  const units: Array<[number, string]> = [
+    [1e9, 'B'],
+    [1e6, 'M'],
+    [1e3, 'K'],
+  ];
+  for (const [size, suffix] of units) {
+    if (v >= size) {
+      const scaled = v / size;
+      return (scaled >= 100 ? String(Math.round(scaled)) : scaled.toFixed(1)) + suffix;
+    }
+  }
+  return String(Math.round(v));
+}
+
 /** Quota colour: the window being exhausted is the only true error state. */
 export function quotaColor(percent: number | null | undefined, limited?: boolean | null): string {
   if (limited || (typeof percent === 'number' && percent >= 100)) {

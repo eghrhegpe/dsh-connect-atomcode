@@ -110,6 +110,9 @@ src/host/tools.ts           → lib/tools.js             一个工具的挂载�
                                                         它和 /atomcode-review 命令都走 runAsk —— 一次评审就是一次带 diff 任务的 ask 回合
 src/host/daemon.ts          → lib/daemon.js            纯 daemon HTTP 客户端（/health /models /command /chat SSE），零宿主依赖
 src/host/quota.ts           → lib/quota.js             CodingPlan 额度文本解析（纯函数，按结构而非措辞；解析失败带 reason 不编数字）
+                                                        ——这是 FALLBACK 源：首选是 daemon 的结构化 JSON（见下一行）
+src/host/codingplan.ts      → lib/codingplan.js        CodingPlan 结构化额度与用量（GET /codingplan/usage/{summary,daily} 的
+                                                        防御式解析 + 映射成 stats 的 quota / usageTrend 分支；纯函数，无宿主依赖）
 src/host/sessions.ts        → lib/sessions.js          侧边会话映射（read-modify-write，跨 profile 键前缀隔离）
 src/host/provider-store.ts  → lib/provider-store.js    面板选的模型档位（provider.json：版本化、损坏保留旁路、拒覆盖更新版本）
 src/host/panel-settings-store.ts → lib/panel-settings-store.js  面板覆盖 briefMode + workingDir（panel-settings.json：执行时读取，下次调用即生效）

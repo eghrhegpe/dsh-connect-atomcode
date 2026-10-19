@@ -353,6 +353,19 @@ const FULL = {
     raw: { usageLine: 'usage 12%', planLine: 'plan CodingPlan' },
   },
   sessions: { tracked: 2, oldestAgeMs: 900_000, error: null },
+  // Per-day usage history (the daemon's structured `usage/daily`). Three rows so
+  // the "newest first" ordering is a real assertion rather than a coincidence.
+  usageTrend: {
+    available: true,
+    days: 60,
+    endDate: '2026-10-19',
+    models: ['glm5.3-flash', 'qwen3.8-27b'],
+    rows: [
+      { date: '2026-10-17', tokens: 2557515, requests: 75 },
+      { date: '2026-10-18', tokens: 23851383, requests: 569 },
+      { date: '2026-10-19', tokens: 950827, requests: 18 },
+    ],
+  },
   ask: { calls: 3, ok: 3, err: 0, msTotal: 3_000, tokens: 1_234, inFlight: null },
   review: { calls: 1, ok: 1, err: 0, msTotal: 500 },
 };
@@ -376,7 +389,7 @@ describe('client render — the detail panel', () => {
     const { tree } = await renderPanel(FULL);
     const t = text(tree);
     assert.ok(panelRoot(tree), 'the panel must mark its own root with data-dsh-plugin');
-    for (const heading of ['CodingPlan 额度', '启动情况', '运行环境', '回合边界', '侧边会话', '工具调用统计']) {
+    for (const heading of ['CodingPlan 额度', '按天用量', '启动情况', '运行环境', '回合边界', '侧边会话', '工具调用统计']) {
       assert.ok(t.includes(heading), `card/section "${heading}" must render`);
     }
     assert.ok(
@@ -423,8 +436,79 @@ describe('client render — the detail panel', () => {
     assert.ok(!/-\d+s/.test(t), 'and must never render a negative countdown');
   });
 
-  it('names a refused approval_mode instead of labelling the fallback as the default', async () => {
-    const snapshot = {
+  it('reads the window in real numbers when the structured source supplied them', async () => {
+    // Only the daemon's JSON (`/codingplan/usage/summary`) reports how big the
+    // window IS; the text source only ever had a percentage. The row appears
+    // exactly when those numbers exist — a text reading must not invent them.
+    const structured = {
+      ...FULL,
+      quota: {
+        ...FULL.quota,
+        source: 'codingplan-json',
+        sourceNote: '',
+        windowLimit: 200,
+        windowUsed: 0,
+        windowHours: 5,
+        windowMetric: 'calls',
+      },
+    };
+    const { tree } = await renderPanel(structured);
+    assert.equal(rowValue(tree, '本窗口'), '0 / 200 次（每 5 小时）');
+    const { tree: textOnly } = await renderPanel(FULL);
+    assert.equal(rowValue(textOnly, '本窗口'), null, 'a text reading has no window size to print');
+  });
+
+  it('says out loud when the reading came from the status text instead', async () => {
+    const note = '结构化额度接口不可用（atomcode /codingplan/usage/summary -> HTTP 502），本读数来自 status 文本';
+    const { tree } = await renderPanel({
+      ...FULL,
+      quota: { ...FULL.quota, source: 'status-text', sourceNote: note },
+    });
+    assert.ok(text(tree).includes(note), text(tree));
+    assert.ok(titlesOf(tree).includes(note), 'and the full sentence must be reachable as a tooltip');
+    // A reading from the preferred source prints no such apology.
+    const { tree: json } = await renderPanel({
+      ...FULL,
+      quota: { ...FULL.quota, source: 'codingplan-json', sourceNote: '' },
+    });
+    assert.ok(!text(json).includes('本读数来自 status 文本'));
+  });
+
+  it('draws the per-day trend newest first, with an idle day shown as zero', async () => {
+    const { tree } = await renderPanel({
+      ...FULL,
+      usageTrend: {
+        ...FULL.usageTrend,
+        rows: [
+          { date: '2026-10-13', tokens: 0, requests: 0 },
+          { date: '2026-10-18', tokens: 23851383, requests: 569 },
+        ],
+      },
+    });
+    const t = text(tree);
+    assert.equal(rowValue(tree, '10-18'), '23.9M tok · 569 次');
+    assert.equal(rowValue(tree, '10-13'), '0 tok · 0 次');
+    assert.ok(
+      t.indexOf('10-18') < t.indexOf('10-13'),
+      'the newest day must be first: the reader opens this card for the latest one',
+    );
+    assert.ok(t.includes('2026-10-19'), 'the range row must date the data');
+  });
+
+  it('names an unavailable trend instead of drawing an empty chart', async () => {
+    const { tree } = await renderPanel({
+      ...FULL,
+      usageTrend: { available: false, reason: '按天用量读取失败：atomcode /codingplan/usage/daily -> HTTP 502' },
+    });
+    const t = text(tree);
+    assert.ok(t.includes('按天用量读取失败'), t);
+    assert.ok(t.includes('HTTP 502'), 'the host-worded reason is rendered verbatim, not re-worded');
+    // A branch with no rows at all is a different fact from a failed read.
+    const { tree: empty } = await renderPanel({ ...FULL, usageTrend: { available: true, rows: [] } });
+    assert.ok(text(empty).includes('daemon 没有返回按天记录'), text(empty));
+  });
+
+  it('names a refused approval_mode instead of labelling the fallback as the default', async () => {    const snapshot = {
       ...FULL,
       config: { ...FULL.config, approvalMode: 'bypass', approvalModeRejected: 'bypasss', authored: { ...FULL.config.authorhed, approvalMode: false } },
     };

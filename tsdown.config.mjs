@@ -81,6 +81,13 @@ export default defineConfig([
       // without mounting `apply()`; it imports `runAsk` from `tools.js`, which
       // is exactly the seam the split-entry layout protects.
       command: "src/host/command.ts",
+      // The structured CodingPlan reader. Its own entry because TWO host modules
+      // import it — `runtime.ts` its functions, `stats.ts` the branch type its bag
+      // stores — which is enough for the bundler to factor it into a shared chunk
+      // and hand `runtime.ts` a generated `lib/runtime2.js` plus a re-export shell
+      // at the entry path. Exactly the rename `loopback` below is entered to avoid
+      // (see its note and the header).
+      codingplan: "src/host/codingplan.ts",
       // The one module BOTH halves read (`src/client/rows.ts` bundles it too).
       // It gets its own entry so it lands at a stable path instead of being
       // inlined into whichever host module happened to import it first — that

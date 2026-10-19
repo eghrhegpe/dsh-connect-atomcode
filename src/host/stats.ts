@@ -23,6 +23,7 @@ import type { HealthFailure } from './daemon.ts';
 import type { InFlightTurn, StatsSnapshot } from '../shared/stats.ts';
 import { DAEMON_PROBE_TIMEOUT_MS } from './config.ts';
 import type { AskUsageCounters } from './usage-store.ts';
+import type { UsageTrend } from './codingplan.ts';
 
 /** Host-side status endpoint helper (read-only, same-origin). */
 export function writeJson(res: any, status: number, body: unknown, headers?: Record<string, string>) {
@@ -192,6 +193,13 @@ export interface StatsBag {
   modelCatalog: ModelCatalogEntry[] | null;
   modelCatalogAt: number;
   modelCatalogError: string;
+  /**
+   * The per-day CodingPlan usage branch (`GET /codingplan/usage/daily`), or null
+   * before the first read. Stored as the finished branch, not as raw rows: the
+   * reader is a renderer, and every decision about what to keep was made where
+   * the payload was parsed (`codingplan.ts`).
+   */
+  usageTrend: UsageTrend | null;
   // ── panel settings (briefMode + workingDir + approvalMode + askMaxRounds overrides) ──
   panelBriefMode: string | null;
   panelWorkingDir: string | null;
@@ -360,6 +368,7 @@ export function createStatsBag(seed: StatsSeed): StatsBag {
     modelCatalog: null,
     modelCatalogAt: 0,
     modelCatalogError: '',
+    usageTrend: null,
     panelBriefMode: null,
     panelWorkingDir: null,
     panelApprovalMode: null,
@@ -509,9 +518,15 @@ export function buildStatsBody(stats: StatsBag, quota: any): StatsSnapshot {
       // without having to read a tool result first.
       unknownTypes: stats.protocolUnknownTypes,
     },
-    // CodingPlan quota. Only the daemon's `status` command carries it (as
-    // localized text), so this branch is best-effort and says why when empty.
+    // CodingPlan quota. The daemon's structured `GET /codingplan/usage/summary`
+    // is preferred and the localized `status` text is the fallback (which one ran
+    // is stamped on the reading itself); this branch is best-effort either way and
+    // says why when empty.
     quota: quota ?? { available: false, reason: 'not collected yet', fetchedAt: null },
+    // Per-day usage history, the panel's trend card. Its own branch rather than
+    // more rows on `quota`: it answers a different question (where the month went,
+    // not what is left right now) and it has its own cadence and failure mode.
+    usageTrend: stats.usageTrend,
     sessions: {
       tracked: stats.sessionsTracked,
       oldestAgeMs: stats.sessionsOldestAgeMs,

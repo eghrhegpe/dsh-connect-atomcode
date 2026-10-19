@@ -519,7 +519,7 @@ const STATUS_TEXT = [  '  登录：  gcw_8biBqEYF',
  * `ReferenceError` inside a request callback surfaces as a 15s test timeout
  * (an unanswered request), not as a clean failure.
  */
-function fakeQuotaHandler(commandBodies, statusText = STATUS_TEXT) {
+function fakeQuotaHandler(commandBodies, statusText = STATUS_TEXT, codingplan = {}, usageHits = []) {
   return (req, res) => {
     let raw = '';
     req.on('data', (c) => { raw += c; });
@@ -528,6 +528,27 @@ function fakeQuotaHandler(commandBodies, statusText = STATUS_TEXT) {
       if (url.startsWith('/health')) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', version: '5.2.3', service: 'atomcode-daemon' }));
+        return;
+      }
+      // The STRUCTURED CodingPlan endpoints. `undefined` means "this daemon does
+      // not serve it" (404, the shape of the pre-structured builds and of the
+      // lapsed-plan answer, which is a 502).
+      if (url.startsWith('/codingplan/usage/')) {
+        usageHits.push(url);
+        const which = url.startsWith('/codingplan/usage/daily') ? 'daily' : 'summary';
+        const answer = codingplan[which];
+        if (answer === undefined) {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+        if (typeof answer === 'number') {
+          res.writeHead(answer, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'Unable to load CodingPlan usage' }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(answer));
         return;
       }
       if (url.startsWith('/command')) {
@@ -654,6 +675,150 @@ describe('stats route — CodingPlan quota', () => {
     } finally {
       rmSync(dirname(statePath), { recursive: true, force: true });
     }
+  });
+});
+
+describe('stats route — the STRUCTURED CodingPlan source', () => {
+  /** Captured verbatim from `GET /codingplan/usage/summary` on 2026-10-19. */
+  const SUMMARY = {
+    schema_version: 1,
+    available: true,
+    plan: {
+      name: 'CodingPlan Lite-体验版',
+      status: 1,
+      claimed_at: '2026-10-19',
+      expires_at: '2026-10-26',
+      total_days: 7,
+      remaining_days: 7,
+    },
+    primary_window: {
+      metric: 'calls',
+      window_hours: 5,
+      limit: 200,
+      used: 3,
+      usage_percent: 2,
+      quota_exhausted: false,
+      next_reset_at: '2026-10-19T17:02:20',
+      next_reset_display: '17:02',
+      seconds_until_reset: 17001,
+    },
+  };
+  const DAILY = {
+    schema_version: 1,
+    available: true,
+    days: 60,
+    start_date: '2026-08-21',
+    end_date: '2026-10-19',
+    models: ['glm5.3-flash'],
+    rows: [
+      { date: '2026-10-18', model_tokens: { 'glm5.3-flash': 23851383 }, total_tokens: 23851383, total_requests: 569 },
+      { date: '2026-10-19', model_tokens: { 'glm5.3-flash': 113041 }, total_tokens: 950827, total_requests: 18 },
+    ],
+  };
+
+  /** @type {import('node:http').Server} */
+  let server;
+  let port;
+  let commandBodies;
+  let usageHits;
+  let codingplan;
+
+  before(async () => {
+    commandBodies = [];
+    usageHits = [];
+    codingplan = { summary: SUMMARY, daily: DAILY };
+    server = createServer(fakeQuotaHandler(commandBodies, STATUS_TEXT, codingplan, usageHits));
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    port = server.address().port;
+  });
+  after(() => server.close());
+
+  /**
+   * The route's own mount per test: the quota and the trend are per-mount caches,
+   * so a shared mount would let one case answer another's poll.
+   */
+  async function mountAndCall(extra) {
+    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-usage-')), 'sessions.json');
+    try {
+      const route = mountRoute({ statePath, port, ...(extra ? { extra } : {}) });
+      return await callRoute(route, { headers: { host: '127.0.0.1:3080' } });
+    } finally {
+      rmSync(dirname(statePath), { recursive: true, force: true });
+    }
+  }
+
+  it('prefers the structured reading, and never needs the status text at all', async () => {
+    const before = commandBodies.length;
+    const { body } = await mountAndCall();
+    assert.equal(body.quota.source, 'codingplan-json');
+    assert.equal(body.quota.sourceNote, '');
+    assert.equal(body.quota.plan, 'Lite-体验版');
+    assert.equal(body.quota.expires, '2026-10-26');
+    assert.equal(body.quota.planWindow, '7d / 共 7d');
+    assert.equal(body.quota.usagePercent, 2);
+    assert.equal(body.quota.resetAt, '17:02');
+    assert.equal(body.quota.resetInSecs, 17001);
+    assert.equal(body.quota.drift, false);
+    // The window in REAL numbers is the reason this source exists.
+    assert.equal(body.quota.windowLimit, 200);
+    assert.equal(body.quota.windowUsed, 3);
+    assert.equal(body.quota.windowHours, 5);
+    assert.equal(body.quota.windowMetric, 'calls');
+    assert.equal(
+      commandBodies.slice(before).filter((c) => c.command === 'status').length,
+      0,
+      'the text fallback must not even be called while the JSON answers',
+    );
+  });
+
+  it('falls back to the status text and SAYS why when the JSON endpoint refuses', async () => {
+    codingplan.summary = 502; // the lapsed-plan answer, observed live
+    try {
+      const { body } = await mountAndCall();
+      assert.equal(body.quota.source, 'status-text');
+      assert.match(body.quota.sourceNote, /502/);
+      assert.match(body.quota.sourceNote, /status 文本/);
+      // The fallback is a REAL reading, not a blank: the captured text parses.
+      assert.equal(body.quota.plan, 'Lite-体验版');
+      assert.equal(body.quota.usagePercent, 77);
+      assert.equal(body.quota.drift, false, 'a text reading that parses is not drift');
+    } finally {
+      codingplan.summary = SUMMARY;
+    }
+  });
+
+  it('publishes the per-day history as its own branch', async () => {
+    const { body } = await mountAndCall();
+    assert.equal(body.usageTrend.available, true);
+    assert.equal(body.usageTrend.endDate, '2026-10-19');
+    assert.deepEqual(body.usageTrend.rows, [
+      { date: '2026-10-18', tokens: 23851383, requests: 569 },
+      { date: '2026-10-19', tokens: 950827, requests: 18 },
+    ]);
+    assert.ok(
+      usageHits.some((u) => u.startsWith('/codingplan/usage/daily')),
+      'the daily endpoint must be the source of this branch',
+    );
+  });
+
+  it('names a missing history instead of publishing an empty list', async () => {
+    codingplan.daily = 502;
+    try {
+      const { body } = await mountAndCall();
+      assert.equal(body.usageTrend.available, false);
+      assert.match(body.usageTrend.reason, /502/);
+      assert.equal(body.usageTrend.rows, undefined);
+    } finally {
+      codingplan.daily = DAILY;
+    }
+  });
+
+  it('quota_refresh_secs: 0 turns the trend card off too, not just the quota', async () => {
+    const before = usageHits.length;
+    const { body } = await mountAndCall({ quota_refresh_secs: 0 });
+    assert.equal(body.usageTrend.available, false);
+    assert.match(body.usageTrend.reason, /关闭/);
+    assert.equal(usageHits.length, before, 'a disabled quota display must not poll the usage endpoint');
   });
 });
 

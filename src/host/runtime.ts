@@ -32,6 +32,7 @@
  * @module dsh-connect-atomcode/host/runtime
  */
 import {
+  codingPlanUsage,
   healthInfo,
   listModels,
   listSessions,
@@ -46,6 +47,7 @@ import { createPanelSettingsStore } from './panel-settings-store.ts';
 import { createUsageStore } from './usage-store.ts';
 import type { AskUsageCounters } from './usage-store.ts';
 import { buildQuotaReport } from './quota.ts';
+import { parseUsageDaily, parseUsageSummary, summaryQuotaReport } from './codingplan.ts';
 import {
   APPROVAL_MODES_TEXT,
   DAEMON_COMMAND_TIMEOUT_MS,
@@ -508,7 +510,15 @@ export function createRuntime({
   }
 
   /**
-   * CodingPlan quota, read through the daemon's `status` command.
+   * CodingPlan quota.
+   *
+   * TWO sources, in order: the daemon's STRUCTURED `GET /codingplan/usage/summary`
+   * (real numbers — see `codingplan.ts`) first, and the localized `status` text as
+   * the fallback. The structured one is preferred because a number cannot drift
+   * the way a sentence can; the text path stays because the structured endpoint
+   * refuses to answer in exactly the state its named diagnosis was built for (an
+   * expired plan makes it 502). Whichever ran is stamped on the reading
+   * (`source` / `sourceNote`), so the panel can say a fallback is a fallback.
    *
    * Cached for `quota_refresh_secs` so the panel's 5s poll does not become a 5s
    * daemon call. The daemon requires a `working_dir` for ANY command, but the
@@ -518,6 +528,8 @@ export function createRuntime({
    * @returns {Promise<object>} the `quota` branch of the stats snapshot.
    */
   let quotaCache: { at: number; value: any } = { at: 0, value: null };
+  /** The last structured-source failure we logged, so the log fires on CHANGE, not per poll. */
+  let lastStructuredError = '';
   async function readQuota() {
     if (quotaRefreshSecs === 0) {
       return {
@@ -549,6 +561,39 @@ export function createRuntime({
       if (!stats.daemonStarting) quotaCache = { at: now, value };
       return value;
     }
+    // ── Preferred source: the daemon's structured CodingPlan endpoint ─────────
+    // A failure here is NOT published as the quota's reason: the text fallback
+    // below still produces a reading (or its own, more precise diagnosis), and
+    // the only thing this outcome changes is why the reading is a fallback. Logged
+    // on change so a permanently missing endpoint does not write a line per poll.
+    let structuredError = '';
+    try {
+      const payload = await codingPlanUsage(
+        port,
+        '/codingplan/usage/summary',
+        AbortSignal.timeout(DAEMON_PROBE_TIMEOUT_MS),
+      );
+      const summary = parseUsageSummary(payload);
+      if (summary === null) {
+        structuredError = 'summary 响应里没有可读的套餐/窗口字段';
+      } else {
+        if (lastStructuredError !== '') {
+          lastStructuredError = '';
+          log('CodingPlan 结构化额度接口恢复，读数改回 JSON 源');
+        }
+        stats.quotaDriftSeen = false;
+        value = summaryQuotaReport(summary, Date.now());
+        quotaCache = { at: now, value };
+        return value;
+      }
+    } catch (error: any) {
+      structuredError = String(error && error.message ? error.message : error);
+    }
+    if (structuredError !== lastStructuredError) {
+      lastStructuredError = structuredError;
+      log(`CodingPlan 结构化额度接口不可用（${structuredError}），额度改读 status 文本`);
+    }
+
     // A named budget, and it is DELIBERATELY under the panel's client deadline
     // (`POLL_MS - 1000` in src/client/index.ts): the client aborts its fetch at
     // 4s and reports its own timeout string, so a server budget above that
@@ -569,11 +614,22 @@ export function createRuntime({
       result.ok === true || result.kind !== 'transport' || !/abort|timeout/i.test(result.message || '')
         ? result
         : { ...result, kind: 'timeout', message: `daemon 未在 ${DAEMON_COMMAND_TIMEOUT_MS}ms 内应答 /command status（daemon 可能卡住）` };
-    value = buildQuotaReport(outcome, Date.now());
+    value = buildQuotaReport(
+      outcome,
+      Date.now(),
+      `结构化额度接口不可用（${structuredError}），本读数来自 status 文本`,
+    );
     if (value.drift === true) {
       if (!stats.quotaDriftSeen) {
         stats.quotaDriftSeen = true;
-        log('the daemon status text no longer matches any known quota shape (AtomCode may have been upgraded) — the panel will show the raw text');
+        // An upstream failure and a changed vocabulary look identical on the
+        // panel (no reading + raw text) but send the reader to different places,
+        // so the log says which one this is.
+        log(
+          value.upstreamFailure
+            ? `CodingPlan 额度上游不可用（${value.upstreamFailure.kind}）—— 面板将显示原始文本`
+            : 'the daemon status text no longer matches any known quota shape (AtomCode may have been upgraded) — the panel will show the raw text',
+        );
       }
     } else {
       stats.quotaDriftSeen = false;
@@ -667,6 +723,63 @@ export function createRuntime({
     }
   }
 
+  /**
+   * Per-day CodingPlan usage (`GET /codingplan/usage/daily`) — the trend card.
+   *
+   * Its own cadence, much slower than the quota's: history changes at most once a
+   * minute, and the endpoint returns 60 days. Cached for `USAGE_TREND_TTL_MS`, and
+   * a FAILURE is published as a named reason rather than an empty list (红线 3) and
+   * deliberately NOT cached for the full TTL — the moment the daemon answers, the
+   * next poll should show the history (same rule as the model catalogue).
+   *
+   * @returns {Promise<object>} the `usageTrend` branch of the stats snapshot.
+   */
+  const USAGE_TREND_TTL_MS = 300_000;
+  const USAGE_TREND_DAYS = 14;
+  let usageTrendAt = 0;
+  async function readUsageTrend() {
+    const now = Date.now();
+    // The same switch as the quota itself: with the quota display off, a card
+    // that kept polling the endpoint would be doing exactly what the user turned off.
+    if (quotaRefreshSecs === 0) {
+      stats.usageTrend = {
+        available: false,
+        reason: '额度显示已关闭（quota_refresh_secs = 0）',
+        fetchedAt: now,
+      };
+      return stats.usageTrend;
+    }
+    if (stats.usageTrend !== null && now - usageTrendAt < USAGE_TREND_TTL_MS) return stats.usageTrend;
+    if (!stats.daemonUp) {
+      stats.usageTrend = {
+        available: false,
+        reason: `daemon 未在线（127.0.0.1:${port}：${describeDaemonDown(stats.daemonDownReason)}），读不出按天用量`,
+        fetchedAt: now,
+      };
+      usageTrendAt = 0;
+      return stats.usageTrend;
+    }
+    try {
+      const payload = await codingPlanUsage(
+        port,
+        '/codingplan/usage/daily',
+        AbortSignal.timeout(DAEMON_PROBE_TIMEOUT_MS),
+      );
+      const daily = parseUsageDaily(payload, USAGE_TREND_DAYS);
+      stats.usageTrend =
+        daily === null
+          ? { available: false, reason: 'daily 响应里没有可用的按天记录', fetchedAt: now }
+          : { available: true, reason: '', fetchedAt: now, ...daily };
+      // Only a real reading is worth keeping for the whole TTL.
+      usageTrendAt = daily === null ? 0 : now;
+    } catch (error: any) {
+      const reason = String(error && error.message ? error.message : error);
+      stats.usageTrend = { available: false, reason: `按天用量读取失败：${reason}`, fetchedAt: now };
+      usageTrendAt = 0;
+    }
+    return stats.usageTrend;
+  }
+
   return {
     stats,
     sessions,
@@ -682,6 +795,7 @@ export function createRuntime({
     ensureDaemonStarted,
     ensureDaemon,
     readQuota,
+    readUsageTrend,
     refreshPanelState,
     refreshModelCatalog,
     setReasoningEffort: (effort: string) => setReasoningEffort({ port, effort }),
