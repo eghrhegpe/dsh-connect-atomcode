@@ -1132,7 +1132,7 @@
 			const view = props && props.view;
 			const subject = props && props.subject;
 			if (!(view === "summary" || view === "page")) {
-				if ((subject && subject.kind === "bundle" ? subject.pkg && subject.pkg.name : void 0) !== "dsh-connect-atomcode") return null;
+				if ((subject && subject.kind === "bundle" ? subject.pkg && subject.pkg.name : void 0) !== panelId) return null;
 			}
 			if (view === "summary") return h(SummaryLine, null);
 			const { data, error, updatedAt, reload } = useStats();

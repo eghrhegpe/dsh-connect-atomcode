@@ -105,12 +105,19 @@ export interface StatusSectionDeps {
    */
   PanelSettingsControls?: (props: { cfg: any; reload?: () => void }) => ReactElement;
   /**
-   * The plugin's registered id, stamped on the panel root as `data-dsh-plugin`.
+   * The plugin's registered id. Two uses, one source:
+   *  - stamped on the panel root as `data-dsh-plugin`, which is what lets a test
+   *    tell "our panel rendered" from "some panel rendered" while the panel no
+   *    longer prints a heading of its own;
+   *  - the list-seat gate below: `plugins.detail.section` is a LIST seat, so it
+   *    passes the page's `subject` and we claim it by name.
+   *
    * Injected rather than imported: the id has ONE definition (the registration
    * in ./index.ts, itself checked against package.json by
    * `test/client-id.test.mjs`), and a second literal here could drift from it.
-   * The attribute is what lets a test tell "our panel rendered" from "some panel
-   * rendered" while the panel no longer prints a heading of its own.
+   * There WAS one — the list-seat gate used to spell it by hand, which is how
+   * this field's own doc used to contradict the code under it. `panelId` is the
+   * same value (`REGISTRATION.id`), so the gate behaves exactly as before.
    */
   panelId: string;
 }
@@ -273,7 +280,7 @@ export function createStatusSection(deps: StatusSectionDeps) {
     const keyed = view === 'summary' || view === 'page';
     if (!keyed) {
       const name = subject && subject.kind === 'bundle' ? subject.pkg && subject.pkg.name : undefined;
-      if (name !== 'dsh-connect-atomcode') return null;
+      if (name !== panelId) return null;
     }
     if (view === 'summary') {
       return h(SummaryLine, null);
