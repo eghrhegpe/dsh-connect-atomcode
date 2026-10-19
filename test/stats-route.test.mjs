@@ -60,8 +60,9 @@ function captureRoutes({ statePath, port = CLOSED_PORT, extra = {}, toolSink, ag
         };
       }
       if (name === 'webServer') return { register: (route) => { routes.push(route); return () => {}; } };
-      // Only `/inject` asks for this one; every other case leaves it undefined,
-      // which is also the real state of a Host that does not expose the service.
+      // Only the `/atomcode-review` command asks for this one (host-side, in
+      // process); every other case leaves it undefined, which is also the real
+      // state of a Host that does not expose the service.
       if (name === 'agents') return agents;
       return undefined;
     },

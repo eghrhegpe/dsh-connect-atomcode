@@ -16,11 +16,12 @@
  * with no in-repo caller, it carried no authentication (same-origin is a CSRF
  * gate, not an identity gate, and every plugin's client bundle shares the one
  * origin), and it could wake an idle session's driver for the price of a POST.
- * The delivery it wired is still reachable — `injectAtomcodeAnswer` /
- * `injectReviewContinuation` live in `./inject.ts` and the `/atomcode-review`
- * continuation calls them host-side, without an HTTP surface at all. A route
- * with zero callers and a cross-session write surface is exactly the dead ABI
- * the `/ask` note above warns about.
+ * The ONE delivery that still happens is not an HTTP surface at all: the
+ * `/atomcode-review` command hands its result to the session's model through
+ * `injectReviewContinuation` (host-side, in-process). Its old partner
+ * `injectAtomcodeAnswer` went with the route — it had no caller left and its doc
+ * comment described this very mount — which is the same "zero callers is how a
+ * dead ABI surface survives" lesson the `/ask` note above records.
  *
  * Extracted from `src/host/index.ts` (apply() split). They are mounted together
  * because they share everything that matters — one `webServer` registration

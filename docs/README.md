@@ -94,16 +94,17 @@
 
 ```
 # host —— 一个源码文件对应一个 lib/*.js（apply() 拆分 God module 后的完整清单）
-src/host/index.ts           → lib/index.js           apply() 装配点：注册一个工具 + /stats + /provider 路由 +
-                                                       额度缓存 + daemon 拉起策略；stats body 的 version 是版本号真源之一
+src/host/index.ts           → lib/index.js           apply() 装配点：注册一个工具 + 一个命令 + 五条路由 + 额度缓存 + daemon 拉起策略；stats body 的 version 是版本号真源之一
 src/host/config.ts          → lib/config.js          readConfig：每个配置字段的类型兜底 + detectProfileKey（多 profile 隔离）
 src/host/runtime.ts         → lib/runtime.js         挂载期状态容器：daemon / 额度 / 熔断 / 错误观察者，被 apply() 组装
-src/host/routes.ts          → lib/routes.js          /stats 只读 + /provider 只写面板偏好 + /inject（把回答交给会话的模型）+
-                                                        /reasoning-effort（面板力度写入点）+ /sessions（会话列表只读）；
+src/host/routes.ts          → lib/routes.js          /stats 只读 + /provider 只写面板偏好 + /reasoning-effort（面板力度写入点）+
+                                                        /sessions（会话列表只读）+ /panel-settings（面板四个可写字段）；
                                                         全部同源门禁 + body 上限，wire 上两个方向都 snake_case
-src/host/inject.ts          → lib/inject.js          把一条 AtomCode 回答投进目标会话（按 agent.status 分流：
-                                                        跑着的用 agent.inject 挂到下一步、空闲的用 agent.steer 唤醒）：
-                                                        composeInjection 的框注 + 具名拒绝 + 运行时解析宿主的 createUserMessage
+src/host/inject.ts          → lib/inject.js          评审收尾那一条具名投递：把评审结论当「继续原任务」交给会话的模型
+                                                        （按 agent.status 分流：跑着的用 agent.inject 挂到下一步、空闲的用
+                                                        agent.steer 唤醒）+ composeContinuation 的框注 + 具名拒绝 + 运行时解析
+                                                        宿主的 createUserMessage。composeInjection / injectAtomcodeAnswer 随
+                                                        /inject 路由一起删除（零调用方）
 src/host/command.ts         → lib/command.js           /atomcode-review 斜杠命令：不经模型跑一次评审，与工具共用同一份
                                                         runAsk + composeReviewPrompt（宿主直接干活，零 LLM 调用）
 src/host/tools.ts           → lib/tools.js             一个工具的挂载与描述（description 里写出可用档位与优先级顺序）；
