@@ -1029,3 +1029,146 @@ describe('atomcode_ask — an unnamed directory is REFUSED, not warned about aft
     assert.match(param.description, /working_dir/, 'and must send the caller to the directory first');
   });
 });
+
+describe('atomcode_ask — the output schema and the return object are one shape', () => {
+  // The failure mode this block exists for: `output.schema` is the ONLY
+  // description of the return that a caller reading schemas has, and the
+  // runner's return object is the only implementation of it. They used to be
+  // checked one field at a time (the cap in `tools.description`, `tools_truncated`
+  // in `required`, `allow_unattended` in `parameters`), which is how a field
+  // added to one side stops being asserted by the other side's tests. Here both
+  // sides come from the LIVE objects — the registered schema and a real call —
+  // so a drift in either direction shows up as a set difference, not as a test
+  // that was never written.
+  const state = { requests: [], counter: 0 };
+  let fake;
+
+  before(async () => { fake = await startFakeDaemon(state); });
+  after(() => fake.server.close());
+
+  // What the host's own output validation does, in the part that matters here:
+  // match a value against a declared single `type`, and accept an annotation-only
+  // node — no `type` key at all, which is what `hostSubsetSchema` leaves behind
+  // for a field whose nullability is documented in the description only.
+  function complies(value, declared, where) {
+    // An object node is recognised by its `properties`, whether or not it also
+    // declares a `type`: after `hostSubsetSchema` the null-carrying members have
+    // no `type` key at all.
+    if (declared && declared.properties) {
+      assert.equal(value !== null && typeof value === 'object' && !Array.isArray(value), true, `${where}: expected an object`);
+      // `additionalProperties: false` on the declared node means the returned
+      // keys must be exactly the declared ones — neither more nor fewer.
+      assert.deepEqual(
+        Object.keys(value).sort(),
+        Object.keys(declared.properties).sort(),
+        `${where}: the returned keys must be exactly the declared ones`,
+      );
+      return;
+    }
+    if (declared && declared.type === 'array') {
+      assert.equal(Array.isArray(value), true, `${where}: expected an array`);
+      return;
+    }
+    // No `type` key at all: the unconstrained-JSON form the host's validator
+    // accepts, and the ONLY legal encoding of a nullable field (红线 9).
+    if (!declared || declared.type === undefined) return;
+    assert.equal(typeof value, declared.type, `${where}: declared ${declared.type}, returned ${typeof value}`);
+  }
+
+  // One real call, with the registered tool definition attached, so every case
+  // below compares two live objects rather than two descriptions of them.
+  const turn = async (withDir = true) => {
+    const ask = await mountAsk(mod, { statePath: tempState(), port: fake.port });
+    const r = await ask.execute({ message: 'hi', ...(withDir ? { working_dir: WORKDIR } : {}) }, {});
+    assert.equal(r.ok, true, `the turn must really succeed, so the shape is the successful one (${r.error})`);
+    return { ask, r };
+  };
+
+  it('the declared properties name exactly the keys the runner returns', async () => {
+    const { ask, r } = await turn();
+    const declared = Object.keys(ask.output.schema.properties).sort();
+    assert.deepEqual(
+      Object.keys(r).sort(),
+      declared,
+      'a returned key that is undeclared is rejected by the host (additionalProperties: false); '
+        + 'a declared key that is never returned is documentation promising a field the code cannot send',
+    );
+  });
+
+  it('required names every declared property, and nothing else', async () => {
+    const { ask } = await turn();
+    const props = ask.output.schema.properties;
+    assert.deepEqual(
+      ask.output.schema.required.slice().sort(),
+      Object.keys(props).sort(),
+      'both returns carry every field, so none of them may be omittable',
+    );
+    assert.equal(ask.output.schema.additionalProperties, false, 'an undeclared key must be rejected, not silently ignored');
+  });
+
+  it('every returned value satisfies the type declared for it', async () => {
+    const { ask, r } = await turn();
+    const props = ask.output.schema.properties;
+    for (const key of Object.keys(r)) {
+      complies(r[key], props[key], key);
+      if (Array.isArray(r[key]) && props[key] && props[key].items) {
+        r[key].forEach((entry, i) => complies(entry, props[key].items, `${key}[${i}]`));
+      }
+    }
+  });
+
+  it('the null-carrying fields are annotation-only, and every one documents its null', async () => {
+    // 红线 9: collapsing a union to a single type makes every legitimate null
+    // throw a ToolOutputError, so those fields must survive as annotation-only
+    // nodes. Declaring them `string` instead is exactly how a refusal would start
+    // failing validation — and the description is the only place a reader can
+    // learn that null is expected there.
+    const { ask } = await turn();
+    const props = ask.output.schema.properties;
+    for (const key of ['working_dir', 'daemon_tool_calls', 'daemon_rounds']) {
+      assert.equal(props[key].type, undefined, `${key}: the union must be stripped, not collapsed to one member`);
+      assert.match(props[key].description, /null/, `${key}: the null meaning must live in the description`);
+    }
+    const success = props.tools.items.properties.success;
+    assert.equal(success.type, undefined, 'success: the union must be stripped, not collapsed');
+    assert.match(success.description, /null/, 'success: the null meaning must live in the description');
+    assert.deepEqual(props.tools.items.required.slice().sort(), ['name', 'success'], 'a tool record with a missing half is not a record');
+  });
+
+  it("the same contract holds on a REFUSED turn — the runner's second return path", async () => {
+    // `empty()` is the other return shape. A contract checked on one of the two
+    // returns only is a contract that holds by accident, so the refusal is
+    // driven too: no directory, no `allow_unattended` (红线 8).
+    const ask = await mountAsk(mod, { statePath: tempState(), port: fake.port });
+    const r = await ask.execute({ message: 'refused' }, {});
+    assert.equal(r.ok, false, 'without a directory the call is refused, so empty() is what came back');
+    assert.deepEqual(
+      Object.keys(r).sort(),
+      Object.keys(ask.output.schema.properties).sort(),
+      'empty() must carry exactly the declared keys, like the success shape',
+    );
+    for (const key of Object.keys(r)) {
+      complies(r[key], ask.output.schema.properties[key], key);
+    }
+    assert.equal(r.working_dir, null, 'and it says the directory was absent rather than inventing one');
+  });
+
+  it('the gate bites both ways: a dropped key and an invented key', async () => {
+    // A set comparison is only a contract if it can fail in BOTH directions.
+    // Same discipline as test/dead-port.test.mjs — a predicate that can only say
+    // "equal" would happily certify either side being quietly edited away.
+    const { ask, r } = await turn();
+    const declared = Object.keys(ask.output.schema.properties);
+    const returned = Object.keys(r);
+    assert.throws(
+      () => assert.deepEqual(returned, declared.filter((k) => k !== 'round_count')),
+      /round_count/,
+      'a property dropped from the schema must be caught',
+    );
+    assert.throws(
+      () => assert.deepEqual(returned, [...declared, 'phantom']),
+      /phantom/,
+      'a property added to the schema but never returned must be caught',
+    );
+  });
+});

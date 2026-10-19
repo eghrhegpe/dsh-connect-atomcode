@@ -571,7 +571,13 @@ export function mountAskTool({
           },
           error: { type: 'string' },
         },
-        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'tools', 'tools_truncated', 'stop_reason', 'working_dir', 'provider', 'providerReported', 'protocol_unknown_types', 'daemon_tool_calls', 'daemon_rounds', 'elapsed_ms', 'error'],
+        // One per declared property — `additionalProperties: false` catches a
+        // field that is ADDED, and `required` is the only thing that catches one
+        // that goes MISSING. Omitting a property here lets a return path that
+        // dropped that field validate and quietly lose it from the model's view.
+        // The runner has two returns (`empty()` and the success shape), so this
+        // list is the mechanical check that both still carry all of them.
+        required: ['ok', 'reply', 'session_id', 'continued', 'truncated', 'tokens', 'tool_calls', 'round_count', 'tools', 'tools_truncated', 'stop_reason', 'working_dir', 'provider', 'providerReported', 'protocol_unknown_types', 'daemon_tool_calls', 'daemon_rounds', 'elapsed_ms', 'error'],
         additionalProperties: false,
       }),
       render(_args: any, value: any) {
