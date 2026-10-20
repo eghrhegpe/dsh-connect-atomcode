@@ -330,3 +330,61 @@ describe('docs 引用完整性 — 扫描器自己活着（扫不到东西 ≠ �
     assert.deepEqual(headingsOf('```\n# 位于代码块里的井号\n```\n'), []);
   });
 });
+
+describe('投稿副本 — 市场介绍与卡片文案必须同源', () => {
+  // 同一句话存四份：locale/en.json（宿主解析的锚点）、locale/zh.json、
+  // package.json 的 description（英文回退面）、以及
+  // awesome-dsh-plugin-submission/ 里那份投稿副本。此前没有任何东西比对过它们。
+  //
+  // 这是**离线**那一半，每次 push 都跑。它看不到上游线上条目现在写的是什么：
+  // 一份内部自洽但相对上游已过时的副本，在这里必然通过——这是设计。上游那一半
+  // 要联网，另开一个定时档；别人的 main 一动就让本仓判红，那种红最后没人读。
+  //
+  // 刻意不断言 category：合法取值表在上游 contributing.md，会随分类体系拆分而变，
+  // 在本仓存一份就是写死取值的老毛病。
+  const pkg = JSON.parse(read('package.json'));
+  const en = JSON.parse(read('locale/en.json')).meta.description;
+  const zh = JSON.parse(read('locale/zh.json')).meta.description;
+  const repoUrl = String(pkg.repository?.url ?? '').replace(/^git\+/, '').replace(/\.git$/, '');
+  const slug = repoUrl.replace(/^https:\/\/github\.com\//, '');
+  const draftRel = `awesome-dsh-plugin-submission/${slug.replace('/', '__')}.yml`;
+
+  it('package.json 的 description 等于英文卡片文案', () => {
+    assert.equal(pkg.description, en,
+      '英文回退面与 locale/en.json 不是同一句——英文界面会读到另一份文案，且没有任何警告');
+  });
+
+  if (!existsSync(join(ROOT, draftRel))) return;
+
+  const draft = read(draftRel);
+  // 逐行扫描，不用正则：模板字面量里的 `\s` 会被 JS 当成转义吃掉，写出来的
+  // 正则静默变成 `^url:s*(S+)s*$`，永远不匹配——一个只会通过的「门禁」。
+  // 副本只有十几个字段，逐行找比调转义便宜得多。
+  //
+  // 单引号标量里引号靠**重复**转义（`model''s` 就是 `model's`），不先反转义，
+  // 每个撇号都会被读成漂移。
+  const lines = draft.split('\n').map((line) => line.trim());
+  const scalar = (key) => {
+    const prefix = `${key}: '`;
+    const line = lines.find((candidate) => candidate.startsWith(prefix) && candidate.endsWith("'"));
+    return line === undefined ? undefined : line.slice(prefix.length, -1).replaceAll("''", "'");
+  };
+  const field = (key) => {
+    const prefix = `${key}: `;
+    const line = lines.find((candidate) => candidate.startsWith(prefix));
+    return line === undefined ? undefined : line.slice(prefix.length).trim();
+  };
+
+  it('副本的两段描述都在，且都是单引号标量', () => {
+    assert.ok(scalar('en') !== undefined && scalar('zh') !== undefined,
+      'description.en / description.zh 缺一个，或不是上游解析器认的单引号标量');
+  });
+  it('副本指向的就是本仓', () => {
+    assert.equal(field('url'), repoUrl, '副本里的 url 指向别的仓库');
+    assert.equal(field('name'), slug, '副本的 name 不是本仓的 owner/repo');
+  });
+  it('副本的英文与中文分别等于卡片的两份文案', () => {
+    assert.equal(scalar('en'), en, '改一处就改两处——市场介绍与卡片是同一句话');
+    assert.equal(scalar('zh'), zh, '改一处就改两处——市场介绍与卡片是同一句话');
+  });
+});
