@@ -1,0 +1,30 @@
+{
+  "$comment": "Per-file ceiling on explicit `any` in the shipped source. Written by `npm run any:baseline` (or `node test/any-budget.test.mjs --update-baseline`); checked on every `npm test`. A file absent here has a budget of zero. Raising a number is a decision — argue it in the commit that changes this file.",
+  "rule": "/(?<!\\.)\\bany\\b/g",
+  "scope": [
+    "src/**/*.ts"
+  ],
+  "total": 169,
+  "files": {
+    "src/client/index.ts": 15,
+    "src/client/message-ask.ts": 9,
+    "src/client/panel-controls.ts": 11,
+    "src/client/provider-select.ts": 7,
+    "src/client/quota-chip.ts": 15,
+    "src/client/review-handoff.ts": 3,
+    "src/client/rows.ts": 5,
+    "src/client/status-section.ts": 15,
+    "src/host/command.ts": 5,
+    "src/host/config.ts": 2,
+    "src/host/daemon.ts": 13,
+    "src/host/index.ts": 3,
+    "src/host/inject.ts": 10,
+    "src/host/routes.ts": 24,
+    "src/host/runtime.ts": 11,
+    "src/host/sessions.ts": 2,
+    "src/host/state-file.ts": 2,
+    "src/host/stats.ts": 3,
+    "src/host/tools.ts": 13,
+    "src/host/usage-store.ts": 1
+  }
+}

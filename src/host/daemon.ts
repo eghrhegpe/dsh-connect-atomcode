@@ -214,7 +214,11 @@ function probeFailure(error: any): HealthFailure {
 export async function healthInfo(port: number = DEFAULT_PORT, signal?: AbortSignal) {
   let res: Response;
   try {
-    res = await fetch(`${baseUrl(port)}/health`, { method: 'GET', signal });
+    // `signal ?? null` rather than `signal`: RequestInit's `signal` is declared
+    // as an ABSENT-when-unset field, so handing it an explicit `undefined` is
+    // not the same type as leaving it out (exactOptionalPropertyTypes). `null`
+    // is what the DOM type accepts for "no signal", and it aborts nothing.
+    res = await fetch(`${baseUrl(port)}/health`, { method: 'GET', signal: signal ?? null });
   } catch (error: any) {
     return { up: false, version: '', reason: probeFailure(error) };
   }
@@ -254,7 +258,7 @@ export async function listModels(port: number = DEFAULT_PORT, signal?: AbortSign
   const res = await fetch(`${baseUrl(port)}/models`, {
     method: 'GET',
     headers: bearerHeaders(port),
-    signal,
+    signal: signal ?? null,
   });
   if (!res.ok) throw new Error(`atomcode /models -> HTTP ${res.status}`);
   return res.json();
@@ -280,7 +284,7 @@ export async function codingPlanUsage(
   const res = await fetch(`${baseUrl(port)}${path}`, {
     method: 'GET',
     headers: bearerHeaders(port),
-    signal,
+    signal: signal ?? null,
   });
   if (!res.ok) throw new Error(`atomcode ${path} -> HTTP ${res.status}`);
   return res.json();
@@ -316,7 +320,7 @@ export async function listSessions(port: number = DEFAULT_PORT, signal?: AbortSi
   const res = await fetch(`${baseUrl(port)}/sessions`, {
     method: 'GET',
     headers: bearerHeaders(port),
-    signal,
+    signal: signal ?? null,
   });
   if (!res.ok) throw new Error(`atomcode /sessions -> HTTP ${res.status}`);
   return res.json();
@@ -813,9 +817,17 @@ export async function askChat(opts: StreamChatOptions) {
   // stream that then finished is not ours to cancel.
   if (streamError !== '') {
     const target = sessionId || (typeof opts.sessionId === 'string' ? opts.sessionId : '');
+    // The stop options are OPTIONAL fields, so an unset port or timeout must
+    // leave the key out rather than be written as `undefined` (the two are
+    // different types under exactOptionalPropertyTypes, and `stopChat` reads
+    // the absence as "use the default").
     streamError = appendStopOutcome(
       streamError,
-      await stopChat({ port: opts.port, sessionId: target, timeoutMs: opts.stopTimeoutMs }),
+      await stopChat({
+        ...(typeof opts.port === 'number' ? { port: opts.port } : {}),
+        sessionId: target,
+        ...(typeof opts.stopTimeoutMs === 'number' ? { timeoutMs: opts.stopTimeoutMs } : {}),
+      }),
     );
   }
   let error = streamError || eventError;

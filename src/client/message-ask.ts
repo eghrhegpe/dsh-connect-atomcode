@@ -103,12 +103,29 @@ export function createMessageAsk(deps: MessageAskDeps) {
     // node store, not one derived string; the extra re-renders are acceptable
     // for a leaf button, and narrowing it would have to be re-derived anyway
     // when the projection changes.
-    let snapshot: any = null;
-    try {
-      snapshot = typeof props.useChat === 'function' ? props.useChat((state: any) => state) : null;
-    } catch {
-      snapshot = null;
-    }
+    //
+    // NO try/catch AROUND THIS CALL, and that is a contract, not an omission.
+    // `useChat` is a real React hook: the host binds it to
+    // `useSyncExternalStoreWithSelector`, which runs `useRef` / `useMemo` /
+    // `useSyncExternalStore` / `useEffect` / `useDebugValue` of its own. If the
+    // store's `getSnapshot()` throws, those hooks are already half-registered
+    // when the exception leaves; swallowing it here would let the render
+    // finish with a DIFFERENT hook count than the previous one, and React would
+    // then reject the NEXT render with "Rendered more hooks than during the
+    // previous render" — an error that points at this button and sends the
+    // next reader looking for a hook bug here instead of at the dead store.
+    //
+    // So the failure is NOT swallowed. A missing hook is the one case this
+    // component can degrade from (the host did not wire the standard prop), and
+    // it degrades exactly like the `useState` arm above: existence check, no
+    // exception handling. A THROWN store is the host's problem and the host
+    // owns the receipt: the seat renders inside the renderer's per-slot
+    // `SlotErrorBoundary`, which turns a crashed entry into a named
+    // `data-slot-error` anchor, reports it through `onEntryError` (the runner's
+    // ledger), and abdicates the entry. The host's own components call
+    // `useChat` bare for the same reason.
+    const snapshot: any =
+      typeof props.useChat === 'function' ? props.useChat((state: any) => state) : null;
     const onClick = () => {
       // `messageTextOf` returns null when the message is not in the snapshot and
       // '' when it is there but carries no prose (a tool-only step). Both are

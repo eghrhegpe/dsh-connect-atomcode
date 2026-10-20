@@ -1,4 +1,5 @@
 {
+  "$comment": "Type-check only (`npm run typecheck` -> tsc -p tsconfig.json). The sources are src/**/*.ts; the shipped lib/ and the root client.js are BUILT artifacts (tsdown) and are committed together with the src that produced them — rebuild with `npm run build` and commit both in the SAME commit (the build-gate forbids shipping src changes without a matching rebuild). Never hand-edit the built output. strict:true is the project-wide baseline; the flags below NARROW it, and none of them is a substitute for a test. exactOptionalPropertyTypes:true is on because this codebase keeps a hard line between \"this fact is absent\" and \"this fact was read and is undefined\": an optional property that accepts an explicit `undefined` cannot tell the two apart, and the plugin's own red line is that a value it could not parse must never be rendered as a number (a missing quota limit and a limit of zero must look different). Turning it on cost eight call sites, all of them mechanical (an optional field being handed an `undefined` that the type had declared as absent), and it found one real ambiguity — the `binary.env` row, where the host sent an unset ATOMCODE_BIN as `undefined` while the shared type said \"absent, not null\". Keep it true; if a signature must accept an explicit undefined, write `?: T | undefined` in THAT signature rather than turning this flag off. The rest of the flags are the ordinary strict set: noUncheckedIndexedAccess (an out-of-range read is `undefined`, not a value), noImplicitOverride / noUnusedLocals / noUnusedParameters / noImplicitReturns / noFallthroughCasesInSwitch (each one is a mistake the compiler can see). Do not widen them for convenience.",
   "compilerOptions": {
     "target": "ES2023",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
@@ -11,7 +12,7 @@
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "exactOptionalPropertyTypes": false,
+    "exactOptionalPropertyTypes": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitReturns": true,
 

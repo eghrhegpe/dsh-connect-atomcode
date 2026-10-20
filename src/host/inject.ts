@@ -314,8 +314,13 @@ export function injectReviewContinuation(
     // the agent already knows.
     buildText: () =>
       composeContinuation(reviewReply, {
-        model: typeof input.model === 'string' ? input.model : undefined,
-        scope: typeof input.scope === 'string' ? input.scope : undefined,
+        // The provenance fields are OPTIONAL, and "we do not know the model" is
+        // not the same statement as "the model is the empty string" — so an
+        // unknown one leaves the key out instead of writing `undefined`
+        // (exactOptionalPropertyTypes draws exactly this line, and the
+        // continuation text reads the two differently).
+        ...(typeof input.model === 'string' ? { model: input.model } : {}),
+        ...(typeof input.scope === 'string' ? { scope: input.scope } : {}),
       }),
     failPrefix: 'could not deliver the continuation',
   });

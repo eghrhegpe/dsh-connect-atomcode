@@ -53,6 +53,7 @@
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
     "coverage": "node scripts/test.mjs --coverage",
+    "any:baseline": "node test/any-budget.test.mjs --update-baseline",
     "test": "node scripts/test.mjs",
     "test:live": "node --test test/daemon-live.test.mjs"
   },

@@ -201,7 +201,15 @@ export async function runReviewCommand(
         : undefined;
     return {
       kind: outcome.ok ? 'success' : 'error',
-      text: formatReviewOutcome(outcome, { extra: raw, mode, continuation }),
+      // `continuation` is OPTIONAL and "there was no continuation" is a
+      // different statement from "the continuation is undefined" — so an absent
+      // one leaves the key out (exactOptionalPropertyTypes draws that line;
+      // `formatReviewOutcome` reads the absence and the value the same way).
+      text: formatReviewOutcome(outcome, {
+        extra: raw,
+        mode,
+        ...(continuation !== undefined ? { continuation } : {}),
+      }),
     };
   } catch (error: any) {
     // `runAsk` reports failures as `ok: false` rather than throwing, but a

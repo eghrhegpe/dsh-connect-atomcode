@@ -482,7 +482,12 @@ export function buildStatsBody(stats: StatsBag, quota: any): StatsSnapshot {
       // blank row this panel exists to avoid. `source` already answers "where did
       // it come from", so nothing was lost by making this the value.
       configured: stats.binaryPath,
-      env: stats.binaryEnv,
+      // `env` is OPTIONAL, and the shared type says so in words: the
+      // `ATOMCODE_BIN` path is ABSENT when the variable is unset, not null.
+      // Writing `undefined` into an optional field is a different statement
+      // (exactOptionalPropertyTypes draws exactly that line), so an unset
+      // variable leaves the key out and the panel reads it as "not set".
+      ...(typeof stats.binaryEnv === 'string' ? { env: stats.binaryEnv } : {}),
       source: stats.binaryPath ? 'config' : stats.binaryEnv ? 'env' : 'auto',
     },
     config: {

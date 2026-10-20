@@ -2104,12 +2104,7 @@
 		function MessageAsk(props) {
 			const [note, setNote] = typeof useState === "function" ? useState("") : ["", () => {}];
 			const messageId = props && props.messageId;
-			let snapshot = null;
-			try {
-				snapshot = typeof props.useChat === "function" ? props.useChat((state) => state) : null;
-			} catch {
-				snapshot = null;
-			}
+			const snapshot = typeof props.useChat === "function" ? props.useChat((state) => state) : null;
 			const onClick = () => {
 				let text = null;
 				try {

@@ -1348,31 +1348,45 @@ describe('createMessageAsk — the 锐评 row hands its OWN reply to the command
     });
   });
 
-  it('survives a throwing store and a missing hook, and still prefills', () => {
+  it('lets a THROWN store escape to the host boundary, and still prefills on a missing hook', () => {
     withWarnings((warnings) => {
       const seen = [];
       const MessageAsk = createMessageAsk({ h, requestReview: (r) => seen.push(r) || true });
 
-      const throwing = MessageAsk({
-        messageId: 'm1',
-        useChat: () => {
-          throw new Error('store disposed');
-        },
-      });
-      throwing.props.onClick();
-      assert.deepEqual(seen, [{ text: null }]);
-      // A store that threw is swallowed into "no snapshot", so the report reads
-      // nodes=0 kinds=none — the SAME line an absent hook produces. That is
-      // deliberate: the click's outcome is identical either way, and the console
-      // never claims to know more than it observed.
-      assert.match(warnings.at(-1), /nodes=0 kinds=none/);
+      // A store that throws is NOT swallowed. `useChat` is a real React hook
+      // (`useSyncExternalStoreWithSelector` on the host side), so its internal
+      // hooks are half-registered when the exception leaves; catching it here
+      // would finish the render with a different hook count than the previous
+      // one, and React would reject the NEXT render with "Rendered more hooks
+      // than during the previous render" — pointing at this button and hiding
+      // the real cause (a dead store). The host owns the receipt: the seat
+      // renders inside the renderer's per-slot `SlotErrorBoundary`, which
+      // turns a crashed entry into a named `data-slot-error` anchor and reports
+      // it through `onEntryError`. The host's own components call `useChat`
+      // bare for the same reason.
+      assert.throws(
+        () => MessageAsk({
+          messageId: 'm1',
+          useChat: () => {
+            throw new Error('store disposed');
+          },
+        }),
+        /store disposed/,
+        'a dead store must surface, not be swallowed into a fake "no snapshot"',
+      );
+      assert.equal(seen.length, 0, 'a render that threw never reached the click');
 
-      // No `useChat` on the props at all: same named outcome, no crash.
+      // No `useChat` on the props at all: the host did not wire the standard
+      // prop. THAT is the one case this component can degrade from, and it
+      // degrades exactly like the `useState` arm — an existence check, no
+      // exception handling. The click still hands over a null reply (the
+      // command reviews the working tree) and still names what it could not
+      // read.
       const noHook = MessageAsk({ messageId: 'm1' });
       noHook.props.onClick();
       assert.deepEqual(seen.at(-1), { text: null });
-      assert.equal(warnings.length, 2, 'one line per click that could not read a reply');
-      assert.equal(warnings[0], warnings[1], 'a thrown store and an absent hook are indistinguishable here, on purpose');
+      assert.equal(warnings.length, 1, 'one line per click that could not read a reply');
+      assert.match(warnings[0], /nodes=0 kinds=none/);
     });
   });
 
