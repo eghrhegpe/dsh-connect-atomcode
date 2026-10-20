@@ -348,13 +348,39 @@ describe('投稿副本 — 市场介绍与卡片文案必须同源', () => {
   const repoUrl = String(pkg.repository?.url ?? '').replace(/^git\+/, '').replace(/\.git$/, '');
   const slug = repoUrl.replace(/^https:\/\/github\.com\//, '');
   const draftRel = `awesome-dsh-plugin-submission/${slug.replace('/', '__')}.yml`;
+  const hasDraft = existsSync(join(ROOT, draftRel));
 
   it('package.json 的 description 等于英文卡片文案', () => {
     assert.equal(pkg.description, en,
       '英文回退面与 locale/en.json 不是同一句——英文界面会读到另一份文案，且没有任何警告');
   });
 
-  if (!existsSync(join(ROOT, draftRel))) return;
+  // 副本在不在，用一条真断言说，不用一个静默 `return`。
+  //
+  // 这条链路的地基本来就是「副本存在」：下面的比对、上游定时档对账、乃至
+  // pending-drift.json 那一整本账，都以它为前提。而 `return` 让这个前提变成
+  // 一条无声路径——删掉副本的那天，四份同源静默退化成三份，日志里连一行
+  // 提示都没有，于是没人知道约束是什么时候消失的。
+  //
+  // 两种缺失必须分开说，因为它们不是一回事：路径算不出来（repository 缺失 /
+  // 不在 github.com）是本仓清单的 bug，那个必须红；而副本被主动删掉是投稿
+  // 生命周期的正常事件（PR 合并后清掉草稿），那个允许绿——但必须是**带着
+  // 说明的绿**，像 live 套件与 typecheck 缺编译器那样把「我没比」印出来，
+  // 而不是让人从一堆 ✔ 里猜刚才有没有比对过。
+  if (!hasDraft) {
+    if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(slug)) {
+      assert.fail(
+        `算不出投稿副本路径：package.json#repository 是 ${JSON.stringify(pkg.repository?.url ?? null)}，` +
+          '推不出 owner/repo——这是清单 bug，不是「没有投稿」',
+      );
+    }
+    console.log(
+      `[skip] 投稿副本 ${draftRel} 不存在——四份同源这一半没有比对对象。` +
+        '若这是 PR 合并后清草稿，属正常；若你刚才改过 locale 或 description，' +
+        '记得那一份没人看了（上游那一半由 submission-drift 定时档负责）',
+    );
+    return;
+  }
 
   const draft = read(draftRel);
   // 逐行扫描，不用正则：模板字面量里的 `\s` 会被 JS 当成转义吃掉，写出来的
@@ -386,5 +412,30 @@ describe('投稿副本 — 市场介绍与卡片文案必须同源', () => {
   it('副本的英文与中文分别等于卡片的两份文案', () => {
     assert.equal(scalar('en'), en, '改一处就改两处——市场介绍与卡片是同一句话');
     assert.equal(scalar('zh'), zh, '改一处就改两处——市场介绍与卡片是同一句话');
+  });
+});
+
+// 上面那个 `if (!hasDraft)` 分支必须自己活着：把「草稿被删」误判成红，会把一次
+// 正常的投稿后清理变成一次假回归；把「清单 bug」误判成 skip，又回到原来那个
+// 无声路径。两个方向都钉死，分支才算被覆盖——这正是本文件头注「每个判据都要
+// 能抓住故意做坏的样本」的同一条规矩。
+describe('投稿副本缺失分支 — 两种缺失不是一回事', () => {
+  const draftMissingVerdict = (repositoryUrl) => {
+    const repoUrl = String(repositoryUrl ?? '').replace(/^git\+/, '').replace(/\.git$/, '');
+    const slug = repoUrl.replace(/^https:\/\/github\.com\//, '');
+    const derivable = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(slug);
+    return { derivable, slug };
+  };
+
+  it('repository 推不出 owner/repo 时判「清单 bug」，不允许走 skip', () => {
+    for (const bad of [undefined, '', 'git@github.com:eghrhegpe/dsh-connect-atomcode.git', 'https://gitlab.com/x/y']) {
+      assert.equal(draftMissingVerdict(bad).derivable, false, `${JSON.stringify(bad)} 应当判为推不出路径`);
+    }
+  });
+
+  it('正常的 github 仓库地址判「可推导」，走 skip 而不是红', () => {
+    const ok = draftMissingVerdict('git+https://github.com/eghrhegpe/dsh-connect-atomcode.git');
+    assert.equal(ok.derivable, true);
+    assert.equal(ok.slug, 'eghrhegpe/dsh-connect-atomcode');
   });
 });
