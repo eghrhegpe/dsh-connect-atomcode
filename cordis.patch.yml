@@ -47,6 +47,10 @@
         # Windows, atomcode elsewhere); ATOMCODE_BIN env also works. The
         # OFFICIAL signed binary is required for the default gateway models —
         # a source build has no AtomGit gateway signature.
+        # A name set HERE is taken literally: it is never second-guessed with a
+        # fallback, because a typo answered by a different working executable is
+        # a bug report nobody can reproduce. The fallback below belongs to the
+        # auto-detected name only.
         binary: ''
         # Approval mode for bridged ask turns: bypass = AtomCode's own tools
         # run unattended inside the turn. (This is AtomCode-side autonomy,

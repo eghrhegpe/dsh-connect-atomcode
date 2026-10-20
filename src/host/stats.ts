@@ -215,6 +215,27 @@ export interface StatsBag {
   spawnTried: boolean;
   spawnAttempts: number;
   spawnFailures: number;
+  /**
+   * What the last spawn attempt actually RAN — the resolved binary name, or a
+   * fallback path when the resolved one was not found. `''` until an attempt
+   * has happened. The panel prints this instead of leaving the reader with
+   * "自动探测（PATH）" and no way to tell which executable that meant.
+   */
+  spawnBinary: string;
+  /**
+   * The OS code from the last spawn attempt (`ENOENT` / `EACCES` / …), or `''`
+   * when the process started. Deliberately a CODE and not a sentence: the
+   * renderer words it, and the two codes name two different fixes (install it
+   * vs. make it executable) — which "自动拉起失败" alone cannot distinguish.
+   */
+  spawnError: string;
+  /**
+   * True when `spawnBinary` is a fallback path rather than the resolved name.
+   * Recorded, never rendered: the fallback path is already the binary the row
+   * names, and it is the only trace that the macOS fallback fired at all — a
+   * fallback that SUCCEEDS leaves `spawnError` empty.
+   */
+  spawnFallback: boolean;
   lastSpawnAt: number;
   daemonStarting: boolean;
   lastHealthAt: number;
@@ -381,6 +402,9 @@ export function createStatsBag(seed: StatsSeed): StatsBag {
     spawnTried: false,
     spawnAttempts: 0,
     spawnFailures: 0,
+    spawnBinary: '',
+    spawnError: '',
+    spawnFallback: false,
     lastSpawnAt: 0,
     daemonStarting: false,
     lastHealthAt: 0,
@@ -433,6 +457,13 @@ export function buildStatsBody(stats: StatsBag, quota: any): StatsSnapshot {
       spawnTried: stats.spawnTried,
       spawnAttempts: stats.spawnAttempts,
       spawnFailures: stats.spawnFailures,
+      // The last attempt, verbatim: what ran, and the OS code when it could not
+      // run at all. `spawnError` stays `''` for a daemon that started and then
+      // failed to answer — that cause is `downMessage`'s, and collapsing the two
+      // would send the reader to install a binary that is already installed.
+      spawnBinary: stats.spawnBinary,
+      spawnError: stats.spawnError,
+      spawnFallback: stats.spawnFallback,
       // True while the 30s start poll is in flight, so the panel can say
       // "starting…" instead of "failed" for the first half-minute.
       starting: stats.daemonStarting,

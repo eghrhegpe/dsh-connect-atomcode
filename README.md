@@ -54,6 +54,8 @@
 **前置**：
 
 - **官方** AtomCode 二进制（v5.x）在 PATH——Windows 实测位 `%LOCALAPPDATA%\AtomCode\atomcode.exe`；也可用 `ATOMCODE_BIN` 或 patch 的 `binary` 覆盖。源码构建无 AtomGit 网关签名，默认网关模型不可用
+  - **macOS 上「装在 PATH 里」不等于「宿主看得见」**：从访达 / 应用图标启动的 DSH 继承的是 launchd 的 PATH，不是登录 shell 的，于是 Homebrew 装好的 `atomcode` 在终端能用、插件却说找不到。这种情形**开箱即用**：自动探测失败后插件会依次试 `/opt/homebrew/bin/atomcode`（Apple Silicon）与 `/usr/local/bin/atomcode`（Intel），只试这两个真实存在的路径。两处都没有时**面板会写明**去跑的是哪个可执行文件、系统报的是哪个错（`ENOENT` 没找到 / `EACCES` 没有执行权限），以及该怎么修——不再是面板上一句无解的「自动拉起失败」
+  - 你自己在 patch 里写下的 `binary` **不会**被这个回退覆盖：那是你点名要跑的可执行文件，找不到就如实报错，不偷偷换一个能跑的
 - **已登录**：`~/.atomcode/auth.toml`（`atomcode status` 可查）
 - **默认模型可用**：`~/.atomcode/config.toml` 的 `default_model`，或给工具传 `provider`
 - ask 需要 daemon：`atomcode daemon --port 13459`（插件默认自动 detached 拉起，实测冷启动约 1.5–4.5s；`auto_start: false` 则需自启）

@@ -1011,6 +1011,16 @@
 	*/
 	const count = (value) => typeof value === "number" && Number.isFinite(value) ? value : 0;
 	/**
+	* A string field from a snapshot branch, or `''`.
+	*
+	* The twin of `count` for the two spawn-diagnosis fields, and it exists for the
+	* same reason: an empty branch (`daemon: {}`), an older host mid-upgrade, or a
+	* field that was never set must not put "undefined" — or a row whose value is
+	* an empty string — on the panel. A missing diagnosis is `''`, which every
+	* caller below reads as "no diagnosis to show".
+	*/
+	const text = (value) => typeof value === "string" ? value.trim() : "";
+	/**
 	* Build the status panel component.
 	*
 	* @param {StatusSectionDeps} deps
@@ -1167,6 +1177,11 @@
 				const askAvg = ask.calls > 0 ? Math.round(ask.msTotal / ask.calls) : 0;
 				const binPath = bin.configured || bin.env || "自动探测（PATH）";
 				const spawnNote = d.up ? d.spawnTried ? "已自动拉起" : "运行中" : d.starting ? "正在拉起…" : d.spawnTried ? "自动拉起失败" : "未触发自动拉起";
+				const spawnBinary = text(d.spawnBinary);
+				const spawnError = text(d.spawnError);
+				const spawnNoteText = spawnError ? `${spawnNote}（${spawnError}）` : spawnNote;
+				const binRowText = spawnBinary ? `${binPath} → ${spawnBinary}` : binPath;
+				const spawnTrouble = spawnError === "" ? null : spawnError === "ENOENT" ? `没找到 ${spawnBinary || binPath}（PATH 里没有；macOS 上还会试 /opt/homebrew/bin 与 /usr/local/bin）。装上 AtomCode，或在插件配置里把 binary 写成绝对路径。` : spawnError === "EACCES" ? `${spawnBinary || binPath} 没有执行权限（EACCES）。给它加上可执行位，或在插件配置里改指另一个可执行文件。` : `拉起 daemon 时系统报了 ${spawnError}（去跑的是 ${spawnBinary || binPath}）。`;
 				const quotaCard = h("div", { style: {
 					display: "flex",
 					flexDirection: "column",
@@ -1201,12 +1216,12 @@
 					display: "flex",
 					flexDirection: "column",
 					gap: 6
-				} }, h(Row, { label: "监听端口" }, d.port == null ? "—" : String(d.port)), h(Row, { label: "自动启动" }, d.autoStart ? "开启" : "关闭"), h(Row, { label: "拉起状态" }, spawnNote), !d.up && !d.starting ? h(Row, { label: "未就绪原因" }, d.downMessage || "未上报（宿主较旧）") : null, h(Row, { label: "daemon 版本" }, proto.daemonVersion || (d.up ? "未知" : "—")), !d.up && d.spawnFailures > 1 ? h(Row, { label: "拉起重试" }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`) : null);
+				} }, h(Row, { label: "监听端口" }, d.port == null ? "—" : String(d.port)), h(Row, { label: "自动启动" }, d.autoStart ? "开启" : "关闭"), h(Row, { label: "拉起状态" }, spawnNoteText), spawnTrouble ? h("p", { style: S.valWarn }, spawnTrouble) : null, !d.up && !d.starting ? h(Row, { label: "未就绪原因" }, d.downMessage || "未上报（宿主较旧）") : null, h(Row, { label: "daemon 版本" }, proto.daemonVersion || (d.up ? "未知" : "—")), !d.up && d.spawnFailures > 1 ? h(Row, { label: "拉起重试" }, `失败 ${d.spawnFailures} 次（每 ${retryNote} 重试一次）`) : null);
 				const envCard = h("div", { style: {
 					display: "flex",
 					flexDirection: "column",
 					gap: 8
-				} }, h(Row, { label: "AtomCode" }, binPath), h("div", { style: S.provGrid }, providerRows(cfg).map((row) => h(ProviderSelectRow, {
+				} }, h(Row, { label: "AtomCode" }, binRowText), h("div", { style: S.provGrid }, providerRows(cfg).map((row) => h(ProviderSelectRow, {
 					key: "provider-" + row.label,
 					label: row.label,
 					provider: prov,

@@ -70,6 +70,17 @@ const count = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : 0;
 
 /**
+ * A string field from a snapshot branch, or `''`.
+ *
+ * The twin of `count` for the two spawn-diagnosis fields, and it exists for the
+ * same reason: an empty branch (`daemon: {}`), an older host mid-upgrade, or a
+ * field that was never set must not put "undefined" — or a row whose value is
+ * an empty string — on the panel. A missing diagnosis is `''`, which every
+ * caller below reads as "no diagnosis to show".
+ */
+const text = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
+
+/**
  * Everything `StatusSection` needs that is bound to the app's React instance or
  * to the factory's closure. Injected, never imported — see the module header.
  */
@@ -349,6 +360,37 @@ export function createStatusSection(deps: StatusSectionDeps) {
           : d.spawnTried
             ? '自动拉起失败'
             : '未触发自动拉起';
+      // What the last spawn attempt RAN and WHY it did not run — the two facts a
+      // reader needs to act, and the two the panel used to omit. "自动拉起失败"
+      // alone cannot tell "AtomCode is not installed" (ENOENT) from "it is
+      // installed and the host cannot see it" (also ENOENT, different fix) from
+      // "it is there but not executable" (EACCES) — and on macOS the middle case
+      // is the common one, because a host started from Finder inherits launchd's
+      // PATH rather than the login shell's.
+      //
+      // Both fields come from the LAST attempt, so a fallback path is what gets
+      // named when one was tried. `spawnError` is `''` for a daemon that STARTED
+      // and then failed to answer: that cause belongs to `未就绪原因`
+      // (`downMessage`), and appending an OS code to it would send the reader to
+      // install a binary that is already installed.
+      const spawnBinary = text(d.spawnBinary);
+      const spawnError = text(d.spawnError);
+      const spawnNoteText = spawnError ? `${spawnNote}（${spawnError}）` : spawnNote;
+      // 自动探测（PATH） is true about the CONFIG and useless about the machine:
+      // it names the rule, not the file. When the host reported an attempt, the
+      // row names the executable that attempt ran — falling back to the rule
+      // only when there was no attempt to report (older host, or nothing tried).
+      const binRowText = spawnBinary ? `${binPath} → ${spawnBinary}` : binPath;
+      // The two codes carry two different ACTIONS, so they get two different
+      // sentences. Any other code is reported verbatim rather than guessed at.
+      const spawnTrouble =
+        spawnError === ''
+          ? null
+          : spawnError === 'ENOENT'
+            ? `没找到 ${spawnBinary || binPath}（PATH 里没有；macOS 上还会试 /opt/homebrew/bin 与 /usr/local/bin）。装上 AtomCode，或在插件配置里把 binary 写成绝对路径。`
+            : spawnError === 'EACCES'
+              ? `${spawnBinary || binPath} 没有执行权限（EACCES）。给它加上可执行位，或在插件配置里改指另一个可执行文件。`
+              : `拉起 daemon 时系统报了 ${spawnError}（去跑的是 ${spawnBinary || binPath}）。`;
 
       // 额度 headline: ONE number plus one clarifying clause — not two peer
       // gauges. `0%` is a RATIO and `1h26m` is a DURATION; rendering both at
@@ -472,7 +514,11 @@ export function createStatusSection(deps: StatusSectionDeps) {
         { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
         h(Row, { label: '监听端口' }, d.port == null ? '—' : String(d.port)),
         h(Row, { label: '自动启动' }, d.autoStart ? '开启' : '关闭'),
-        h(Row, { label: '拉起状态' }, spawnNote),
+        h(Row, { label: '拉起状态' }, spawnNoteText),
+        // The action line, and it lives beside the status rather than in a card
+        // of its own: it is the ANSWER to the line above it, and the reader who
+        // needs it is the one already looking at "自动拉起失败".
+        spawnTrouble ? h('p', { style: S.valWarn }, spawnTrouble) : null,
         !d.up && !d.starting ? h(Row, { label: '未就绪原因' }, d.downMessage || '未上报（宿主较旧）') : null,
         h(Row, { label: 'daemon 版本' }, proto.daemonVersion || (d.up ? '未知' : '—')),
         !d.up && d.spawnFailures > 1
@@ -484,7 +530,7 @@ export function createStatusSection(deps: StatusSectionDeps) {
       const envCard = h(
         'div',
         { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-        h(Row, { label: 'AtomCode' }, binPath),
+        h(Row, { label: 'AtomCode' }, binRowText),
         h(
           'div',
           { style: S.provGrid },

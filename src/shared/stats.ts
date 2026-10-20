@@ -115,6 +115,28 @@ export interface DaemonBranch {
   spawnFailures?: number;
   /** How many times this mount has TRIED to spawn, failures included. */
   spawnAttempts?: number | null;
+  /**
+   * What the last spawn attempt RAN — the resolved binary name (`atomcode` /
+   * `atomcode.exe`), an explicitly configured path, or a fallback path when the
+   * resolved name was not on PATH. `''` until an attempt has happened; absent
+   * on a host that predates the field.
+   */
+  spawnBinary?: string | null;
+  /**
+   * The OS code from the last spawn attempt (`ENOENT` / `EACCES` / …), `''`
+   * when the process started, and absent on an older host. A code rather than a
+   * sentence because the two codes need two different actions from the reader;
+   * the renderer words it.
+   */
+  spawnError?: string | null;
+  /**
+   * True when `spawnBinary` is a fallback path rather than the resolved name.
+   * Carried for the wire, not for the panel: the fallback path is already
+   * printed as the executable that ran, so a row saying "this was a fallback"
+   * would be the same fact twice — and it is the only trace of the macOS
+   * fallback actually firing, since a fallback that succeeds leaves no error.
+   */
+  spawnFallback?: boolean;
   /** When the liveness flag was last refreshed — i.e. how fresh `up` is. */
   lastCheckedAt?: number | null;
   /**

@@ -431,6 +431,17 @@ export function createRuntime({
         ...(binary ? { binary } : {}),
         ...(defaultWorkingDir ? { workingDir: defaultWorkingDir } : {}),
         log,
+        // Record what was actually RUN, not what we meant to run: the panel
+        // names the executable and the OS code, which is the only thing that
+        // tells "AtomCode isn't installed" apart from "it is installed and the
+        // host cannot see it" (a bare "自动拉起失败" cannot). The LAST attempt
+        // wins — when a fallback path is tried, that is the one whose outcome
+        // the reader needs.
+        onAttempt: (attempt) => {
+          stats.spawnBinary = attempt.binary;
+          stats.spawnError = attempt.error;
+          stats.spawnFallback = attempt.fallback === true;
+        },
       });
       let answered = false;
       for (let i = 0; i < daemonStartAttempts; i++) {

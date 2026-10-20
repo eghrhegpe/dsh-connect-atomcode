@@ -11,6 +11,8 @@ import {
   baseUrl,
   parseSseLine,
   defaultBinary,
+  fallbackCandidates,
+  pickFallback,
   spawnDaemon,
 } from '../lib/daemon.js';
 
@@ -68,6 +70,36 @@ describe('daemon.js — pure helpers', () => {
   it('defaultBinary returns atomcode on non-win32', () => {
     assert.equal(defaultBinary('linux'), 'atomcode');
     assert.equal(defaultBinary('darwin'), 'atomcode');
+  });
+
+  it('fallbackCandidates names the two macOS install roots, and only there', () => {
+    // The table IS the contract, and it is a PURE platform table: the existence
+    // check lives in `pickFallback`, not here. If it lived here, this assertion
+    // would be machine-dependent — it would pass or fail on whether the
+    // developer happens to have AtomCode at /opt/homebrew/bin.
+    assert.deepEqual(fallbackCandidates('darwin'), ['/opt/homebrew/bin/atomcode', '/usr/local/bin/atomcode']);
+    // Windows already gets a persistent PATH entry from the installer, so a
+    // fallback list there would be guessing at a case that does not arise.
+    assert.deepEqual(fallbackCandidates('win32'), []);
+    assert.deepEqual(fallbackCandidates('linux'), []);
+    // Both npm global-bin roots on macOS ARE these two directories (Homebrew's
+    // node puts the prefix at /opt/homebrew or /usr/local), which is why
+    // `npm prefix -g` needs no third entry here.
+  });
+
+  it('pickFallback takes the first candidate that exists, and gives up cleanly', () => {
+    const table = fallbackCandidates('darwin');
+    assert.equal(pickFallback(table, (p) => p === '/usr/local/bin/atomcode'), '/usr/local/bin/atomcode');
+    assert.equal(pickFallback(table, (p) => p === '/opt/homebrew/bin/atomcode'), '/opt/homebrew/bin/atomcode');
+    assert.equal(
+      pickFallback(table, (p) => p === '/opt/homebrew/bin/atomcode' || p === '/usr/local/bin/atomcode'),
+      '/opt/homebrew/bin/atomcode',
+      'the list order is the preference order',
+    );
+    // Nothing installed is the ordinary case on a machine without AtomCode, and
+    // it must be `''` — not `undefined`, which would reach `spawn()` as a target.
+    assert.equal(pickFallback(table, () => false), '');
+    assert.equal(pickFallback(fallbackCandidates('win32'), () => true), '');
   });
 
   it('parseSseLine handles empty data payload', () => {
@@ -152,6 +184,52 @@ describe('daemon.js — spawnDaemon', () => {
     // The only fixed sleep left in this file, and it stays one: this test passes
     // by NOT dying, so there is no condition to poll. The wait is the test —
     // long enough for an uncaught exception to take the process down.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+
+  it('reports what it ran and the OS code, so the panel is not left guessing', async () => {
+    // The diagnosis contract: the panel must be able to say WHICH executable
+    // failed and WHY. A bare "spawn failed" log line cannot — the process log is
+    // not on the panel, and "自动拉起失败" alone cannot tell "not installed" from
+    // "installed but not executable".
+    const attempts = [];
+    await spawnDaemon({
+      binary: 'definitely-not-a-real-binary-xyz-123',
+      onAttempt: (attempt) => attempts.push(attempt),
+    });
+    await waitFor(() => attempts.length > 0, 'the spawn outcome to be reported');
+    // One attempt, and a configured binary is never second-guessed: `config.binary`
+    // / `ATOMCODE_BIN` is the user NAMING an executable, so quietly running a
+    // different one would hide their typo behind a working daemon. The two
+    // assertions are the same fact from both ends — "no second attempt" is what
+    // makes the reported one the whole story.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(attempts.length, 1, `no fallback may be tried for a configured binary: ${JSON.stringify(attempts)}`);
+    assert.equal(attempts[0].binary, 'definitely-not-a-real-binary-xyz-123');
+    assert.equal(attempts[0].error, 'ENOENT', 'the OS code, not a sentence — the renderer words it');
+    assert.notEqual(attempts[0].fallback, true, 'a configured binary is never a fallback');
+  });
+
+  it('a throwing onAttempt callback cannot re-arm the crash either', async () => {
+    // Same shape as the throwing-`log` guard above and for the same reason: this
+    // runs inside the 'error' callback, where a throw IS the uncaught exception
+    // the whole function exists to prevent. A reporter is the host's own stats
+    // writer, so "it threw" is the case that actually happens; the typeof guard
+    // covers the truthy-non-function one on the way past.
+    const seen = [];
+    const attempted = await spawnDaemon({
+      binary: 'definitely-not-a-real-binary-xyz-123',
+      onAttempt: (attempt) => {
+        seen.push(attempt);
+        throw new Error('a reporter must not be able to kill its subject');
+      },
+    });
+    assert.equal(attempted, true);
+    // The reporter DID run (so this is the throwing case, not a skipped one) and
+    // the process is still alive to say so. The sleep is the assertion for the
+    // uncaught-exception half: there is no condition to poll.
+    assert.equal(seen.length, 1, 'the callback ran once');
+    assert.equal(seen[0].error, 'ENOENT');
     await new Promise((resolve) => setTimeout(resolve, 400));
   });
 });

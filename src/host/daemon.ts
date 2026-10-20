@@ -25,7 +25,7 @@
  * @module dsh-connect-atomcode/daemon
  */
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1080,12 +1080,88 @@ export function defaultBinary(platform: NodeJS.Platform = process.platform) {
   return platform === 'win32' ? 'atomcode.exe' : 'atomcode';
 }
 
+/**
+ * One spawn attempt, as it happened — reported so the host can put it on the
+ * panel instead of leaving it in the process log.
+ *
+ * `error` is the OS code (`ENOENT` / `EACCES` / …) and `''` when the process
+ * actually started. A daemon that starts and then never answers is a DIFFERENT
+ * failure, owned by the health poll (`HealthFailure`) — this record only ever
+ * answers "did we manage to RUN the thing, and what did we run".
+ */
+export interface SpawnAttempt {
+  /** The executable handed to `spawn()` — the resolved name, or a fallback path. */
+  binary: string;
+  /** The OS error code, or `''` when the process started. */
+  error: string;
+  /** True when this was a fallback path rather than the resolved binary. */
+  fallback?: boolean;
+}
+
+/**
+ * The extra directories tried when the resolved binary is not on PATH.
+ *
+ * macOS-only, and it exists because of one asymmetry: `spawn()` looks the bare
+ * name up in `process.env.PATH`, and a DSH host started from Finder/app-bundle
+ * inherits launchd's PATH — not the login shell's. `/opt/homebrew/bin` (Apple
+ * Silicon) and `/usr/local/bin` (Intel) are then missing even though AtomCode
+ * is installed there, so the daemon "cannot be found" on a machine where
+ * `atomcode` works in the user's terminal.
+ *
+ * Empty on Windows: the installer writes a persistent PATH entry, so the
+ * "installed but invisible" case does not arise there — and a Windows machine
+ * that got AtomCode via `npm -g` is already covered by the PATH the CLI ships.
+ *
+ * These are candidates, not a search: `pickFallback` existence-checks each one
+ * before it is ever spawned, and the primary failure is reported either way.
+ *
+ * A pure platform table, and exported as one: the caller does the existence
+ * check (see `pickFallback`), so a test can pin the table on any machine. An
+ * existence check in HERE would make every test of the fallback path
+ * machine-dependent — it would pass or fail on whether the developer happens to
+ * have AtomCode installed at `/opt/homebrew/bin`.
+ */
+export function fallbackCandidates(platform: NodeJS.Platform): string[] {
+  if (platform === 'darwin') return ['/opt/homebrew/bin/atomcode', '/usr/local/bin/atomcode'];
+  return [];
+}
+
+/**
+ * The first candidate that really exists on this machine, or `''`.
+ *
+ * `exists` is injected rather than imported so the selection rule is testable
+ * without a macOS box: "first one that exists" and "none of them exist" are the
+ * two outcomes, and neither needs the real filesystem to pin.
+ */
+export function pickFallback(candidates: string[], exists: (path: string) => boolean): string {
+  return candidates.find((candidate) => exists(candidate)) || '';
+}
+
+/** True for the two codes that mean "this executable could not be run at all". */
+function isBinaryError(code: string): boolean {
+  return code === 'ENOENT' || code === 'EACCES';
+}
+
+/** The OS error code of a failed spawn, or `''` when the process started. */
+function spawnErrorCode(error: any): string {
+  const code = error && (error.code || (error.cause && error.cause.code));
+  return typeof code === 'string' ? code : '';
+}
+
 /** The options bag `spawnDaemon` accepts (see its own `@param` block for the contract). */
 export interface SpawnDaemonOptions {
   port?: number;
   binary?: string;
   workingDir?: string;
   log?: (msg: string) => void;
+  /**
+   * Called once per spawn ATTEMPT with what was run and how it went. Fires for
+   * the primary binary as soon as its outcome is known, and again for a
+   * fallback path. The host copies the last record into the stats snapshot —
+   * that is what lets the panel name the executable instead of printing
+   * "自动探测（PATH）" next to a bare "自动拉起失败".
+   */
+  onAttempt?: (attempt: SpawnAttempt) => void;
 }
 
 /**
@@ -1100,7 +1176,13 @@ export interface SpawnDaemonOptions {
  * realistic path. The listener below is therefore load-bearing, not defensive
  * noise.
  *
- * @param {{port?:number, binary?:string, workingDir?:string, log?:(msg:string)=>void}} opts
+ * A failure to find the AUTO-DETECTED binary (`atomcode`) additionally retries
+ * the candidates from `fallbackCandidates`, and each attempt's outcome is
+ * reported through `onAttempt`. An explicitly configured binary is never
+ * second-guessed: the user said which executable to run, so a failure there is
+ * reported rather than papered over with a different one.
+ *
+ * @param {SpawnDaemonOptions} opts
  * @returns {boolean} true if a spawn was attempted.
  */
 export async function spawnDaemon(opts: SpawnDaemonOptions = {}) {
@@ -1114,25 +1196,94 @@ export async function spawnDaemon(opts: SpawnDaemonOptions = {}) {
       opts.log(`atomcode daemon spawn failed: ${errText(error)}`);
     }
   };
+  // Guarded twice over, and both halves are load-bearing. `typeof` for the same
+  // reason as `log`: this runs inside the 'error' callback, where a throw is
+  // itself the uncaught exception the function exists to prevent. The try/catch
+  // is the other half — the reporter is the host's stats writer, and a throw
+  // there (a bad getter, a frozen bag) would ALSO escape this callback. Worse,
+  // it would be swallowed by the outer `catch` below as if the dynamic import
+  // had failed, which then reports a second, invented attempt. A reporter never
+  // gets to kill the thing it reports on — same rule as the session store's
+  // `onError`.
+  const note = (attempt: SpawnAttempt) => {
+    if (typeof opts.onAttempt !== 'function') return;
+    try {
+      opts.onAttempt(attempt);
+    } catch {
+      // Deliberately silent: `log` already carries the OS-level story, and this
+      // channel exists to serve the panel, not to be a second error surface.
+    }
+  };
   try {
     // Dynamic import so importing this module never pulls in child_process.
     const { spawn } = await import('node:child_process');
-    const child = spawn(bin, ['daemon', '--port', String(port), '--no-telemetry'], {
-      cwd: opts.workingDir || homedir(),
-      detached: true,
-      stdio: 'ignore',
-    });
-    // The real invariant is "before the next await/yield", NOT "before unref()":
-    // the async 'error' event cannot arrive while this synchronous block runs,
-    // so attaching here (unref() is also synchronous) is what matters. Moving
-    // this below unref() would still be safe; moving it after an await would not.
-    // Swallowing the failure is deliberate — the caller learns the truth from
-    // the health poll.
-    child.on('error', report);
-    child.unref();
+    /**
+     * Spawn `target` detached and report the OUTCOME, never throwing.
+     *
+     * The 'error' listener is attached before `unref()`, and both are
+     * synchronous — the real invariant is "before the next await/yield", not
+     * "before unref()".
+     *
+     * The outcome comes from the two events Node itself emits for a spawn, and
+     * from nothing else: `'spawn'` once the process exists, `'error'` with the
+     * OS code when it could not be started. Resolving inline after `spawn()`
+     * returns does NOT work, and the failure is silent: measured on Node 24 /
+     * win32, a missing binary emits `'error'` AFTER the microtask queue drains
+     * (`after-spawn-call, microtask, error-event, nextTick, setImmediate`), so
+     * an inline resolve records `''` and the code is lost — a `queueMicrotask`
+     * deferral loses the same race. A healthy spawn emits `'spawn'` in that same
+     * slot, so waiting costs nothing.
+     *
+     * `killed` is a dead end: `detached: true` makes the child its own process
+     * group leader and `unref()` drops it, so this function has no handle to
+     * signal it later.
+     */
+    const start = (target: string): Promise<string> =>
+      new Promise((resolve) => {
+        let settled = false;
+        const settle = (code: string) => {
+          if (settled) return;
+          settled = true;
+          resolve(code);
+        };
+        try {
+          const child = spawn(target, ['daemon', '--port', String(port), '--no-telemetry'], {
+            cwd: opts.workingDir || homedir(),
+            detached: true,
+            stdio: 'ignore',
+          });
+          child.on('error', (error: any) => {
+            const code = spawnErrorCode(error);
+            report(error);
+            settle(code);
+          });
+          child.on('spawn', () => settle(''));
+          child.unref();
+        } catch (error) {
+          report(error);
+          settle(spawnErrorCode(error));
+        }
+      });
+
+    let outcome: SpawnAttempt = { binary: bin, error: await start(bin) };
+    note(outcome);
+    // Fall back ONLY for the auto-detected name: `config.binary` and
+    // `ATOMCODE_BIN` are the user naming an executable, and quietly running a
+    // different one would hide their typo behind a working daemon.
+    if (bin === defaultBinary() && isBinaryError(outcome.error)) {
+      const candidate = pickFallback(fallbackCandidates(process.platform), existsSync);
+      if (candidate) {
+        outcome = { binary: candidate, error: await start(candidate), fallback: true };
+        note(outcome);
+      }
+    }
+    // The boolean means "a spawn was attempted", not "it succeeded" — the
+    // health poll is what decides the daemon is up.
     return true;
   } catch (error) {
+    // Only reachable when the dynamic import itself fails.
     report(error);
+    note({ binary: bin, error: spawnErrorCode(error) });
     return false;
   }
 }

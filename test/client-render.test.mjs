@@ -309,6 +309,12 @@ const FULL = {
     spawnTried: true,
     spawnFailures: 0,
     spawnAttempts: 0,
+    // The spawn diagnosis, in its healthy shape: the resolved name, no OS code
+    // (the process started), and no fallback. The test at the bottom of this
+    // file drives the real host and requires these keys to be present.
+    spawnBinary: 'atomcode.exe',
+    spawnError: '',
+    spawnFallback: false,
     lastCheckedAt: NOW,
     downMessage: '',
   },
@@ -586,6 +592,74 @@ describe('client render — the detail panel', () => {
     assert.ok(t.includes('本机 13459 没有服务在监听'), 'the host\'s own diagnosis must be shown verbatim');
     assert.ok(t.includes('自动拉起失败'), 'a failed pull-up must be named');
     assert.ok(t.includes('失败 3 次（每 5s 重试一次）'), `the retry row must carry the interval: ${t}`);
+  });
+
+  it('names the executable that failed and the OS code, instead of a bare "拉起失败"', async () => {
+    // 红线 3: a failure the user can see must also be a failure they can ACT on.
+    // "自动拉起失败" cannot tell "AtomCode is not installed" from "it is installed
+    // and the host cannot see it" from "it is there but not executable" — three
+    // causes, three different fixes. The host reports the resolved name and the
+    // OS code; this pane must print both.
+    const snapshot = {
+      ...FULL,
+      daemon: {
+        ...FULL.daemon,
+        up: false,
+        starting: false,
+        spawnTried: true,
+        spawnFailures: 2,
+        spawnBinary: '/opt/homebrew/bin/atomcode',
+        spawnError: 'ENOENT',
+        spawnFallback: true,
+        downMessage: '本机 13459 没有服务在监听',
+      },
+      binary: { configured: '', env: '', source: 'path' },
+    };
+    const { tree } = await renderPanel(snapshot);
+    const t = text(tree);
+    assert.ok(t.includes('自动拉起失败（ENOENT）'), `the OS code must ride on the status row: ${t}`);
+    assert.ok(t.includes('/opt/homebrew/bin/atomcode'), `the executable that ran must be named: ${t}`);
+    assert.ok(t.includes('binary'), 'the fix must point at the one knob that overrides the search');
+    assert.ok(t.includes('绝对路径'), 'the action, not just the diagnosis');
+  });
+
+  it('words EACCES as the different fix it is', async () => {
+    // Same shape, different cause: the file exists and cannot be executed. If
+    // both codes rendered one sentence, the reader with a chmod problem would go
+    // reinstall AtomCode.
+    const snapshot = {
+      ...FULL,
+      daemon: {
+        ...FULL.daemon,
+        up: false,
+        starting: false,
+        spawnTried: true,
+        spawnBinary: 'atomcode',
+        spawnError: 'EACCES',
+      },
+    };
+    const { tree } = await renderPanel(snapshot);
+    const t = text(tree);
+    assert.ok(t.includes('EACCES'), `the code itself must be shown: ${t}`);
+    assert.ok(t.includes('执行权限'), `the chmod fix, not the install fix: ${t}`);
+    assert.ok(!t.includes('装上 AtomCode'), 'an executable that exists must not be reported as missing');
+  });
+
+  it('an older host with no attempt recorded still renders the rule, not "undefined"', async () => {
+    // The fields are optional on purpose (a host mid-upgrade sends neither), and
+    // `daemon: {}` is the shape `test/client-render.test.mjs` already pins for
+    // empty branches. `String(undefined)` on this panel is the failure mode the
+    // `count`/`text` normalizers exist to prevent.
+    const snapshot = {
+      ...FULL,
+      daemon: { ...FULL.daemon, up: false, starting: false, spawnTried: true },
+      binary: { configured: '', env: '', source: 'path' },
+    };
+    const { tree } = await renderPanel(snapshot);
+    const t = text(tree);
+    assert.ok(t.includes('自动探测（PATH）'), 'with no attempt reported, the row keeps naming the rule');
+    assert.ok(!t.includes('undefined'), 'a missing field is not a reading');
+    assert.ok(!t.includes('（ENOENT）'), 'no code was reported, so none may be invented');
   });
 
   it('announces a drifted quota text instead of showing a plausible zero', async () => {
