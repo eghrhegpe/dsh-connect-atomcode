@@ -14,6 +14,14 @@ name: ci
 # but the mirror image is real: assertions built from `resolve()` on POSIX are
 # equally wrong on Windows, where the dev machine runs the suite by hand and
 # would be the only one to notice. Same gate, both directions.
+#
+# Both legs also carry the DSH runtime the ONE peer-dependent suite needs —
+# installed below, not fetched by the suites. Without it `test/inject.test.mjs`
+# reports `pass 20 / skipped 1`: `node --test` counts a skip as a pass, so the
+# leg is green while its only Host-integration assertion never executes. That is
+# the same failure shape the sibling repos hit (their second suite threw
+# "cannot resolve the peer dependency" and the other twenty never ran); here it
+# is quieter, because a skip does not even print red.
 on:
   push:
     branches: [master]
@@ -41,5 +49,116 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+
+      # `npm ci` installs the plugin's own deps. What it cannot install is the
+      # Host runtime: `src/host/inject.ts` does `require('@deepseek-ai/dsh-llm')`
+      # and that package is never bundled (tsdown.config.mjs NEVER_BUNDLE_HOST),
+      # so it is resolved at runtime out of the install tree instead. Steps below
+      # fetch it. They are copied from the sibling repos (qoder test.yml, agnes
+      # ci.yml) because the numbers below were measured there, not guessed here.
+      - name: Point npm's global prefix at a cacheable directory
+        shell: bash
+        run: |
+          PREFIX="$(node -p "require('node:path').join(process.env.RUNNER_TEMP, 'dsh-global')")"
+          mkdir -p "$PREFIX/bin"
+          echo "NPM_CONFIG_PREFIX=$PREFIX" >> "$GITHUB_ENV"
+          # Prefix alone is not enough: the whole runtime tree has to be
+          # reachable from this job's own resolution, which step "Wire" below
+          # does by linking it into ./node_modules.
+          echo "$PREFIX/bin" >> "$GITHUB_PATH"
+        # Why NPM_CONFIG_PREFIX and not `npm config set prefix`: windows-latest
+        # ships NPM_CONFIG_PREFIX=C:\npm\prefix, and env beats the config file.
+        # Writing .npmrc instead leaves `npm root -g` answering C:\npm\prefix,
+        # installs land in the image dir, and the cache step then reports
+        # "Path Validation Error ... does not exist, hence no cache is being
+        # saved" — green, having cached nothing. (qoder run 39277257312.)
+        #
+        # Note the cost: that prefix is why this is cached at all. Installing
+        # the runtime cold measured 773s on windows-latest vs 33-41s on ubuntu.
+
+      - name: Resolve the runtime version
+        id: dsh-version
+        shell: bash
+        run: |
+          VERSION="$(npm view @deepseek-ai/dsh version)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        # Version goes in the cache key so an upstream release invalidates it
+        # on its own; without it a run keeps restoring a stale runtime forever.
+
+      - name: Restore the cached DSH runtime
+        id: dsh-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/dsh-global
+          key: dsh-runtime-${{ runner.os }}-node22-${{ steps.dsh-version.outputs.version }}
+        # restore/save are split rather than the combined action on purpose: the
+        # combined action saves whatever the path holds at teardown, so the run
+        # whose install failed would permanently store an empty directory under
+        # that key (a stored key is never overwritten) and every later run on
+        # the same version would restore the emptiness.
+
+      - name: Install the DSH runtime
+        id: dsh-runtime
+        shell: bash
+        run: |
+          ANCHOR="$(npm root -g)/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-base"
+          if node -e "process.exit(require('node:fs').existsSync(process.argv[1]) ? 0 : 1)" "$ANCHOR"; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "runtime already present at $ANCHOR"
+            exit 0
+          fi
+          npm install -g @deepseek-ai/dsh || echo "dsh CLI not installable here; the peer suite will say so"
+          if node -e "process.exit(require('node:fs').existsSync(process.argv[1]) ? 0 : 1)" "$ANCHOR"; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::DSH runtime absent; test/inject.test.mjs will SKIP its Host-integration assertion (a skip counts as a pass in node --test)."
+          fi
+        # Presence is decided by the anchor only, never by cache-hit: a
+        # half-restored tree reports hit and then fails the suite in a way that
+        # looks like a code regression rather than a cache problem.
+
+      - name: Wire the runtime into the repo's own resolution
+        if: steps.dsh-runtime.outputs.present == 'true'
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const root = require('node:child_process').execSync('npm root -g', { encoding: 'utf8' }).trim();
+            const target = path.join(root, '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai');
+            const link = path.join('node_modules', '@deepseek-ai');
+            if (!require('node:fs').existsSync(target)) process.exit(1);
+            fs.rmSync(link, { recursive: true, force: true });
+            fs.mkdirSync(path.dirname(link), { recursive: true });
+            fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+            console.log('linked ' + link + ' -> ' + target);
+          "
+        # The step the sibling repos do NOT need, and the reason this block is
+        # not a straight copy: their suites go looking for the runtime
+        # themselves (peer-roots.mjs shells out to `npm root -g`), whereas
+        # inject.ts's require() uses ordinary Node resolution and never does.
+        # So installing is not sufficient here — measured on a machine with the
+        # runtime installed globally and resolvable by npm, `node --test
+        # test/inject.test.mjs` still reported pass 20 / skipped 1.
+        #
+        # The whole tree is linked, not just dsh-llm. A narrow link to dsh-llm
+        # does turn the skip into a pass, but only by luck: dsh-llm/lib/index.js
+        # top-level-imports six @deepseek-ai packages that are unresolvable
+        # under a narrow link, and the assertion passes solely because the one
+        # function it calls happens not to touch them. Linking the tree (304
+        # packages) removes that fragility and matches what the siblings do.
+        #
+        # No NODE_PATH: it is global pollution and its loader precedence is
+        # hard to keep straight. It also works — verified — but nobody wants to
+        # maintain it.
+
+      - name: Save the DSH runtime for the next run
+        if: steps.dsh-cache.outputs.cache-hit != 'true' && steps.dsh-runtime.outputs.present == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/dsh-global
+          key: dsh-runtime-${{ runner.os }}-node22-${{ steps.dsh-version.outputs.version }}
+
       - run: npm run typecheck
       - run: npm test
