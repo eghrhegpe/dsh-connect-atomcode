@@ -47,6 +47,8 @@
     "LICENSE"
   ],
   "scripts": {
+    "host-range:update": "node scripts/update-host-range.mjs",
+    "host-range:check": "node scripts/update-host-range.mjs --check",
     "build": "tsdown",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
