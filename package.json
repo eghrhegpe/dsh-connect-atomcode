@@ -109,6 +109,7 @@
   "devDependencies": {
     "@types/node": "^22.20.5",
     "@types/react": "^19.3.0",
+    "js-yaml": "^5.5.0",
     "tsdown": "0.23.1",
     "typescript": "^5.9.3"
   }
