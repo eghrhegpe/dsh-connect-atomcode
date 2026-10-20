@@ -162,7 +162,7 @@ plan  reload  remember  resume  review  skills  status  todo  undo  whoami
 | `help` | ❌ `unknown command: help` |
 | `review` | ❌ `unknown command: review`（2026-10 实测：TUI 斜杠表里有 `review`，但 HTTP `/command` 白名单不放它——**"把评审当一条命令来发"在 daemon 侧不存在**。⚠️ 但别说成"daemon 侧没有评审能力"：daemon 的 agent 自带 `code_review` **工具**（见 §4 末节，已实测执行），所以评审的两条路是 `atomcode review` CLI 与经 `/chat` 让 agent 用它，而不是 `/command`） |
 
-> **注意**：需求里常提的 `/usage`（TUI 斜杠形式）在 HTTP `/command` 上**不被接受**；额度只在 `status` 里。
+> **注意**：需求里常提的 `/usage`（TUI 斜杠形式）在 HTTP `/command` 上**不被接受**；`/command` 的额度信息只在 `status` 的 `text` 里（本地化文本，见 §4 末）。另有结构化的 `GET /codingplan/usage/{summary,daily}` 两个端点提供 JSON 额度（见 §4「用量与套餐」），是本插件的首选源。
 
 ### `/command` 的三个坑 `[实测]`
 
@@ -223,6 +223,15 @@ atomcode daemon [OPTIONS]
 
 **文件系统**：`/fs/list?path=` `/fs/open` `/fs/mkdir` `/fs/search?path=`
 
+**用量与套餐**（本插件的额度首选源；实测载荷见 `../src/host/codingplan.ts` 头注，2026-10-19 抓取）
+
+| 端点 | 内容 |
+|---|---|
+| `GET /codingplan/usage/summary` | 结构化套餐 + 当前计量窗口：`{schema_version, available, plan:{name,status,claimed_at,expires_at,total_days,remaining_days}, primary_window:{metric,window_hours,window_size_seconds,limit,used,remaining,usage_percent,remaining_percent,quota_exhausted,next_reset_at,next_reset_display,seconds_until_reset,reset_label,usage_description}, windows:[…], quota_hint}` |
+| `GET /codingplan/usage/daily` | 60 天的每日 tokens / requests 明细 |
+
+> **两个坑 `[实测]`**：① 过期计划对 `summary` 回 **HTTP 502** `{"success":false,"error":"Unable to load CodingPlan usage"}`（套餐到期时观察到，重新领取套餐后恢复）——所以本插件把它当**首选而非替代**，回落仍走 `POST /command {"command":"status"}` 的文本路径（见下节）。② 与其余 daemon 端点一样，认证走 `Authorization: Bearer <token>`（token 来自 `~/.atomcode/daemon-<port>.json`）；同样是**私有、无版本**的协议（AGENTS.md「三条事实」第 3 条），字段一律防御式读取，解析不出任何可用字段就返回 `null` 交回上层回落（红线 2：绝不编数字）。
+
 **认证头**：`Authorization: Bearer <token>`，token 在 `~/.atomcode/daemon-<port>.json` 的 `token` 字段（`--no-auth` 启动时该文件可能没有 token）。同一文件的 `pid` 字段另有用途：`readDaemonIdentity()` 取 `port:pid:token` 的哈希作为 daemon 指纹，会话续接据此判断一条记录的 session_id 是不是当前这个 daemon 发的（daemon 重启即判死，不用等 24h TTL）。文件缺失/无 pid 时指纹为 null，按"无法判定"处理，绝不猜。
 
 ### `/chat` 的 SSE 词表 `[实测]`
@@ -250,7 +259,7 @@ rate_limited      {reset_at_display, reset_label, secs_until_reset, auto_resumin
 - **应答通道存在但只对有客户端的上下文有意义**：SPA 经 `POST /chat/permission {session_id, decision, tool_name}` 应答审批（`decision` 即 Y/A/N），`POST /chat/user-input` 应答用户提问；无人值守的 `/chat` 回合没有这样的应答者，daemon 直接自动放行。
 - UI 模式语义（SPA i18n 原文）：`build` = "Approve each change (default)"，`accept_edits` = "Auto-approve file edits, ask for commands"，`bypass`/Auto = 全放行，`plan` = 计划模式。
 
-> `done.stats` **没有额度字段**（只有 token 明细）；额度只在 `POST /command {command:"status"}` 的 `text` 里。
+> `done.stats` **没有额度字段**（只有 token 明细）；额度走两个 daemon 端点：结构化的 `GET /codingplan/usage/summary`（首选，见 §4「用量与套餐」）与 `POST /command {command:"status"}` 的 `text`（回落，见 §3）。
 
 ### `POST /chat` 的请求体字段 `[实测 2026-10-14]`
 
@@ -359,7 +368,8 @@ AtomCode error: missing base URL: pass --base-url, set $ATOMCODE_BASE_URL, or ad
 | `GET /health` | `lib/daemon.js: health()` —— 存活探测与拉起轮询 |
 | `GET /models` | `lib/daemon.js: listModels()` —— **插件本体已调用**：详情页 ask 档位下拉的选项来源（缓存 30s；拿不到时下拉禁用并写明原因，不渲染空框） |
 | `POST /chat` (SSE) | `lib/daemon.js: streamChat()/askChat()` —— `atomcode_ask`（`provider` 字段由插件的 `default_provider` 配置或调用参数填入；**留空时连字段都不发**）。`done.tool_calls`（回落到 `done.stats.tool_calls`）与 `done.stats.rounds` **已消费**：作为 daemon 自己的计数，与本端数 `tool_start` 得到的轮数对照，判定轮数熔断这一轮是否真的生效（见 `daemonToolCalls`/`daemonRounds`）；`done.stats` 的 token 明细仍未用 |
-| `POST /command` `{command:"status"}` | `lib/daemon.js: runCommand()` + `lib/quota.js` —— 额度显示 |
+| `GET /codingplan/usage/summary` | `lib/codingplan.js` —— 结构化的套餐与计量窗口（**插件本体已调用**：额度首选源；`plan.status` / `primary_window.*` / `windows` 映射成 stats 的 `quota` 与 `usageTrend` 分支）。契约与实测载荷见 §4「用量与套餐」与 `src/host/codingplan.ts` 头注 |
+| `POST /command` `{command:"status"}` | `lib/daemon.js: runCommand()` + `lib/quota.js` —— 额度显示的**回落**源（本地化文本，见 §3；结构化源返回 502 或空时接住那种状态） |
 | `POST /chat/stop` `{session_id}` | `lib/daemon.js: stopChat()` —— **插件本体已调用**：ask 回合被熔断 / 取消 / 流截断时，请求 daemon 停掉它（此前只断本端 HTTP 流）。契约见 `scripts/probes/chat-stop.mjs`：`session_id` 必填（空 body → 422）；未知 id → 200 `"was not running"`（**200 ≠ 回合被停掉**，故 `ok` 语义是"daemon 受理了请求"）；回合刚开始还没拿到 `session_assigned` 时无 id 可发，这一种情况在错误文本里具名 |
 | `atomcode daemon --port … --no-telemetry` | `lib/daemon.js: spawnDaemon()` —— 自动拉起 |
 | `atomcode review …` | **已删除**（m01249 单通道决定）：评审走 daemon `POST /chat`（与 `atomcode_ask` 同一条路），不再 spawn CLI 子进程——模型侧的 `atomcode_review` 工具后来也退役，评审入口只剩 `/atomcode-review` 命令与「锐评」按钮 |

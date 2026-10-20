@@ -155,6 +155,39 @@ function uncitedProbes(citedText, probes) {
   return probes.filter((p) => !citedText.includes(p));
 }
 
+/**
+ * The reference doc (`docs/AtomCode-CLI与daemon接口参考.md`) is the declared
+ * single source of truth for the daemon's HTTP endpoints — AGENTS.md routes
+ * readers there ("命令数与选项数一律以本篇实测为准"). This predicate guards
+ * that declaration, not general prose: the endpoints AGENTS.md names as its
+ * quota sources, plus the bolded grouping heading that holds them, must still
+ * be present in the reference. Scanning AGENTS.md itself for endpoint literals
+ * is deliberately avoided — it carries retired names (`POST /inject`, the
+ * review CLI's `v1/chat/completions`) that would false-alarm. Grouping labels
+ * there are bold prose (`**用量与套餐**`), not `###` headings — that is how
+ * the other endpoint groups in §4 are labelled too, so we match the actual
+ * form rather than a `##`-shaped one the doc never uses.
+ */
+const REFERENCE_DOC = 'docs/AtomCode-CLI与daemon接口参考.md';
+const REQUIRED_REFERENCE_ANCHORS = ['**用量与套餐**'];
+const REQUIRED_REFERENCE_ENDPOINTS = [
+  'GET /codingplan/usage/summary',
+  'GET /codingplan/usage/daily',
+  'POST /command',
+  'POST /chat',
+];
+
+function missingReferenceFacts(referenceText) {
+  const missing = [];
+  for (const anchor of REQUIRED_REFERENCE_ANCHORS) {
+    if (!referenceText.includes(anchor)) missing.push(`${anchor} 分组标题`);
+  }
+  for (const endpoint of REQUIRED_REFERENCE_ENDPOINTS) {
+    if (!referenceText.includes(endpoint)) missing.push(`${endpoint} 端点行`);
+  }
+  return missing.map((m) => `${REFERENCE_DOC} 缺 ${m}（AGENTS.md「三条事实」第 2 条与「额度」论述以此为真源）`);
+}
+
 describe('docs 引用完整性 — 引用的标题必须真实存在', () => {
   it('每个 `见「X」` 的 X 都是同一份文档里某个标题的子串', () => {
     const offenders = DOCS.flatMap((doc) => danglingHeadingRefs(doc, withoutFences(read(doc)), headingsOf(read(doc))));
@@ -209,6 +242,21 @@ describe('docs 引用完整性 — 索引必须收录 docs/ 下每份文档', ()
       [],
       'docs/README.md 是文档层唯一索引——新文档落盘却没进索引：' + unlisted.join(', '),
     );
+  });
+});
+
+describe('docs 引用完整性 — AGENTS.md 引用的事实点必须在接口参考里有真源', () => {
+  // AGENTS.md「三条事实」第 2 条把额度的真源指到 daemon 端点，而
+  // `docs/AtomCode-CLI与daemon接口参考.md` 的 §1 说明明写"命令数与选项数一律
+  // 以本篇实测为准"——那份参考因此是端点事实的唯一家。2026-10-20 发现它已经
+  // 漂过一次：`GET /codingplan/usage/{summary,daily}` 落进 AGENTS.md 之后
+  // 一直没进参考（`grep -c` 为 0），于是"下次 daemon 升级悄悄改了这个端点"
+  // 没有任何一个地方会被红到。这条断言钉住 AGENTS.md 已命名的那些事实，
+  // 而不是扫 AGENTS.md 全部端点字符串——它同时携带已退役的历史名
+  // （`POST /inject`、review CLI 的 `v1/chat/completions`），那些会误报。
+  it('参考文档仍收录 AGENTS.md「三条事实」点名的所有端点与它们所在的章节', () => {
+    const missing = missingReferenceFacts(read(REFERENCE_DOC));
+    assert.deepStrictEqual(missing, [], '真源缺席：\n' + missing.join('\n'));
   });
 });
 
@@ -272,6 +320,11 @@ describe('docs 引用完整性 — 扫描器自己活着（扫不到东西 ≠ �
     assert.equal(unlistedProbes('表里有 probe-b.mjs', ['probe-b.mjs']).length, 0);
     assert.equal(uncitedProbes('docs 里没提过它', ['probe-b.mjs']).length, 1);
     assert.equal(uncitedProbes('docs 引用了 probe-b.mjs', ['probe-b.mjs']).length, 0);
+    // 参考文档的真源锚点
+    const fullRef = ['**用量与套餐**', 'GET /codingplan/usage/summary', 'GET /codingplan/usage/daily', 'POST /command', 'POST /chat'].join('\n');
+    assert.equal(missingReferenceFacts(fullRef).length, 0);
+    assert.equal(missingReferenceFacts(fullRef.replace('GET /codingplan/usage/daily\n', '')).length, 1);
+    assert.equal(missingReferenceFacts(fullRef.replace('**用量与套餐**', '')).length, 1);
     // 标题抽取本身也要能认出标题（否则「悬空引用」会永远空着通过）
     assert.deepEqual(headingsOf('## 一个标题\n正文\n'), ['一个标题']);
     assert.deepEqual(headingsOf('```\n# 位于代码块里的井号\n```\n'), []);

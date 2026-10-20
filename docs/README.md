@@ -33,9 +33,14 @@
    **模型侧的 `atomcode_review` 工具后来也退役了**：工具表里只剩 `atomcode_ask`，评审由
    `/atomcode-review` 命令与「锐评」按钮承担——两者都复用同一条通道，能力一个没少。
 
-2. **额度显示是从本地化文本解析出来的。**
-   AtomCode 没有额度 HTTP 接口，唯一来源是 `POST /command {"command":"status"}` 返回的 `text`。
-   解析不出来时**绝不编数字**，而是原样显示原文。机制与实测档案（数据链路、解析拒绝表、面板座位）在 [`CodingPlan-额度显示.md`](./CodingPlan-额度显示.md)。
+2. **额度有两个源：结构化 JSON 是首选，本地化文本是回落。两条路都绝不编数字。**
+   首选是 daemon 的 `GET /codingplan/usage/{summary,daily}`（结构化字段：limit / used / window / plan 到期等）；
+   回落是 `POST /command {"command":"status"}` 返回的本地化文本 `text`。
+   两个源都保留是**刻意**的——过期计划对 `summary` 回 HTTP 502，只有文本路径能接住那种状态。
+   解析不出来时**绝不编数字**，而是原样显示原文或 `reason`。完整论述在 [`../AGENTS.md`](../AGENTS.md)
+   「三条事实」第 2 条；机制与实测档案（数据链路、解析拒绝表、面板座位）在
+   [`CodingPlan-额度显示.md`](./CodingPlan-额度显示.md)；结构化载荷的原始抓取在
+   [`../src/host/codingplan.ts`](../src/host/codingplan.ts) 头注。
 
 3. **`npm test` 不消耗额度，`npm run test:live` 默认也不消耗。**
    离线链全部用假 daemon / 假 spawn / 纯函数。live 套件里的**真实模型回合**需要显式 `ATOMCODE_LIVE_TURNS=1` 才会跑。
