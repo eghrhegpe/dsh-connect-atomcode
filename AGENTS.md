@@ -169,7 +169,7 @@ npm run test:live   # 需要本机已登录的 AtomCode；真实模型回合需�
 node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 ```
 
-- **本文件不写套件数与 test 数。** 上一次写死"175"之后 **13 分钟**，并行会话就往链里加了
+- （测试数别写死，见 `AGENTS.common.md` §验证约定）上一次写死"175"之后 **13 分钟**，并行会话就往链里加了
   `review-select`，数字当场过期。要计数自己量：
   `npm test 2>&1 | Select-String '^ℹ tests'`（**每个套件一行**，印在它自己的
   `── test/x.test.mjs` 头上——runner 现在是**一个套件一个进程**，所以不再有一行聚合摘要；
