@@ -51,17 +51,35 @@ export const TOOLS_CAP = 30;
  * Keeping it a module constant (not a local) is what lets `streamChat` report
  * unknown types from inside the reader loop — where the failure is actually
  * detected — instead of only in the aggregator, which never sees them.
+ *
+ * The list IS the daemon's measured vocabulary, and the reference document is
+ * its source of truth: `docs/AtomCode-CLI与daemon接口参考.md` §「`/chat` 的 SSE
+ * 词表」records the eleven types the daemon was observed to send (measured
+ * 2026-10-17), and a test reads that block and asserts this set covers it — so
+ * a word the daemon sends and the document records cannot quietly fall out of
+ * the client's vocabulary.
+ *
+ * `tool_batch` and `rate_limited` used to be MISSING here even though that
+ * document listed both. The consequence was not cosmetic: every parallel-tool
+ * turn was counted as drift, so the model was told "the daemon sent an event
+ * type this plugin does not know (tool_batch) — it may have been upgraded",
+ * which is false (the daemon was fine; this list was behind), and a
+ * rate-limited turn had no named diagnosis at all. The drift message is only
+ * honest if it fires on a REAL rename — so the vocabulary has to be the
+ * daemon's, not a subset of it.
  */
-const KNOWN_SSE_TYPES = new Set([
+export const KNOWN_SSE_TYPES = new Set([
   'runtime_info',
   'session_assigned',
   'reasoning',
   'text',
   'tool_start',
   'tool_result',
+  'tool_batch',
   'tokens',
   'done',
   'error',
+  'rate_limited',
 ]);
 
 /** @returns {string} the base URL for one daemon port. */
@@ -568,7 +586,14 @@ export async function* streamChat(opts: StreamChatOptions) {
     // renamed protocol — and telling the user to upgrade dsh-connect-atomcode
     // over a network hiccup sends them the wrong way.
     let sawRecognizable = false;
-    while (true) {
+    // Whether the body has ended. The loop runs ONE more round after the end
+    // (to flush the decoder and the last frame) and then stops — reading a
+    // finished body again would spin forever.
+    let eof = false;
+    // Whether the DONE frame arrived. Only `done` ends the turn — `error` is
+    // a caveat the turn carries out, and the daemon may keep talking after it.
+    let sawDone = false;
+    while (!eof) {
       let chunk;
       try {
         chunk = await reader.read();
@@ -576,8 +601,23 @@ export async function* streamChat(opts: StreamChatOptions) {
         throw describeAbort(error);
       }
       const { done, value } = chunk;
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
+      if (done) {
+        // The body ended, and two things have to happen here — skipping either
+        // one loses the turn:
+        //  1. `decoder.decode()` with no argument flushes a multi-byte
+        //     character the decoder is still holding back (`{ stream: true }`
+        //     keeps an incomplete sequence for the next chunk, and there is no
+        //     next chunk now).
+        //  2. The last frame may arrive WITHOUT a trailing newline — a daemon
+        //     that closes the body right after writing it. Such a frame used
+        //     to be dropped here, and if the dropped frame was `done` the turn
+        //     died as "ended before done" and the WHOLE reply was thrown away.
+        eof = true;
+        buf += decoder.decode();
+        if (buf.trim() !== '') buf += '\n';
+      } else {
+        buf += decoder.decode(value, { stream: true });
+      }
       let nl;
       while ((nl = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, nl);
@@ -598,7 +638,18 @@ export async function* streamChat(opts: StreamChatOptions) {
           sawRecognizable = true;
         }
         yield event;
+        // The DONE frame ends the turn. Reading on would park a HALF-OPEN
+        // daemon (one that keeps the body open after `done`) until the wall
+        // clock — HOST_TOOL_TIMEOUT_MS, 30 minutes — holding the tool slot the
+        // whole time. The sibling plugin breaks at its `[DONE]` sentinel.
+        //
+        // `error` is NOT that frame: a mid-turn error is a caveat the turn
+        // carries out (the turn still completes, and the render shows the
+        // error beside the answer), so the daemon may well keep talking — the
+        // measured sequence is text → error → text → done.
+        if (event.type === 'done') sawDone = true;
       }
+      if (sawDone) break;
     }
     if (!sawTerminal) {
       // Prefer the drift diagnosis over the generic one ONLY when the whole

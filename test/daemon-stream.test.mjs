@@ -11,9 +11,14 @@
  * suite (which skips when no daemon is running).
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { dirname, join } from 'node:path';
 import { describe, it, before, after } from 'node:test';
-import { askChat, streamChat } from '../lib/daemon.js';
+import { fileURLToPath } from 'node:url';
+import { askChat, streamChat, KNOWN_SSE_TYPES } from '../lib/daemon.js';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Build an SSE body from a list of event objects. */
 const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
@@ -490,5 +495,101 @@ describe('askChat — the daemon\'s OWN counts, kept separate from ours', () => 
       stop_reason: 'stopped',
     })();
     assert.equal(r.daemonToolCalls, 5);
+  });
+});
+
+/**
+ * The SSE reader at the END of the stream, and the vocabulary it must know.
+ *
+ * Three ways the reader used to lose a turn — and all three were invisible to
+ * a fake daemon that always ends its frames with a newline and always closes
+ * the body:
+ *
+ *  - the last frame arrived WITHOUT a trailing newline → it was dropped → when
+ *    the dropped frame was `done`, the whole reply was thrown away as "ended
+ *    before done", and the turn looked like a broken stream rather than a
+ *    finished one;
+ *  - the terminal frame arrived and the daemon kept the body open → the reader
+ *    went on waiting, and the turn parked until the wall clock
+ *    (HOST_TOOL_TIMEOUT_MS, 30 minutes) holding the tool slot the whole time;
+ *  - the daemon sent a type this client had never heard of → the drift alarm
+ *    told the MODEL "the daemon may have been upgraded" for a daemon that was
+ *    perfectly fine, because the client's own list was behind the daemon's.
+ */
+describe('the SSE reader at the end of the stream', () => {
+  /** @type {Array<{server: import('node:http').Server}>} */
+  const open = [];
+  after(() => {
+    for (const { server } of open) server.close();
+  });
+
+  it('a last frame WITHOUT a trailing newline still counts (the reply is not lost)', async () => {
+    const fake = await startFakeDaemon((req, res) => {
+      res.on('error', () => { /* the client may abort the body */ });
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
+      res.write('data: {"type":"text","content":"tail"}\n\n');
+      // No trailing newline, and the body ends right after it — a daemon that
+      // closes the connection the moment it wrote the last frame. The reader
+      // used to drop this frame on the floor.
+      res.write('data: {"type":"done","stop_reason":"stopped"}');
+      res.end();
+    });
+    open.push(fake);
+    const r = await askChat({ message: 'hi', port: fake.port, timeoutMs: 10_000 });
+    assert.equal(r.ok, true, 'the turn must not die as "ended before done"');
+    assert.equal(r.reply, 'tail', 'the text before the unterminated frame is still the reply');
+    assert.equal(r.stopReason, 'stopped', 'the terminal frame must be the one that was read');
+  });
+
+  it('a terminal frame ends the turn even when the daemon keeps the body open', async () => {
+    const fake = await startFakeDaemon((req, res) => {
+      res.on('error', () => { /* the client aborts the body on purpose */ });
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
+      res.write(sse([{ type: 'text', content: 'half open' }]));
+      res.write(sse([{ type: 'done', stop_reason: 'stopped' }]));
+      // The body stays open forever: a daemon that never closes it. The turn
+      // has to end on the terminal frame — reading on would park it until the
+      // wall clock (30 minutes) with the tool slot held.
+      const t = setTimeout(() => {
+        try { res.end(); } catch { /* the client may be gone */ }
+      }, 30_000);
+      t.unref?.();
+    });
+    open.push(fake);
+    const started = Date.now();
+    const r = await askChat({ message: 'hi', port: fake.port, timeoutMs: 2_000 });
+    const elapsed = Date.now() - started;
+    assert.equal(r.ok, true, 'the turn must succeed instead of timing out');
+    assert.equal(r.reply, 'half open');
+    assert.ok(
+      elapsed < 1_500,
+      `the turn must end on the terminal frame, not on the wall clock (took ${elapsed}ms)`,
+    );
+  });
+
+  it('the client vocabulary covers every type the reference document records', async () => {
+    // The document is the source of truth for what the daemon sends; the
+    // client's list is what decides whether a type is "known" or "the daemon
+    // was upgraded". When the two drift apart, the drift alarm fires on a
+    // healthy daemon — which is worse than no alarm, because it sends the
+    // reader (and the model) after a fix that does not exist.
+    const doc = readFileSync(join(ROOT, 'docs', 'AtomCode-CLI与daemon接口参考.md'), 'utf8');
+    const section = doc.split('### `/chat` 的 SSE 词表')[1] ?? '';
+    const block = section.match(/```\n([\s\S]*?)```/);
+    assert.ok(block, 'premise: the reference document still carries the measured vocabulary block');
+    const types = block[1]
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/)[0])
+      .filter(Boolean);
+    assert.ok(
+      types.length >= 11,
+      `premise: the block still lists the measured types (found ${types.length}) — a shorter list means the parse broke, not that the daemon speaks fewer words`,
+    );
+    for (const type of types) {
+      assert.ok(
+        KNOWN_SSE_TYPES.has(type),
+        `"${type}" is in the daemon's measured vocabulary but unknown to this client — the drift alarm would fire on a healthy daemon`,
+      );
+    }
   });
 });
