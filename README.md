@@ -70,7 +70,7 @@ bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行
 
 > 本插件收录于社区精选列表 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（`dsh plugin add` 一键安装的 DSH 插件目录）。
 >
-> **npm 副本只含运行所需的那几样**（`files` 白名单：`lib/`、`client.js`、`icon.svg`、`locale/`、`cordis.patch.yml`、`README.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`）——`docs/`、`AGENTS.md`、`assets/` 都不在包里，所以文内指向 `docs/` 的相对链接只在 GitHub 仓库里有效。**两张截图走 `raw.githubusercontent.com` 的绝对地址**，因此 registry 页上也能看到；市场读的截图仍取仓库根 `assets/` 与 `screenshots.json`（截图**不进包**是既有策略，`test/release-artifacts.test.mjs` 钉着它）。
+> **npm 副本只含运行所需的那几样**（`files` 白名单：`lib/`、`client.js`、`icon.svg`、`locale/`、`cordis.patch.yml`、`README.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`）——`docs/`、`AGENTS.md`、`RELEASING.md`、`scripts/`、`test/`、`assets/` 都不在包里（`assets/` 与 `screenshots.json` 是「仓库根可见、不进 npm 包」的既有策略），所以文内指向它们的相对链接只在 GitHub 仓库里有效。下方两条 `AGENTS.md` / `RELEASING.md` 的入口因此写成 GitHub 绝对地址。**两张截图走 `raw.githubusercontent.com` 的绝对地址**，因此 registry 页上也能看到；市场读的截图仍取仓库根 `assets/` 与 `screenshots.json`（截图**不进包**是既有策略，`test/release-artifacts.test.mjs` 钉着它）。
 
 ## 配置（patch 行 `config:`）
 
@@ -177,7 +177,7 @@ ATOMCODE_LIVE_TURNS=1 npm run test:live
 ```
 
 - **套件由 [`scripts/test.mjs`](scripts/test.mjs) 自动发现**（`test/*.test.mjs`，排除 `*-live.test.mjs`）：新套件落盘就参跑，不再有"写好了没挂进链"这类失误。**每个套件的契约写在它自己的头注里**（[`test/`](test/)），本文件不抄名单：要计数自己量，`npm test 2>&1 | Select-String '^ℹ tests'`（每个套件一行，无总聚合；输出的是 node:test 的 **test 数**，每个 test 内含多条 `assert`）
-- **一个套件一个进程、默认并行**：CI 里每个套件是一个可折叠的 `::group::` 块，失败能直接归到文件，某个套件把进程搞死不会带走其他套件；每个套件另有墙钟上限（默认 300 秒，`ATOMCODE_SUITE_TIMEOUT_MS` 覆盖），到点 SIGKILL——它是挂死探测器，不是性能门禁。runner 的完整纪律与历史坑在 [`AGENTS.md`](AGENTS.md) 的「验证」一节
+- **一个套件一个进程、默认并行**：CI 里每个套件是一个可折叠的 `::group::` 块，失败能直接归到文件，某个套件把进程搞死不会带走其他套件；每个套件另有墙钟上限（默认 300 秒，`ATOMCODE_SUITE_TIMEOUT_MS` 覆盖），到点 SIGKILL——它是挂死探测器，不是性能门禁。runner 的完整纪律与历史坑在 [`AGENTS.md`](https://github.com/eghrhegpe/dsh-connect-atomcode/blob/master/AGENTS.md) 的「验证」一节
 - **评审没有单独的 live 套件**：一次评审就是一次 ask 回合（`/atomcode-review` 复用同一个 `runAsk`），live 里的 ask 回合已经覆盖它
 
 ## 已知限制与去哪查
@@ -195,12 +195,12 @@ ATOMCODE_LIVE_TURNS=1 npm run test:live
 |---|---|
 | 某个版本改了什么 | [`CHANGELOG.md`](CHANGELOG.md) |
 | 现在为什么是这样（仍然有效的约束 / 未修与明确不做） | [`docs/DECISIONS.md`](docs/DECISIONS.md) |
-| 改代码前的纪律、红线、宿主 ABI 面 | [`AGENTS.md`](AGENTS.md) |
-| 为什么不做 provider 接管、额度为什么只能靠文本解析、私有无版本协议怎么办 | [`AGENTS.md`](AGENTS.md) 的「三条事实」 |
+| 改代码前的纪律、红线、宿主 ABI 面 | [`AGENTS.md`](https://github.com/eghrhegpe/dsh-connect-atomcode/blob/master/AGENTS.md) |
+| 为什么不做 provider 接管、额度为什么只能靠文本解析、私有无版本协议怎么办 | [`AGENTS.md`](https://github.com/eghrhegpe/dsh-connect-atomcode/blob/master/AGENTS.md) 的「三条事实」 |
 | daemon 全部端点 / CLI 选项 / SSE 词表（实测速查） | [`docs/AtomCode-CLI与daemon接口参考.md`](docs/AtomCode-CLI与daemon接口参考.md) |
 | 额度显示的机制档案（面板座位、弹窗、daemon 拉起语义、解析拒绝表） | [`docs/CodingPlan-额度显示.md`](docs/CodingPlan-额度显示.md) |
 | 复现上面那些实测 | [`scripts/probes/`](scripts/probes/)（每个探针头注都写了成本：哪个零额度、哪个花一个真实回合） |
-| 要发一个新版本 | [`RELEASING.md`](RELEASING.md)，状态用 `node scripts/release-status.mjs` 查 |
+| 要发一个新版本 | [`RELEASING.md`](https://github.com/eghrhegpe/dsh-connect-atomcode/blob/master/RELEASING.md)，状态用 `node scripts/release-status.mjs` 查 |
 
 ## 许可
 
