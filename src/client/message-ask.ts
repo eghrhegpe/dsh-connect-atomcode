@@ -124,8 +124,16 @@ export function createMessageAsk(deps: MessageAskDeps) {
     // `data-slot-error` anchor, reports it through `onEntryError` (the runner's
     // ledger), and abdicates the entry. The host's own components call
     // `useChat` bare for the same reason.
+    //
+    // `props?.useChat` — the OPTIONAL CHAIN is load-bearing, and it is the one
+    // case the "no try/catch" rule above does NOT cover. A missing PROPS BAG
+    // (`MessageAsk(null)`: the host never sends one, but a test and a future
+    // caller can) would otherwise throw a `TypeError` before any hook ran, when
+    // this row is supposed to degrade to `null` exactly like a missing
+    // `useChat`. A THROWN STORE still escapes — the chain guards the BAG, not
+    // the call — so the contract above is unchanged.
     const snapshot: any =
-      typeof props.useChat === 'function' ? props.useChat((state: any) => state) : null;
+      typeof props?.useChat === 'function' ? props.useChat((state: any) => state) : null;
     const onClick = () => {
       // `messageTextOf` returns null when the message is not in the snapshot and
       // '' when it is there but carries no prose (a tool-only step). Both are

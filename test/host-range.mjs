@@ -14,9 +14,14 @@
  *
  * Only the dialect the manifests actually use is understood: one or more
  * `>=X.Y.Z[-pre]` / `<X.Y.Z[-pre]` comparators ANDed by whitespace. `^`, `~`,
- * `*`, `||`, x-ranges and hyphen ranges throw instead of guessing — a
- * comparator that quietly answers `true` for a range it cannot parse is
- * exactly how a fake gate gets built.
+ * `*`, `||`, wildcard components (`1.x`, `0.2.x`) and hyphen ranges throw
+ * instead of guessing — a comparator that quietly answers `true` for a range it
+ * cannot parse is exactly how a fake gate gets built.
+ *
+ * A wildcard is detected BY POSITION (a component that is exactly `x`/`X`),
+ * never as "the range contains an x": a prerelease tag may legitimately contain
+ * one (`>=0.1.5-experimental`), and a substring scan used to refuse that valid
+ * range as unsupported syntax.
  *
  * THE ONE SUBTLETY THAT CARRIES THE WEIGHT
  *
@@ -80,7 +85,7 @@ export function compareVersions(left, right) {
  * so a gate built on this function is judging with the host's semantics.
  */
 export function satisfies(version, range) {
-  const unsupported = ['^', '~', '*', '||', 'x', 'X'].filter((token) => range.includes(token))
+  const unsupported = ['^', '~', '*', '||'].filter((token) => range.includes(token))
   if (unsupported.length > 0) {
     throw new Error(`range uses syntax this helper refuses to guess at: ${range} (saw ${unsupported.join(', ')})`)
   }
@@ -88,7 +93,19 @@ export function satisfies(version, range) {
   if (comparators.length === 0) throw new Error(`empty range: ${range}`)
   for (const comparator of comparators) {
     const match = /^(>=|<)(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)$/.exec(comparator)
-    if (!match) throw new Error(`cannot parse comparator: ${comparator} (in ${range})`)
+    if (!match) {
+      // A WILDCARD COMPONENT (`1.x`, `0.2.X`) is the one syntax whose refusal
+      // must not fire on a prerelease TAG: `>=0.1.5-experimental` carries an
+      // `x` that is not a wildcard. Cut the operator and the tag off, then look
+      // for a component that is exactly x/X between dots or at an end.
+      const wildcard = /(?:^|\.)([xX])(?:\.|$)/.exec(
+        comparator.replace(/^(>=|<)/, '').replace(/-[0-9A-Za-z.-]+$/, ''),
+      )
+      if (wildcard) {
+        throw new Error(`range uses syntax this helper refuses to guess at: ${range} (saw ${wildcard[1]})`)
+      }
+      throw new Error(`cannot parse comparator: ${comparator} (in ${range})`)
+    }
     const operator = match[1]
     let operand = match[2]
     const parsed = parseVersion(operand, { allowPartial: true })

@@ -1149,6 +1149,25 @@ export function pickFallback(candidates: string[], exists: (path: string) => boo
   return candidates.find((candidate) => exists(candidate)) || '';
 }
 
+/**
+ * True when a failed spawn may be retried against `fallbackCandidates`: ONLY
+ * the binary this plugin AUTO-DETECTED qualifies.
+ *
+ * `config.binary` and `ATOMCODE_BIN` are the user NAMING an executable, and
+ * quietly running a different one would hide their typo behind a working
+ * daemon. The gate used to compare the RESOLVED target with `defaultBinary()`,
+ * which re-enabled the fallback whenever the named binary happened to EQUAL the
+ * default name (`ATOMCODE_BIN=atomcode`) — i.e. exactly the case the docblock
+ * on `spawnDaemon` promises not to retry.
+ *
+ * `namedBinary` is the user's value as-is (`''` when nothing was named), NOT
+ * the resolved target: the resolved target cannot tell "the user named the
+ * default name" from "we auto-detected it".
+ */
+export function mayFallback(namedBinary: string): boolean {
+  return namedBinary === '';
+}
+
 /** True for the two codes that mean "this executable could not be run at all". */
 function isBinaryError(code: string): boolean {
   return code === 'ENOENT' || code === 'EACCES';
@@ -1190,16 +1209,21 @@ export interface SpawnDaemonOptions {
  *
  * A failure to find the AUTO-DETECTED binary (`atomcode`) additionally retries
  * the candidates from `fallbackCandidates`, and each attempt's outcome is
- * reported through `onAttempt`. An explicitly configured binary is never
+ * reported through `onAttempt`. An explicitly configured binary — `config.binary`
+ * or `ATOMCODE_BIN`, even when the value equals the default NAME — is never
  * second-guessed: the user said which executable to run, so a failure there is
- * reported rather than papered over with a different one.
+ * reported rather than papered over with a different one (`mayFallback`).
  *
  * @param {SpawnDaemonOptions} opts
  * @returns {boolean} true if a spawn was attempted.
  */
 export async function spawnDaemon(opts: SpawnDaemonOptions = {}) {
   const port = opts.port ?? DEFAULT_PORT;
-  const bin = opts.binary || process.env.ATOMCODE_BIN || defaultBinary();
+  // `namedBinary` is what the USER named (`''` when nothing was named) and
+  // `bin` is the resolved target. Both are kept because the fallback gate needs
+  // to tell "named the default name" from "auto-detected it" — see mayFallback.
+  const namedBinary = opts.binary || process.env.ATOMCODE_BIN || '';
+  const bin = namedBinary || defaultBinary();
   const report = (error: any) => {
     // `typeof` rather than a truthiness check: a non-function truthy `log`
     // would throw inside the 'error' callback, which is itself uncaught — i.e.
@@ -1281,8 +1305,9 @@ export async function spawnDaemon(opts: SpawnDaemonOptions = {}) {
     note(outcome);
     // Fall back ONLY for the auto-detected name: `config.binary` and
     // `ATOMCODE_BIN` are the user naming an executable, and quietly running a
-    // different one would hide their typo behind a working daemon.
-    if (bin === defaultBinary() && isBinaryError(outcome.error)) {
+    // different one would hide their typo behind a working daemon. Gated on what
+    // was NAMED, not on the resolved target — see `mayFallback`.
+    if (mayFallback(namedBinary) && isBinaryError(outcome.error)) {
       const candidate = pickFallback(fallbackCandidates(process.platform), existsSync);
       if (candidate) {
         outcome = { binary: candidate, error: await start(candidate), fallback: true };

@@ -42,6 +42,7 @@ import {
   explain,
   hostPeers,
   partition,
+  satisfies,
 } from './host-range.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -178,6 +179,23 @@ describe('peer 范围对齐真实版本宇宙', () => {
       );
       assert.ok(anyAdmitted02, '没有 0.2.x 被放行——范围塌了或宇宙读空了');
     });
+  });
+});
+
+describe('比较器拒收的语法是按位置判定的', () => {
+  // 拒绝不许靠 `range.includes('x')` 这种子串扫描：预发布标签里合法地含 x
+  // （`>=0.1.5-experimental`，实际刚发生过一次），子串扫描会把一条完全合法的
+  // 范围判成「拒收语法」，让一次正常的 floor 调整在 CI 里炸出假警报。通配符看
+  // 的是「某个版本段整体就是 x/X」。
+  it('预发布标签里的 x 不是通配符', () => {
+    assert.equal(satisfies('0.2.0', '>=0.1.5-experimental <0.3'), true);
+    assert.equal(satisfies('0.1.6-rc.1', '>=0.1.5-experimental <0.3'), true);
+  });
+
+  it('版本段整体是 x/X 时拒绝猜', () => {
+    for (const range of ['>=1.x', '>=0.2.X', '0.2.x']) {
+      assert.throws(() => satisfies('0.2.0', range), /refuses to guess/, `${range} 必须拒收`);
+    }
   });
 });
 

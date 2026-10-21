@@ -109,21 +109,43 @@ const key = (file) => relative(root, file).split(sep).join('/');
  * Column preservation is the point: the count is taken per line, so a
  * "strip the comments" pass that collapses lines would let a comment on line
  * 40 absorb half of line 41 and invent a match that is not in the source.
- * State (`block` / template) survives line ends, so a multi-line comment or
- * template literal stays blanked across the whole span.
+ * State survives line ends, so a multi-line comment or template literal stays
+ * blanked across the whole span.
+ *
+ * The state is a STACK, not one `mode`, because a template literal and its
+ * INTERPOLATION nest inside each other (`` `${ `x${y}` }` ``). The code inside
+ * `${ … }` is CODE and must be counted: the earlier single-`mode` scanner
+ * blanked the whole template literal, so `` const v = `${x as any}`; `` counted
+ * 0 — an undercount, which is the dangerous direction for a debt ceiling.
+ *
+ * When the scanner cannot tell what it is looking at, it falls on the SIDE OF
+ * COUNTING: a single/double-quoted string with no closing quote on its line is
+ * not a JS string (those end at the newline), so it is a regex literal or an
+ * apostrophe the tokenizer misread, and the rest of the line is scanned as
+ * code. A regex literal's own contents still count (`/any/` reads as 1),
+ * because telling regex from division needs a parser; that over-count is the
+ * one this blunt rule accepts.
  * @param {string} source
  * @returns {string[]} one blanked line per input line.
  */
 function blankLines(source) {
   /** @type {string[]} */
   const out = [];
-  let mode = 'code';
+  // Frames: `{ kind: 'tpl' }` inside a template's TEXT, and
+  // `{ kind: 'interp', depth }` inside `${ … }` (depth counts nested `{}`).
+  // Empty stack = plain code. `inBlock` is separate: a block comment opens in
+  // whichever code context is current and outlives the line.
+  /** @type {Array<{ kind: 'tpl' } | { kind: 'interp', depth: number }>} */
+  const stack = [];
+  let inBlock = false;
+  /** The frame on top, or null in plain code. Re-read after every push/pop. */
+  const topFrame = () => (stack.length ? stack[stack.length - 1] : null);
   for (const line of source.split(/\r?\n/)) {
     let buf = '';
     let i = 0;
     const n = line.length;
     while (i < n) {
-      if (mode === 'block') {
+      if (inBlock) {
         const end = line.indexOf('*/', i);
         if (end === -1) {
           buf += pad(n - i);
@@ -131,31 +153,40 @@ function blankLines(source) {
         } else {
           buf += pad(end + 2 - i);
           i = end + 2;
-          mode = 'code';
+          inBlock = false;
         }
         continue;
       }
-      if (mode === 'tpl') {
+      const frame = topFrame();
+      if (frame && frame.kind === 'tpl') {
+        // Walk the template TEXT: a backtick closes the literal, `${` opens an
+        // interpolation whose contents are code again.
         let j = i;
         while (j < n) {
           if (line[j] === '\\') {
             j += 2;
             continue;
           }
-          if (line[j] === '`') {
-            buf += pad(j - i) + '`';
-            j += 1;
-            mode = 'code';
-            break;
-          }
+          if (line[j] === '`') break;
+          if (line[j] === '$' && line[j + 1] === '{') break;
           j += 1;
         }
-        if (j >= n && mode === 'tpl') {
+        if (j >= n) {
           buf += pad(n - i);
           i = n;
-        } else {
-          i = j;
+          continue;
         }
+        if (line[j] === '`') {
+          buf += pad(j + 1 - i); // the closing backtick is text too
+          stack.pop();
+          i = j + 1;
+          continue;
+        }
+        // `${`: keep the two characters (the expression inside is scanned as
+        // code), blank the template text before them, and enter the interp.
+        buf += pad(j - i) + '${';
+        stack.push({ kind: 'interp', depth: 1 });
+        i = j + 2;
         continue;
       }
       const c = line[i];
@@ -166,7 +197,7 @@ function blankLines(source) {
         continue;
       }
       if (c === '/' && d === '*') {
-        mode = 'block';
+        inBlock = true;
         const end = line.indexOf('*/', i + 2);
         if (end === -1) {
           buf += pad(n - i);
@@ -174,52 +205,56 @@ function blankLines(source) {
         } else {
           buf += pad(end + 2 - i);
           i = end + 2;
-          mode = 'code';
+          inBlock = false;
         }
         continue;
       }
       if (c === '"' || c === "'") {
         let j = i + 1;
+        let closed = false;
         while (j < n) {
           if (line[j] === '\\') {
             j += 2;
             continue;
           }
           if (line[j] === c) {
+            closed = true;
             j += 1;
             break;
           }
           j += 1;
         }
-        buf += c + pad(Math.max(0, j - i - 2)) + (j <= n ? c : '');
+        // Unterminated on this line: not a JS string, so count instead of
+        // blanking the rest of the line — see the docblock.
+        if (!closed) {
+          buf += c;
+          i += 1;
+          continue;
+        }
+        buf += c + pad(j - i - 2) + c;
         i = j;
         continue;
       }
       if (c === '`') {
-        mode = 'tpl';
+        stack.push({ kind: 'tpl' });
         buf += '`';
         i += 1;
-        let j = i;
-        while (j < n) {
-          if (line[j] === '\\') {
-            j += 2;
-            continue;
-          }
-          if (line[j] === '`') {
-            buf += pad(j - i) + '`';
-            j += 1;
-            mode = 'code';
-            break;
-          }
-          j += 1;
-        }
-        if (j >= n && mode === 'tpl') {
-          buf += pad(n - i);
-          i = n;
-        } else {
-          i = j;
-        }
         continue;
+      }
+      if (frame && frame.kind === 'interp') {
+        if (c === '{') {
+          frame.depth += 1;
+          buf += c;
+          i += 1;
+          continue;
+        }
+        if (c === '}') {
+          frame.depth -= 1;
+          buf += c;
+          i += 1;
+          if (frame.depth === 0) stack.pop();
+          continue;
+        }
       }
       buf += c;
       i += 1;
@@ -385,12 +420,17 @@ describe('the any budget', () => {
       'const t = `any`;', // 0 — template body
       'x = AbortSignal.any([a]);', // 0 — member call, not a type
       '(cb: (service: string) => any) => 1', // 1 — return position, the case a clever rule missed
+      'const v = `${x as any}`;', // 1 — interpolation is CODE, not template text
+      'const w = `${ y as any }`;', // 1 — same, with spaces on both sides
+      'const q = `${ `any` }`;', // 0 — a nested template's TEXT is still text
+      'const r = /any/;', // 1 — a regex is not parsed; the blunt rule over-counts it
+      "const apos = /'/; const z: any = 1;", // 1 — an unterminated quote does not swallow the line
     ].join('\n');
     const counted = blankLines(probe).reduce((sum, line) => sum + (line.match(ANY_RE) ?? []).length, 0);
     assert.strictEqual(
       counted,
-      2,
-      `the probe counted ${counted}, expected 2 — one annotation "any", one return-position "any"`,
+      6,
+      `the probe counted ${counted}, expected 6 — four real annotations/returns, an interpolation, and the two cases the rule deliberately over-counts`,
     );
   });
 

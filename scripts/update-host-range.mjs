@@ -3,6 +3,10 @@
 // 用法：node scripts/update-host-range.mjs           # 写 golden
 //       node scripts/update-host-range.mjs --check   # 只打印 diff，不写
 //
+// `--check` 的三种结论都必须是**一行能读懂的话**：最新；过期（逐条 + / - / ~ 列出）；
+// 文件存在但读不动（截断的写入、手改、合并冲突标记）。第三种以前是裸 `JSON.parse`
+// 崩，堆栈比结论还显眼——修法是把它并进「去不掉 --check 就重跑」那句同一条路。
+//
 // ## 为什么是生成器，而不是门禁里直接联网
 //
 // 门禁必须能在干净检出、不装任何东西、不联网的前提下跑（本仓库的离线套件全是
@@ -101,36 +105,60 @@ const golden = {
 
 const serialized = `${JSON.stringify(golden, null, 2)}\n`;
 
-if (checkOnly) {
-  let current = null;
+/**
+ * Read the committed golden as `{ text, value }`, or a named reason it cannot be
+ * used. Three failures, one reader-facing story: missing, unparseable, and
+ * "parsed but no universe array" (the diff below indexes it unconditionally).
+ */
+function readCommittedGolden() {
+  let text;
   try {
-    current = readFileSync(GOLDEN, "utf8");
+    text = readFileSync(GOLDEN, "utf8");
   } catch {
+    return { missing: true };
+  }
+  try {
+    const value = JSON.parse(text);
+    if (!Array.isArray(value?.universe)) return { error: "universe 不是数组" };
+    return { text, value };
+  } catch (error) {
+    return { error: error.message };
+  }
+}
+
+const STALE_HINT = "去掉 --check 重跑即可重写";
+
+if (checkOnly) {
+  const committed = readCommittedGolden();
+  if (committed.missing) {
     console.error(`${GOLDEN} 还不存在`);
     process.exitCode = 1;
-  }
-  if (current !== null) {
-    if (current === serialized) {
-      console.log(`golden 是最新的（${universe.length} 个版本，${Object.keys(peers).length} 条 peer）`);
-    } else {
-      const before = JSON.parse(current);
-      const added = universe.filter((v) => !before.universe.includes(v));
-      const removed = before.universe.filter((v) => !universe.includes(v));
-      for (const v of added) console.log(`+ universe ${v}`);
-      for (const v of removed) console.log(`- universe ${v}`);
-      for (const [name, entry] of Object.entries(peers)) {
-        const prior = before.peers?.[name];
-        if (!prior) {
-          console.log(`+ peer ${name} "${entry.range}" (new)`);
-          continue;
-        }
-        if (prior.range !== entry.range) console.log(`~ peer ${name} range ${prior.range} -> ${entry.range}`);
-        for (const v of entry.admitted.filter((x) => !prior.admitted.includes(x))) console.log(`+ ${name} admits ${v}`);
-        for (const v of prior.admitted.filter((x) => !entry.admitted.includes(x))) console.log(`- ${name} refuses ${v}`);
+  } else if (committed.error) {
+    // The golden is a GENERATED file, so an unreadable one means a truncated
+    // write / a hand edit / a merge marker — not a diff. Say that instead of
+    // letting a SyntaxError and its stack trace be the whole output.
+    console.error(`${GOLDEN} 存在但内容不可读（${committed.error}）— 它是生成物，不要手改；${STALE_HINT}`);
+    process.exitCode = 1;
+  } else if (committed.text === serialized) {
+    console.log(`golden 是最新的（${universe.length} 个版本，${Object.keys(peers).length} 条 peer）`);
+  } else {
+    const before = committed.value;
+    const added = universe.filter((v) => !before.universe.includes(v));
+    const removed = before.universe.filter((v) => !universe.includes(v));
+    for (const v of added) console.log(`+ universe ${v}`);
+    for (const v of removed) console.log(`- universe ${v}`);
+    for (const [name, entry] of Object.entries(peers)) {
+      const prior = before.peers?.[name];
+      if (!prior) {
+        console.log(`+ peer ${name} "${entry.range}" (new)`);
+        continue;
       }
-      console.error("golden 已过期 STALE — 去掉 --check 重跑即可重写");
-      process.exitCode = 1;
+      if (prior.range !== entry.range) console.log(`~ peer ${name} range ${prior.range} -> ${entry.range}`);
+      for (const v of entry.admitted.filter((x) => !prior.admitted.includes(x))) console.log(`+ ${name} admits ${v}`);
+      for (const v of prior.admitted.filter((x) => !entry.admitted.includes(x))) console.log(`- ${name} refuses ${v}`);
     }
+    console.error(`golden 已过期 STALE — ${STALE_HINT}`);
+    process.exitCode = 1;
   }
 } else {
   writeFileSync(GOLDEN, serialized);

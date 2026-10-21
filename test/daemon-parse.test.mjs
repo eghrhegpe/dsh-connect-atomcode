@@ -12,6 +12,7 @@ import {
   parseSseLine,
   defaultBinary,
   fallbackCandidates,
+  mayFallback,
   pickFallback,
   spawnDaemon,
 } from '../lib/daemon.js';
@@ -100,6 +101,18 @@ describe('daemon.js — pure helpers', () => {
     // it must be `''` — not `undefined`, which would reach `spawn()` as a target.
     assert.equal(pickFallback(table, () => false), '');
     assert.equal(pickFallback(fallbackCandidates('win32'), () => true), '');
+  });
+
+  it('mayFallback retries only what the plugin auto-detected, never a NAMED binary', () => {
+    // The regression this pins: the gate compared the RESOLVED target with
+    // `defaultBinary()`, so `ATOMCODE_BIN=atomcode` — a NAMING that happens to
+    // equal the default name — silently re-enabled the fallback the docblock
+    // promises not to take, and would run a different executable than the one
+    // the user named on a failing install.
+    assert.equal(mayFallback(''), true, 'nothing named = auto-detected = eligible');
+    assert.equal(mayFallback('atomcode'), false, 'the default NAME is still a NAME');
+    assert.equal(mayFallback('atomcode.exe'), false);
+    assert.equal(mayFallback('/opt/homebrew/bin/atomcode'), false, 'an absolute path is a name too');
   });
 
   it('parseSseLine handles empty data payload', () => {

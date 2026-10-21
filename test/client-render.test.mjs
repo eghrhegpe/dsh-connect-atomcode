@@ -318,7 +318,14 @@ const FULL = {
     lastCheckedAt: NOW,
     downMessage: '',
   },
-  binary: { configured: 'D:\\tools\\atomcode.exe', env: '', source: 'path' },
+  binary: {
+    configured: 'D:\\tools\\atomcode.exe',
+    env: '',
+    // The rung that answered: a configured path. The host sends
+    // `config` | `env` | `auto`; the ENOENT sentence reads this to decide
+    // whether the macOS fallback was even eligible (see the spawn tests).
+    source: 'config',
+  },
   config: {
     approvalMode: 'bypass',
     approvalModeRejected: null,
@@ -613,7 +620,7 @@ describe('client render — the detail panel', () => {
         spawnFallback: true,
         downMessage: '本机 13459 没有服务在监听',
       },
-      binary: { configured: '', env: '', source: 'path' },
+      binary: { configured: '', env: '', source: 'auto' },
     };
     const { tree } = await renderPanel(snapshot);
     const t = text(tree);
@@ -621,6 +628,60 @@ describe('client render — the detail panel', () => {
     assert.ok(t.includes('/opt/homebrew/bin/atomcode'), `the executable that ran must be named: ${t}`);
     assert.ok(t.includes('binary'), 'the fix must point at the one knob that overrides the search');
     assert.ok(t.includes('绝对路径'), 'the action, not just the diagnosis');
+    // Nothing was NAMED (`source: 'auto'`), so the fallback candidates really
+    // were eligible and the promise is not a lie.
+    assert.ok(t.includes('/opt/homebrew/bin'), 'the auto-detected case may name the fallback roots it tried');
+  });
+
+  it('does not promise a fallback to a reader who NAMED the binary', async () => {
+    // The host only retries the macOS candidates when NOTHING was named
+    // (`mayFallback`); a `binary` config path or `ATOMCODE_BIN` is the user
+    // naming an executable. Promising "/opt/homebrew/bin will be tried" to that
+    // reader sends them hunting for a retry that never happens — the sentence
+    // must branch on `binary.source`, not on the code alone.
+    const snapshot = {
+      ...FULL,
+      daemon: {
+        ...FULL.daemon,
+        up: false,
+        starting: false,
+        spawnTried: true,
+        spawnBinary: 'atomcode',
+        spawnError: 'ENOENT',
+        downMessage: '本机 13459 没有服务在监听',
+      },
+      binary: { configured: '', env: 'atomcode', source: 'env' },
+    };
+    const { tree } = await renderPanel(snapshot);
+    const t = text(tree);
+    assert.ok(t.includes('ENOENT'), `the code is still the diagnosis: ${t}`);
+    assert.ok(t.includes('你点名的是这个文件'), `the named case must say the host will not look elsewhere: ${t}`);
+    assert.ok(!t.includes('/opt/homebrew/bin'), `a named binary never gets the fallback promise: ${t}`);
+  });
+
+  it('does not pair a HEALTHY daemon with a stale spawn failure', async () => {
+    // The host WRITES `spawnError`/`spawnBinary` but never CLEARS them, so a
+    // daemon that came up by another route (the user started one after a failed
+    // auto-start) left the panel showing "已自动拉起（ENOENT）" plus the install
+    // warning beside a healthy daemon. A code describes a failed ATTEMPT, and a
+    // running daemon has no failed attempt to describe.
+    const snapshot = {
+      ...FULL,
+      daemon: {
+        ...FULL.daemon,
+        up: true,
+        starting: false,
+        spawnTried: true,
+        spawnBinary: 'atomcode.exe',
+        spawnError: 'ENOENT',
+        downMessage: '',
+      },
+    };
+    const { tree } = await renderPanel(snapshot);
+    const t = text(tree);
+    assert.ok(t.includes('已自动拉起'), 'the healthy status still comes from the attempt history');
+    assert.ok(!t.includes('（ENOENT）'), `no OS code may ride on a running daemon: ${t}`);
+    assert.ok(!t.includes('装上 AtomCode'), `no install warning beside a running daemon: ${t}`);
   });
 
   it('words EACCES as the different fix it is', async () => {
@@ -652,8 +713,23 @@ describe('client render — the detail panel', () => {
     // `count`/`text` normalizers exist to prevent.
     const snapshot = {
       ...FULL,
-      daemon: { ...FULL.daemon, up: false, starting: false, spawnTried: true },
-      binary: { configured: '', env: '', source: 'path' },
+      // Built WITHOUT a spread of `FULL.daemon`: spreading it kept the three
+      // attempt fields (`spawnBinary` / `spawnError` / `spawnFallback`) that this
+      // case claims the older host does not send, so the test passed on a
+      // snapshot a current host would produce and proved nothing about a
+      // mid-upgrade one. Every field is listed by hand so "absent" is real.
+      daemon: {
+        up: false,
+        port: FULL.daemon.port,
+        autoStart: FULL.daemon.autoStart,
+        starting: false,
+        spawnTried: true,
+        spawnFailures: FULL.daemon.spawnFailures,
+        spawnAttempts: FULL.daemon.spawnAttempts,
+        lastCheckedAt: FULL.daemon.lastCheckedAt,
+        downMessage: FULL.daemon.downMessage,
+      },
+      binary: { configured: '', env: '', source: 'auto' },
     };
     const { tree } = await renderPanel(snapshot);
     const t = text(tree);

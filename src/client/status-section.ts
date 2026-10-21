@@ -373,8 +373,16 @@ export function createStatusSection(deps: StatusSectionDeps) {
       // and then failed to answer: that cause belongs to `未就绪原因`
       // (`downMessage`), and appending an OS code to it would send the reader to
       // install a binary that is already installed.
+      //
+      // AND IT IS GATED ON `!d.up`: the host only ever WRITES these two fields,
+      // it never CLEARS them when a daemon comes up by another route (the user
+      // started one by hand after a failed auto-start, or a second profile did),
+      // so an unconditional render printed "已自动拉起（ENOENT）" plus the
+      // install warning right beside a healthy daemon. A code describes a failed
+      // ATTEMPT; a running daemon has no failed attempt to describe. The rows
+      // below all gate on `!d.up` and this one now does too.
       const spawnBinary = text(d.spawnBinary);
-      const spawnError = text(d.spawnError);
+      const spawnError = d.up ? '' : text(d.spawnError);
       const spawnNoteText = spawnError ? `${spawnNote}（${spawnError}）` : spawnNote;
       // 自动探测（PATH） is true about the CONFIG and useless about the machine:
       // it names the rule, not the file. When the host reported an attempt, the
@@ -383,11 +391,20 @@ export function createStatusSection(deps: StatusSectionDeps) {
       const binRowText = spawnBinary ? `${binPath} → ${spawnBinary}` : binPath;
       // The two codes carry two different ACTIONS, so they get two different
       // sentences. Any other code is reported verbatim rather than guessed at.
+      //
+      // The ENOENT sentence also reads the binary's SOURCE, because the fallback
+      // candidates are only tried when NOTHING was named (`bin.source === 'auto'`
+      // — see the host's `fallbackCandidates` gate). A `binary` config path or an
+      // `ATOMCODE_BIN` value is the user naming an executable and the host does
+      // not quietly try a second one, so promising "/opt/homebrew/bin will be
+      // tried" to that reader sends them hunting for a retry that never happens.
       const spawnTrouble =
         spawnError === ''
           ? null
           : spawnError === 'ENOENT'
-            ? `没找到 ${spawnBinary || binPath}（PATH 里没有；macOS 上还会试 /opt/homebrew/bin 与 /usr/local/bin）。装上 AtomCode，或在插件配置里把 binary 写成绝对路径。`
+            ? bin.source === 'auto'
+              ? `没找到 ${spawnBinary || binPath}（PATH 里没有；macOS 上还会试 /opt/homebrew/bin 与 /usr/local/bin）。装上 AtomCode，或在插件配置里把 binary 写成绝对路径。`
+              : `没找到 ${spawnBinary || binPath}（你点名的是这个文件，宿主不会另找）。把它改成绝对路径，或删掉这个配置改用 PATH 自动探测。`
             : spawnError === 'EACCES'
               ? `${spawnBinary || binPath} 没有执行权限（EACCES）。给它加上可执行位，或在插件配置里改指另一个可执行文件。`
               : `拉起 daemon 时系统报了 ${spawnError}（去跑的是 ${spawnBinary || binPath}）。`;

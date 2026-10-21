@@ -1178,10 +1178,10 @@
 				const binPath = bin.configured || bin.env || "自动探测（PATH）";
 				const spawnNote = d.up ? d.spawnTried ? "已自动拉起" : "运行中" : d.starting ? "正在拉起…" : d.spawnTried ? "自动拉起失败" : "未触发自动拉起";
 				const spawnBinary = text(d.spawnBinary);
-				const spawnError = text(d.spawnError);
+				const spawnError = d.up ? "" : text(d.spawnError);
 				const spawnNoteText = spawnError ? `${spawnNote}（${spawnError}）` : spawnNote;
 				const binRowText = spawnBinary ? `${binPath} → ${spawnBinary}` : binPath;
-				const spawnTrouble = spawnError === "" ? null : spawnError === "ENOENT" ? `没找到 ${spawnBinary || binPath}（PATH 里没有；macOS 上还会试 /opt/homebrew/bin 与 /usr/local/bin）。装上 AtomCode，或在插件配置里把 binary 写成绝对路径。` : spawnError === "EACCES" ? `${spawnBinary || binPath} 没有执行权限（EACCES）。给它加上可执行位，或在插件配置里改指另一个可执行文件。` : `拉起 daemon 时系统报了 ${spawnError}（去跑的是 ${spawnBinary || binPath}）。`;
+				const spawnTrouble = spawnError === "" ? null : spawnError === "ENOENT" ? bin.source === "auto" ? `没找到 ${spawnBinary || binPath}（PATH 里没有；macOS 上还会试 /opt/homebrew/bin 与 /usr/local/bin）。装上 AtomCode，或在插件配置里把 binary 写成绝对路径。` : `没找到 ${spawnBinary || binPath}（你点名的是这个文件，宿主不会另找）。把它改成绝对路径，或删掉这个配置改用 PATH 自动探测。` : spawnError === "EACCES" ? `${spawnBinary || binPath} 没有执行权限（EACCES）。给它加上可执行位，或在插件配置里改指另一个可执行文件。` : `拉起 daemon 时系统报了 ${spawnError}（去跑的是 ${spawnBinary || binPath}）。`;
 				const quotaCard = h("div", { style: {
 					display: "flex",
 					flexDirection: "column",
@@ -2104,7 +2104,7 @@
 		function MessageAsk(props) {
 			const [note, setNote] = typeof useState === "function" ? useState("") : ["", () => {}];
 			const messageId = props && props.messageId;
-			const snapshot = typeof props.useChat === "function" ? props.useChat((state) => state) : null;
+			const snapshot = typeof props?.useChat === "function" ? props.useChat((state) => state) : null;
 			const onClick = () => {
 				let text = null;
 				try {
