@@ -78,9 +78,14 @@ const DECLARABLE = new Set(["category", "description.en", "description.zh"]);
 // a single-quoted scalar escapes a quote by doubling it (`model''s` for
 // `model's`), so unescape before comparing or every apostrophe reads as drift.
 //
-// Keep this parser identical to the offline gate's. The two tiers read the same
-// bytes; if they read them differently they can contradict each other about one
-// file, and then neither is believable.
+// This is the KNOWN-OLD parser, and it is no longer the offline gate's: that
+// half moved to the shared js-yaml reader in
+// test/helpers/submission-entry.mjs, while this networked tier still scans
+// lines. The two tiers therefore CAN read one file differently — an untested
+// divergence, not the guarantee this comment used to claim, and the reason the
+// shared helper's header lists this file as the remaining gap. Switching this
+// half to that parser is the fix; until then, a disagreement between the tiers
+// is not evidence about the submission.
 
 function parseEntry(text) {
   const lines = text.split("\n").map((line) => line.trim());

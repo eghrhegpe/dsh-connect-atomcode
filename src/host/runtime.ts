@@ -375,6 +375,17 @@ export function createRuntime({
       // Carry the CAUSE alongside the flag. Down is one bit; why it is down is
       // what the error reply and the panel actually need (see describeDaemonDown).
       stats.daemonDownReason = info.reason;
+      // A FAILED attempt stops describing the present the moment a daemon
+      // answers: our failure is then history (the user started one by hand, or
+      // a second profile did), and a snapshot pairing "up: true" with
+      // "spawnError: ENOENT" is a contradiction the next consumer has to
+      // re-derive the meaning of. Clear the whole failed attempt — the binary
+      // too, because a file we could not run is not the one serving.
+      if (stats.daemonUp && stats.spawnError !== '') {
+        stats.spawnError = '';
+        stats.spawnBinary = '';
+        stats.spawnFallback = false;
+      }
       // Surface which daemon protocol generation we are talking to (the panel
       // shows it; an unknown major is the plugin's earliest drift signal).
       if (info.version && info.version !== stats.daemonVersion) {

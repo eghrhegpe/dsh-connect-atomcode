@@ -284,8 +284,23 @@ export interface BinaryBranch {
   configured?: string | null;
   /** The `ATOMCODE_BIN` path. Absent (not null) when the variable is unset. */
   env?: string | null;
-  /** Which rung of `configured > env > auto` answered. */
-  source?: string | null;
+  /**
+   * Which rung of `configured > env > auto` answered — a CLOSED set, not a
+   * free string.
+   *
+   * `auto` means nothing was named: the daemon is resolved from PATH, and the
+   * host may still try its fallback candidates when the resolved name is not
+   * found. `config` / `env` mean the reader NAMED an executable, and the host
+   * does not quietly try a second one — so promising a fallback to them is
+   * false.
+   *
+   * The set is closed because the renderer branches on it: a host that does not
+   * report the source (an older one) must fall into the NEUTRAL branch, which
+   * promises no fallback behaviour at all. The old `string` type let that
+   * missing value land in the "you named it" branch and tell a reader who named
+   * nothing that the host would not look elsewhere.
+   */
+  source?: 'config' | 'env' | 'auto' | null;
   /** Never sent by this host; reserved for a probe-the-PATH result. */
   detected?: string | null;
 }

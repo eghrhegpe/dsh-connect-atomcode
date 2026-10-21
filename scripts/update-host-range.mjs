@@ -114,8 +114,15 @@ function readCommittedGolden() {
   let text;
   try {
     text = readFileSync(GOLDEN, "utf8");
-  } catch {
-    return { missing: true };
+  } catch (error) {
+    // ENOENT is the ONLY "not there yet" answer (a first run, before the
+    // generator has ever written the file). EACCES / EPERM / EBUSY mean the
+    // file IS there and this process cannot read it — a different problem with
+    // a different fix, so reporting it as "还不存在" sends the reader to re-run
+    // a generator that would fail on the same permission.
+    const code = error && typeof error.code === "string" ? error.code : "";
+    if (code === "ENOENT") return { missing: true };
+    return { readError: code || String(error) };
   }
   try {
     const value = JSON.parse(text);
@@ -132,6 +139,12 @@ if (checkOnly) {
   const committed = readCommittedGolden();
   if (committed.missing) {
     console.error(`${GOLDEN} 还不存在`);
+    process.exitCode = 1;
+  } else if (committed.readError) {
+    // The file is there and cannot be read — a permission or locking problem,
+    // NOT staleness and NOT a hand edit. "重跑即可重写" would be advice that
+    // cannot work until the permission is fixed.
+    console.error(`${GOLDEN} 读不了（${committed.readError}）— 文件在，但这个进程没有读它的权限（或它被占用）；先解决读权限再跑`);
     process.exitCode = 1;
   } else if (committed.error) {
     // The golden is a GENERATED file, so an unreadable one means a truncated

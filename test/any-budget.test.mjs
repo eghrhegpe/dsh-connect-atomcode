@@ -125,6 +125,18 @@ const key = (file) => relative(root, file).split(sep).join('/');
  * code. A regex literal's own contents still count (`/any/` reads as 1),
  * because telling regex from division needs a parser; that over-count is the
  * one this blunt rule accepts.
+ *
+ * ONE KNOWN RESIDUE, and it falls the OTHER way: a regex literal containing a
+ * closing brace inside an interpolation (`` `${ /}/.test(s) }` ``) closes the
+ * interpolation frame early, because braces are counted without knowing about
+ * regex literals — everything after it in that interpolation is then blanked as
+ * template text. Measured, not assumed: `` `${ /}/.test(s) } as any }` `` reads
+ * 0 where 1 is right. That is an undercount, the direction this rule otherwise
+ * refuses to fall on, and it is accepted rather than fixed: separating a regex
+ * from a division needs a real tokenizer, and a brace inside a regex inside an
+ * interpolation is rare enough that the blunt rule keeps its trade. A probe
+ * that pins the residue would be pinning a bug, so the shape is documented
+ * here instead.
  * @param {string} source
  * @returns {string[]} one blanked line per input line.
  */
@@ -430,7 +442,7 @@ describe('the any budget', () => {
     assert.strictEqual(
       counted,
       6,
-      `the probe counted ${counted}, expected 6 — four real annotations/returns, an interpolation, and the two cases the rule deliberately over-counts`,
+      `the probe counted ${counted}, expected 6 — five real \`any\`s (two of them inside interpolations) plus the one case the rule deliberately over-counts`,
     );
   });
 

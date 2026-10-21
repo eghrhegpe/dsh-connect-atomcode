@@ -659,12 +659,14 @@ describe('client render — the detail panel', () => {
     assert.ok(!t.includes('/opt/homebrew/bin'), `a named binary never gets the fallback promise: ${t}`);
   });
 
-  it('does not pair a HEALTHY daemon with a stale spawn failure', async () => {
-    // The host WRITES `spawnError`/`spawnBinary` but never CLEARS them, so a
-    // daemon that came up by another route (the user started one after a failed
-    // auto-start) left the panel showing "已自动拉起（ENOENT）" plus the install
-    // warning beside a healthy daemon. A code describes a failed ATTEMPT, and a
-    // running daemon has no failed attempt to describe.
+  it('does not credit a HEALTHY daemon to a FAILED attempt', async () => {
+    // A snapshot from a host that predates the host-side clearing: our attempt
+    // failed with ENOENT, yet a daemon is answering (the user started one by
+    // hand, or a second profile did). The panel used to read `spawnTried` alone
+    // and print "已自动拉起" — a causal claim the facts do not support: a FAILED
+    // attempt cannot have started the daemon that is up. It must fall back to
+    // the neutral "运行中", and the failed executable must not be shown as the
+    // one serving (the row's arrow names what RAN).
     const snapshot = {
       ...FULL,
       daemon: {
@@ -679,9 +681,38 @@ describe('client render — the detail panel', () => {
     };
     const { tree } = await renderPanel(snapshot);
     const t = text(tree);
-    assert.ok(t.includes('已自动拉起'), 'the healthy status still comes from the attempt history');
+    assert.equal(rowValue(tree, '拉起状态'), '运行中', 'a failed attempt must not be reported as our successful auto-start');
+    assert.ok(!t.includes('已自动拉起'), `no causal claim without a started process: ${t}`);
     assert.ok(!t.includes('（ENOENT）'), `no OS code may ride on a running daemon: ${t}`);
     assert.ok(!t.includes('装上 AtomCode'), `no install warning beside a running daemon: ${t}`);
+    assert.equal(rowValue(tree, 'AtomCode'), 'D:\\tools\\atomcode.exe', 'a binary that never ran must not be named as the one serving');
+  });
+
+  it('promises no fallback when the host does not say where the binary came from', async () => {
+    // `binary.source` is a closed set on this host, but an older host may omit
+    // it. Falling into the "you named it" branch then tells a reader who named
+    // nothing that the host will not look elsewhere; falling into the "auto"
+    // branch promises a retry we cannot vouch for. The third branch says only
+    // what is known: the file was not found, plus the two actions.
+    const snapshot = {
+      ...FULL,
+      daemon: {
+        ...FULL.daemon,
+        up: false,
+        starting: false,
+        spawnTried: true,
+        spawnBinary: 'atomcode',
+        spawnError: 'ENOENT',
+        downMessage: '本机 13459 没有服务在监听',
+      },
+      binary: { configured: '', env: '' },
+    };
+    const { tree } = await renderPanel(snapshot);
+    const t = text(tree);
+    assert.ok(t.includes('没找到 atomcode'), `the diagnosis must survive: ${t}`);
+    assert.ok(!t.includes('/opt/homebrew/bin'), `no fallback promise without a source: ${t}`);
+    assert.ok(!t.includes('你点名的是这个文件'), `no "you named it" claim without a source: ${t}`);
+    assert.ok(t.includes('装上 AtomCode'), 'the action the reader can take');
   });
 
   it('words EACCES as the different fix it is', async () => {

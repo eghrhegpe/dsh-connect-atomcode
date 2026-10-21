@@ -351,8 +351,17 @@ export function createStatusSection(deps: StatusSectionDeps) {
       const quotaExpiry = [quota.expires, quota.planWindow].filter(Boolean).join(' · ');
       const askAvg = ask.calls > 0 ? Math.round(ask.msTotal / ask.calls) : 0;
       const binPath = bin.configured || bin.env || '自动探测（PATH）';
+      // The last spawn attempt's outcome, as the two facts the panel needs.
+      // `spawnError` is `''` when the process actually STARTED and an OS code
+      // (ENOENT / EACCES) when it could not run at all — so "a binary really
+      // ran" is `spawnBinary` present AND no code. That pair is what the two
+      // claims below are made of: `spawnTried` alone is not enough, because it
+      // is equally true of a FAILED attempt.
+      const spawnBinary = text(d.spawnBinary);
+      const rawSpawnError = text(d.spawnError);
+      const startedByUs = spawnBinary !== '' && rawSpawnError === '';
       const spawnNote = d.up
-        ? d.spawnTried
+        ? startedByUs
           ? '已自动拉起'
           : '运行中'
         : d.starting
@@ -374,21 +383,22 @@ export function createStatusSection(deps: StatusSectionDeps) {
       // (`downMessage`), and appending an OS code to it would send the reader to
       // install a binary that is already installed.
       //
-      // AND IT IS GATED ON `!d.up`: the host only ever WRITES these two fields,
-      // it never CLEARS them when a daemon comes up by another route (the user
-      // started one by hand after a failed auto-start, or a second profile did),
-      // so an unconditional render printed "已自动拉起（ENOENT）" plus the
-      // install warning right beside a healthy daemon. A code describes a failed
-      // ATTEMPT; a running daemon has no failed attempt to describe. The rows
-      // below all gate on `!d.up` and this one now does too.
-      const spawnBinary = text(d.spawnBinary);
-      const spawnError = d.up ? '' : text(d.spawnError);
+      // AND IT IS GATED ON `!d.up`: a code describes a failed ATTEMPT, and a
+      // running daemon has no failed attempt to describe. The host now CLEARS
+      // the failed attempt once a daemon answers (a daemon that came up by
+      // another route — the user started one by hand, or a second profile did
+      // — means our failure is history), so the wire no longer pairs a healthy
+      // daemon with "we tried and failed". This gate stays as the fallback for
+      // an older host that still carries the stale pair.
+      const spawnError = d.up ? '' : rawSpawnError;
       const spawnNoteText = spawnError ? `${spawnNote}（${spawnError}）` : spawnNote;
       // 自动探测（PATH） is true about the CONFIG and useless about the machine:
-      // it names the rule, not the file. When the host reported an attempt, the
-      // row names the executable that attempt ran — falling back to the rule
-      // only when there was no attempt to report (older host, or nothing tried).
-      const binRowText = spawnBinary ? `${binPath} → ${spawnBinary}` : binPath;
+      // it names the rule, not the file. When the attempt actually RAN a
+      // binary, the row names it — but a FAILED attempt names a file that was
+      // never executed, and printing it after an arrow would claim that file is
+      // the one serving. The failure line below already names it, so the row
+      // falls back to the rule.
+      const binRowText = startedByUs ? `${binPath} → ${spawnBinary}` : binPath;
       // The two codes carry two different ACTIONS, so they get two different
       // sentences. Any other code is reported verbatim rather than guessed at.
       //
@@ -398,13 +408,19 @@ export function createStatusSection(deps: StatusSectionDeps) {
       // `ATOMCODE_BIN` value is the user naming an executable and the host does
       // not quietly try a second one, so promising "/opt/homebrew/bin will be
       // tried" to that reader sends them hunting for a retry that never happens.
+      //
+      // A host that does not report the source at all gets the NEUTRAL sentence:
+      // we do not know whether a fallback was eligible, so we promise neither
+      // "it will be tried" nor "it will not".
       const spawnTrouble =
         spawnError === ''
           ? null
           : spawnError === 'ENOENT'
             ? bin.source === 'auto'
               ? `没找到 ${spawnBinary || binPath}（PATH 里没有；macOS 上还会试 /opt/homebrew/bin 与 /usr/local/bin）。装上 AtomCode，或在插件配置里把 binary 写成绝对路径。`
-              : `没找到 ${spawnBinary || binPath}（你点名的是这个文件，宿主不会另找）。把它改成绝对路径，或删掉这个配置改用 PATH 自动探测。`
+              : bin.source === 'config' || bin.source === 'env'
+                ? `没找到 ${spawnBinary || binPath}（你点名的是这个文件，宿主不会另找）。把它改成绝对路径，或删掉这个配置改用 PATH 自动探测。`
+                : `没找到 ${spawnBinary || binPath}。装上 AtomCode，或在插件配置里把 binary 写成绝对路径。`
             : spawnError === 'EACCES'
               ? `${spawnBinary || binPath} 没有执行权限（EACCES）。给它加上可执行位，或在插件配置里改指另一个可执行文件。`
               : `拉起 daemon 时系统报了 ${spawnError}（去跑的是 ${spawnBinary || binPath}）。`;
