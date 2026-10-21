@@ -63,6 +63,7 @@
 | [`../cordis.patch.yml`](../cordis.patch.yml) | 要加配置字段 | bundle 声明与**全部配置项的注释**——字段的注释真源 |
 | [`../scripts/probes/`](../scripts/probes/) | 要复现上面那些实测 | 探针脚本（**含成本标注**：哪个零额度、哪个花一个真实回合）。结论在 docs/，脚本是结论的出处 |
 | [`../test/`](../test) | 改测试前 | 离线 + live 套件。**套件头注就是契约**，不是附件；离线链由 [`../scripts/test.mjs`](../scripts/test.mjs) 自动发现 |
+| [`test-runner.md`](./test-runner.md) | 看测试怎么跑 / 为什么不写死套件数 / 并行安全整治 | **测试运行器机制**：套件自动发现、一个套件一个进程、`npm test` 零额度零网络、默认并行与 dead-port 端口哨兵整治、墙钟上限（挂死探测器）、早年两条串行理由为何作废 |
 | [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) | 要确认来源与许可 | 上游移植来源、本机参照的本地代理、运行时依赖的官方二进制，三者的许可与出处 |
 | [`awesome-dsh-plugin-submission/`](../awesome-dsh-plugin-submission/) | 要向市场投稿 / 改过 description 后 | 市场投稿草稿 `eghrhegpe__dsh-connect-atomcode.yml`：头注逐个名词锚定了证据出处；投放步骤见 `RELEASING.md` §10 |
 
