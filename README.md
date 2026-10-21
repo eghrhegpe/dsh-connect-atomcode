@@ -200,7 +200,7 @@ ATOMCODE_LIVE_TURNS=1 npm run test:live
 | daemon 全部端点 / CLI 选项 / SSE 词表（实测速查） | [`docs/AtomCode-CLI与daemon接口参考.md`](docs/AtomCode-CLI与daemon接口参考.md) |
 | 额度显示的机制档案（面板座位、弹窗、daemon 拉起语义、解析拒绝表） | [`docs/CodingPlan-额度显示.md`](docs/CodingPlan-额度显示.md) |
 | 复现上面那些实测 | [`scripts/probes/`](scripts/probes/)（每个探针头注都写了成本：哪个零额度、哪个花一个真实回合） |
-| 要发一个新版本 | [`docs/RELEASING.md`](docs/RELEASING.md)，状态用 `node scripts/release-status.mjs` 查 |
+| 要发一个新版本 | [`RELEASING.md`](RELEASING.md)，状态用 `node scripts/release-status.mjs` 查 |
 
 ## 许可
 

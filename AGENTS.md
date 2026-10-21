@@ -274,7 +274,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 | 协议漂移（daemon 换版本后行为变了） | `test/protocol.test.mjs`（故意说错的假 daemon 载荷）+ `protocol` 分支（面板显示 `daemonVersion` / `quotaTextDrift`） |
 | 改测试前 | `test/` 各套件头注——**头注就是契约**，不是附件 |
 | 想知道某版本改了什么 | `CHANGELOG.md`（行为史；版本↔提交回查看 `git tag`） |
-| **发版到哪一步了 / 还缺什么** | `node scripts/release-status.mjs`（一条命令打印 `docs/RELEASING.md` §1 判定表的格子与最终闭环清单的 ✓/✗；`?` = 查不动，与 `✗` 不同） |
+| **发版到哪一步了 / 还缺什么** | `node scripts/release-status.mjs`（一条命令打印 `RELEASING.md` §1 判定表的格子与最终闭环清单的 ✓/✗；`?` = 查不动，与 `✗` 不同） |
 | 分不清某件事是「忘了做」还是「决定不做」 | `docs/DECISIONS.md` |
 | 复现 docs/ 里的实测 | `scripts/probes/`（每个脚本头注都写了成本） |
 | 来源与许可 | `THIRD_PARTY_NOTICES.md` |
@@ -285,7 +285,7 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
 - **没有 `docs/PITFALLS.md` 与 `docs/ARCHITECTURE.md`**——本插件没有兄弟插件那套事故史账本；
   三条事实 + 红线 + `docs/DECISIONS.md` 就是全部的判断依据。别照抄一份空的出来占位。
   （事故卷宗只有一份，按主题拆在 `docs/AtomGit-网关与-review-通路.md` 里。）
-- **发版手册在 `docs/RELEASING.md`**（状态判定表 + 不可逆点 + 动作顺序 + 本仓库特有坑，含 npm 内容核验与 GitHub Release 步骤）。核心纪律：版本号**单一真源**：
+- **发版手册在仓库根的 `RELEASING.md`**（状态判定表 + 不可逆点 + 动作顺序 + 本仓库特有坑，含 npm 内容核验与 GitHub Release 步骤）。核心纪律：版本号**单一真源**：
   `package.json` 的 `version`；`src/host/index.ts` 运行时读它、不存字面量。
   断言在 `test/wiring.test.mjs` 的 version-truth 套件（任何 src/host 文件再出现版本字面量就红；
   产物 `lib/index.js` 由构建生成，手改它等于没改）。
@@ -295,9 +295,9 @@ node test/quota.test.mjs   # 单套件（其余同理，改文件名即可）
   `the apply() split` / `the abort path`，不写版本号）。旧纪律是「发版时 grep 一遍对齐」，
   它失效过一次：手册把数量写死成 8 处，真去数时已经是 13 处。现在由 `test/wiring.test.mjs` 的
   「no src/ or test/ file carries a vX.Y.Z release label in prose」断言（扫 `src/` + `test/` + `tsdown.config.mjs`），
-  漏一处就红并报出行号；理由与迁移过程见 `docs/RELEASING.md` §3.1。
+  漏一处就红并报出行号；理由与迁移过程见 `RELEASING.md` §3.1。
   **发版打 git tag**：`git tag v<package.json version>`（版本号改定 + `npm run build` 产物落定后再打；
-  推荐先等 push master 的 CI 绿了再打 tag，顺序见 `docs/RELEASING.md` §6.1）。
+  推荐先等 push master 的 CI 绿了再打 tag，顺序见 `RELEASING.md` §6.1）。
   「某版本是哪次提交」回看 `git tag`，行为史靠 `CHANGELOG.md` + `git log --date=short`。
   发布形态与兄弟插件同款：`package.json` 的 `prepack: npm run build` + `files` 白名单 + `publishConfig.access`；
   **npm 发布要钉 `registry.npmjs.org`**——本机 `~/.npmrc` 的 registry 是只读镜像

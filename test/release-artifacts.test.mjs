@@ -22,7 +22,7 @@
  * DELIBERATELY NOT SHIPPED — and that is pinned too. `assets/` and
  * `screenshots.json` stay OUT of `files` on purpose: the market reads them from
  * the repository root (README.md §截图, AGENTS.md 的装载方式一节,
- * docs/RELEASING.md 的内容核验). The last assertion states that policy so that
+ * RELEASING.md 的内容核验). The last assertion states that policy so that
  * "someone added them to `files`" and "someone removed them from the repo" are
  * both visible as a red test pointing at the policy note, instead of a silent
  * policy change.
@@ -146,7 +146,7 @@ describe('发版产物 — npm 包声明的内容必须在磁盘上真实存在'
       if (coveredByFiles(rel) || coveredByFiles('screenshots.json')) {
         problems.push(
           `${rel} / screenshots.json 出现在 files 白名单里——本插件的截图是「仓库根可见、不进 npm 包」的既有策略` +
-            '（README.md §截图、docs/RELEASING.md 的内容核验）；改策略就要同步改这里与那两处说明',
+            '（README.md §截图、RELEASING.md 的内容核验）；改策略就要同步改这里与那两处说明',
         );
       }
     }

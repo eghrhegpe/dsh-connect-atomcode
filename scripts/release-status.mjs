@@ -2,7 +2,7 @@
 /**
  * release-status.mjs — 「发到哪一步了 / 还缺什么」的唯一跑法。
  *
- * 为什么存在。`docs/RELEASING.md` 的 §1 判定表与「最终闭环清单」一直是**散文 + 一份给人勾选的清单**，
+ * 为什么存在。`RELEASING.md` 的 §1 判定表与「最终闭环清单」一直是**散文 + 一份给人勾选的清单**，
  * 而本仓库其它纪律都有可执行门禁（`test/build-gate` 逐字节比产物、`test/docs-code-map` 比代码地图、
  * `test/wiring` 的 version-truth 套件断言 manifest 是版本唯一声明）。发版这一域因此是全仓库唯一「读过了也不会报错」的地方：
  * 2026-10-17 的 0.4.3 就是那样漏的——tag 推了、npm 发了、**Release 没建**，
@@ -266,7 +266,7 @@ if (ciMaster.state !== 'unknown') {
   detail(`master 头上那条：${ciMaster.value}（${ciMaster.why}）`);
 } 
 
-// ── 判定（照 docs/RELEASING.md §1 的格子，规则以那张表为准） ──────────────────
+// ── 判定（照 RELEASING.md §1 的格子，规则以那张表为准） ──────────────────
 const facts = {
   tag: tag === 'yes',
   master: onMaster === 'yes',

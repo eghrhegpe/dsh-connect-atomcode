@@ -33,7 +33,7 @@
  * broken input and one good one, so the second reason becomes a red test.
  *
  * Headings are collected with fenced code blocks skipped: `docs/README.md`'s
- * code map, `docs/RELEASING.md`'s shell transcripts and `README.md`'s PowerShell
+ * code map, `RELEASING.md`'s shell transcripts and `README.md`'s PowerShell
  * blocks all contain lines that begin with `#` and are not headings.
  */
 import assert from 'node:assert/strict';
@@ -295,7 +295,7 @@ describe('docs 引用完整性 — 扫描器自己活着（扫不到东西 ≠ �
     // 「目录读错了 / 过滤写歪了，于是每个判据都空着通过」。
     assert.ok(DOCS.length >= 8, `扫描面只有 ${DOCS.length} 份文档，明显不是 docs/ 的全集`);
     assert.ok(DOCS.includes('AGENTS.md'), '扫描面必须包含仓库根的 AGENTS.md');
-    assert.ok(DOCS.includes(join('docs', 'RELEASING.md')), '扫描面必须包含 docs/RELEASING.md');
+    assert.ok(DOCS.includes('RELEASING.md'), '扫描面必须包含仓库根的 RELEASING.md');
     assert.ok(DOCS.includes(join('docs', 'README.md')), '扫描面必须包含文档索引 docs/README.md');
     assert.ok(PROBES.length >= 5, `只认出 ${PROBES.length} 个探针，探测目录或过滤失效了`);
   });

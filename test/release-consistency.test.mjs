@@ -2,7 +2,7 @@
  * release-consistency.test.mjs — 发版链自己的离线门禁。
  *
  * 为什么存在。仓库其它纪律都有可执行的门禁（`build-gate` 逐字节比产物、`docs-code-map` 比代码地图、
- * `docs-integrity` 比文档引用、`wiring` 比两处版本号），唯独**发版链**只有 `docs/RELEASING.md` 的散文
+ * `docs-integrity` 比文档引用、`wiring` 比两处版本号），唯独**发版链**只有 `RELEASING.md` 的散文
  * 加一份给人勾选的清单。2026-10-17 那次 0.4.3 发版就是那样漏的：tag 推了、npm 发了、Release 没建，
  * 而清单把 CI 绿写成了「推荐」——**读过了不会报错**。凡是「只能靠人记得」的步骤，就会漏第二次。
  *
@@ -15,7 +15,7 @@
  *
  * 刻意**不**做的事：不查 npm 是否已发、不查 Release 是否存在、不查 CI 结论。那些是**需要网络的事实**，
  * 只能是 `scripts/release-status.mjs` 的输出（本仓库的测试不许联网）。这个套件只保证「仓库内可自证的部分」
- * 不会说谎；两者合起来才是 `docs/RELEASING.md` §1 判定表的可执行版本。
+ * 不会说谎；两者合起来才是 `RELEASING.md` §1 判定表的可执行版本。
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
