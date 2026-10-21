@@ -55,3 +55,21 @@ export const APPROVAL_MODES_TEXT = APPROVAL_MODES.join(' / ');
  */
 export const REVIEW_BRIEF_MODES = ['always', 'when-empty', 'never'] as const;
 export type ReviewBriefMode = (typeof REVIEW_BRIEF_MODES)[number];
+
+/**
+ * The range `ask_max_rounds` accepts: an integer in 0..1000, where 0 means
+ * "no ceiling" (the daemon governs the round count instead).
+ *
+ * A range, not an enum — but it belongs here for the same reason the two enums
+ * do: the HOST validates against it and the PANEL has to refuse the same
+ * values. The panel used to parse the typed text with `parseInt` and treat a
+ * NaN as "clear the override" — and `null` means CLEAR on the host side, so a
+ * typo silently ERASED the user's own ceiling instead of being refused (and
+ * the host's own `askMaxRounds must be an integer` guard never saw the value,
+ * because the client had already rewritten it into a legal one). `parseInt` is
+ * lenient in the other direction too: `12abc` became `12`, and `1e5` became
+ * `1`. Two copies of the rule is how that happened; one copy, shared, is how
+ * it cannot.
+ */
+export const ASK_MAX_ROUNDS_MIN = 0;
+export const ASK_MAX_ROUNDS_MAX = 1000;

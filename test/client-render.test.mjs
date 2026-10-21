@@ -1645,6 +1645,59 @@ describe('client render — the panel-settings controls POST the fields the rout
     );
   });
 
+  it('a malformed round count is refused, not rewritten into a destructive write', async () => {
+    // The panel used to `parseInt` the typed text and read a NaN as "clear the
+    // override" — and `null` means CLEAR on the host side, so `abc` silently
+    // ERASED the user's own round ceiling while the host's integer guard never
+    // saw the value. A refused input must not reach the wire at all.
+    await withFetch(
+      async (call) => okResponse(FULL),
+      async (calls) => {
+        const handle = await mount({
+          script: [FULL, null, NOW, false, '', false, '', true, '', false, '', false, '', false, '', '', 'abc'],
+        });
+        const tree = handle.panel({ view: 'page' });
+        const input = find(tree, (n) => n.type === 'input' && n.props['aria-label'] === ROUNDS_LABEL);
+        assert.ok(input, 'the rounds input must render');
+        const flex = find(tree, (n) => Array.isArray(n.children) && n.children.includes(input));
+        const save = flex.children.find((c) => c && typeof c === 'object' && c.type === 'button');
+        assert.ok(save, 'the save button must sit beside the input');
+        await save.props.onClick();
+
+        const write = calls.find((c) => c.url === PANEL_SETTINGS_PATH);
+        assert.equal(write, undefined, 'a value the host would refuse must not be POSTed at all');
+        const note = handle.react.published.find((v) => typeof v === 'string' && v.includes('轮数'));
+        assert.ok(note, `the refusal must be shown to the user: ${JSON.stringify(handle.react.published)}`);
+        assert.ok(note.includes('abc'), 'the refusal must name what was typed');
+      },
+    );
+  });
+
+  it('the panel refuses the lenient readings parseInt would have taken', async () => {
+    // `parseInt('12abc')` was 12 and `parseInt('1e5')` was 1 — the panel used to
+    // store a number the user never typed. The typed text is now read strictly.
+    for (const typed of ['12abc', '1e5', '-5', '1001']) {
+      await withFetch(
+        async (call) => okResponse(FULL),
+        async (calls) => {
+          const handle = await mount({
+            script: [FULL, null, NOW, false, '', false, '', true, '', false, '', false, '', false, '', '', typed],
+          });
+          const tree = handle.panel({ view: 'page' });
+          const input = find(tree, (n) => n.type === 'input' && n.props['aria-label'] === ROUNDS_LABEL);
+          assert.ok(input, 'the rounds input must render');
+          const flex = find(tree, (n) => Array.isArray(n.children) && n.children.includes(input));
+          const save = flex.children.find((c) => c && typeof c === 'object' && c.type === 'button');
+          assert.ok(save, 'the save button must sit beside the input');
+          await save.props.onClick();
+
+          const write = calls.find((c) => c.url === PANEL_SETTINGS_PATH);
+          assert.equal(write, undefined, `"${typed}" must not reach the wire`);
+        },
+      );
+    }
+  });
+
   it('the approval and rounds option lists are the SHARED closed sets, not a client-side copy', async () => {
     const { APPROVAL_MODES, REVIEW_BRIEF_MODES } = await import('../lib/closed-sets.js');
     const handle = await renderPanel(FULL);

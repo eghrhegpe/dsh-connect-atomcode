@@ -20,7 +20,7 @@
 import type { ReactElement } from 'react';
 import { S } from './styles.ts';
 import { boundaryTag, boundaryVerdict } from './rows.ts';
-import { APPROVAL_MODES, REVIEW_BRIEF_MODES } from '../shared/closed-sets.ts';
+import { APPROVAL_MODES, REVIEW_BRIEF_MODES, ASK_MAX_ROUNDS_MIN, ASK_MAX_ROUNDS_MAX } from '../shared/closed-sets.ts';
 
 /**
  * Everything `PanelSettingsControls` needs that is bound to the app's React
@@ -174,13 +174,36 @@ export function createPanelControls(deps: PanelControlsDeps) {
       if (typeof reload === 'function') void reload();
     };
 
-    /** Only saves when the value differs from the current server state. */
+    /**
+     * Only saves when the value differs from the current server state.
+     *
+     * The typed text is validated HERE, before it becomes a request. It used to
+     * be `parseInt` plus "a NaN means null" — and `null` means "clear the
+     * override" on the host side, so typing `abc` silently ERASED the user's
+     * own round ceiling, while the host's `askMaxRounds must be an integer`
+     * guard never saw the bad value (the client had already rewritten it into a
+     * legal one). `parseInt` was lenient the other way too: `12abc` became
+     * `12`, `1e5` became `1`. A malformed number must be refused HERE, with a
+     * named reason, not translated into a destructive write.
+     */
     const saveRounds = async () => {
       if (roundsValue === currentRoundsStr) return; // no-op: compare the STRING form
+      const typed = roundsValue.trim();
+      let next: number | null;
+      if (typed === '') {
+        next = null; // the documented "clear the override" spelling
+      } else {
+        const parsed = /^\d+$/.test(typed) ? Number(typed) : Number.NaN;
+        if (!Number.isInteger(parsed) || parsed < ASK_MAX_ROUNDS_MIN || parsed > ASK_MAX_ROUNDS_MAX) {
+          setRoundsError(
+            `轮数必须是 ${ASK_MAX_ROUNDS_MIN}-${ASK_MAX_ROUNDS_MAX} 的整数（0 = 不限制），当前是「${typed}」`,
+          );
+          return;
+        }
+        next = parsed;
+      }
       setRoundsPending(true);
       setRoundsError('');
-      const num = roundsValue === '' ? null : parseInt(roundsValue, 10);
-      const next = num === null || Number.isNaN(num) ? null : num;
       const result = await postPanelSettings({ askMaxRounds: next });
       setRoundsPending(false);
       if (!result.ok) {

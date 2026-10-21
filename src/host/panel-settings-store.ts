@@ -41,7 +41,7 @@ import {
   writeVersionedDoc,
   foreignVersionRefusal,
 } from './state-file.ts';
-import { APPROVAL_MODES, REVIEW_BRIEF_MODES } from '../shared/closed-sets.ts';
+import { APPROVAL_MODES, REVIEW_BRIEF_MODES, ASK_MAX_ROUNDS_MIN, ASK_MAX_ROUNDS_MAX } from '../shared/closed-sets.ts';
 
 /** Shape version this build writes. */
 export const PANEL_SETTINGS_VERSION = 1;
@@ -175,8 +175,12 @@ export function normalizeAskMaxRounds(raw: unknown) {
   if (typeof raw !== 'number' || !Number.isInteger(raw)) {
     return { ok: false, value: null, error: `askMaxRounds must be an integer (0 = unlimited), got ${typeof raw}` };
   }
-  if (raw < 0 || raw > 1000) {
-    return { ok: false, value: null, error: `askMaxRounds must be 0-1000, got ${raw}` };
+  if (raw < ASK_MAX_ROUNDS_MIN || raw > ASK_MAX_ROUNDS_MAX) {
+    return {
+      ok: false,
+      value: null,
+      error: `askMaxRounds must be ${ASK_MAX_ROUNDS_MIN}-${ASK_MAX_ROUNDS_MAX}, got ${raw}`,
+    };
   }
   return { ok: true, value: raw, error: '' };
 }

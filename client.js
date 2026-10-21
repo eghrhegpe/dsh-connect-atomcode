@@ -1529,6 +1529,7 @@
 		"when-empty",
 		"never"
 	];
+	const ASK_MAX_ROUNDS_MAX = 1e3;
 
 //#endregion
 //#region src/client/panel-controls.ts
@@ -1632,13 +1633,34 @@
 				}
 				if (typeof reload === "function") reload();
 			};
-			/** Only saves when the value differs from the current server state. */
+			/**
+			* Only saves when the value differs from the current server state.
+			*
+			* The typed text is validated HERE, before it becomes a request. It used to
+			* be `parseInt` plus "a NaN means null" — and `null` means "clear the
+			* override" on the host side, so typing `abc` silently ERASED the user's
+			* own round ceiling, while the host's `askMaxRounds must be an integer`
+			* guard never saw the bad value (the client had already rewritten it into a
+			* legal one). `parseInt` was lenient the other way too: `12abc` became
+			* `12`, `1e5` became `1`. A malformed number must be refused HERE, with a
+			* named reason, not translated into a destructive write.
+			*/
 			const saveRounds = async () => {
 				if (roundsValue === currentRoundsStr) return;
+				const typed = roundsValue.trim();
+				let next;
+				if (typed === "") next = null;
+				else {
+					const parsed = /^\d+$/.test(typed) ? Number(typed) : NaN;
+					if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1e3) {
+						setRoundsError(`轮数必须是 ${0}-${ASK_MAX_ROUNDS_MAX} 的整数（0 = 不限制），当前是「${typed}」`);
+						return;
+					}
+					next = parsed;
+				}
 				setRoundsPending(true);
 				setRoundsError("");
-				const num = roundsValue === "" ? null : parseInt(roundsValue, 10);
-				const result = await postPanelSettings({ askMaxRounds: num === null || Number.isNaN(num) ? null : num });
+				const result = await postPanelSettings({ askMaxRounds: next });
 				setRoundsPending(false);
 				if (!result.ok) {
 					setRoundsError("保存失败：" + result.error);
