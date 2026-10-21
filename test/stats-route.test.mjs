@@ -1133,6 +1133,75 @@ describe('stats route — auto-start on observation', () => {
     }
   });
 
+  it('the panel starts the daemon AGAIN when the one it started has died', async () => {
+    // The bug: the shared start promise was released ONLY when a start FAILED,
+    // so after the first SUCCESS `daemonStartPromise` stayed a resolved `true`
+    // FOREVER. Every later caller got that stale answer instead of a new
+    // attempt — and the panel's `void ensureDaemonStarted()` is exactly such a
+    // caller. The daemon can idle-exit (30min) or be killed long after a
+    // successful start, and then the panel said "not running" and could never
+    // start it again, while the tool path (which dropped a settled start of its
+    // own accord) kept working. The symptom is "the panel is dead, the tools
+    // are fine" — and no test could see it, because every start in the suite
+    // FAILED (a closed port), and a failed start released the slot even then.
+    //
+    // So this case is built around a SUCCESSFUL start: the daemon is a fake
+    // that answers /health, and it comes up WHILE the start is still polling.
+    // The port is a fresh sentinel, because the daemon has to be absent at
+    // mount time (the first observation is what triggers the start) and present
+    // a moment later.
+    const port = await requireDeadPort(sentinelPort(14));
+    const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-restart-')), 'sessions.json');
+    /** @type {import('node:http').Server | null} */
+    let server = null;
+    try {
+      const route = mountRoute({
+        statePath,
+        port,
+        // 0 = retry on the next poll: the cooldown must not be what makes the
+        // second start possible, or the case would pass for the wrong reason.
+        extra: { ...failingStart, daemon_retry_secs: 0 },
+      });
+      // 1. The panel is looked at while the daemon is down → the start begins.
+      const first = (await callRoute(route, { headers: { host: '127.0.0.1:3080' } })).body;
+      assert.equal(first.daemon.spawnTried, true, 'observing the panel must trigger the start');
+      // 2. The daemon comes up while the start is polling → the start SUCCEEDS.
+      server = createServer(fakeQuotaHandler([]));
+      await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+      const up = await waitFor(
+        async () => {
+          const body = (await callRoute(route, { headers: { host: '127.0.0.1:3080' } })).body;
+          return body.daemon.starting === false && body.daemon.up === true ? body : null;
+        },
+        'the start to succeed against the daemon that came up',
+      );
+      assert.equal(up.daemon.spawnAttempts, 1, 'precondition: exactly one start so far');
+      // 3. The daemon dies. The panel's next observation has to start it AGAIN.
+      await new Promise((resolve) => {
+        server.closeAllConnections?.();
+        server.close(resolve);
+      });
+      server = null;
+      const restarted = await waitFor(
+        async () => {
+          const body = (await callRoute(route, { headers: { host: '127.0.0.1:3080' } })).body;
+          return body.daemon.spawnAttempts >= 2 ? body : null;
+        },
+        'the panel to start the daemon again after it died',
+      );
+      assert.ok(
+        restarted.daemon.spawnAttempts >= 2,
+        'a daemon that died after a successful start must be startable again from the panel',
+      );
+    } finally {
+      if (server) {
+        server.closeAllConnections?.();
+        await new Promise((resolve) => server.close(resolve));
+      }
+      rmSync(dirname(statePath), { recursive: true, force: true });
+    }
+  });
+
   it('the snapshot exposes the daemon version and the drift signals', async () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'atomcode-proto-')), 'sessions.json');
     try {

@@ -416,6 +416,8 @@ export function createRuntime({
    * the next caller tries again — so installing AtomCode after mount is picked
    * up instead of the auto-start being dead for the mount's lifetime.
    *
+   * A SETTLED start is not a tombstone either — see the `finally` below.
+   *
    * @returns {Promise<boolean>} whether a daemon answered within the start poll.
    */
   let daemonStartPromise: Promise<boolean> | null = null;
@@ -433,7 +435,7 @@ export function createRuntime({
     stats.spawnTried = true;
     stats.spawnAttempts += 1;
     stats.lastSpawnAt = Date.now();
-    daemonStartPromise = (async () => {
+    const start: Promise<boolean> = (async () => {
       // Health first: this is what keeps a host restart — or a second profile —
       // from spawning a duplicate daemon against a port that is already served.
       if (await refreshHealth()) return true;
@@ -476,13 +478,29 @@ export function createRuntime({
       .catch(() => false)
       .finally(() => {
         stats.daemonStarting = false;
+        // Release the slot when it still holds THIS start. A start that has
+        // SETTLED is not a tombstone — neither a failure nor a success: the
+        // daemon can idle-exit (30min) or be killed long after a successful
+        // start, and the next caller has to be able to start it again. Before
+        // this, only a FAILED start released the slot, so after the first
+        // success `daemonStartPromise` stayed a resolved `true` FOREVER and
+        // every later caller got that stale answer instead of a new attempt —
+        // the panel's `void ensureDaemonStarted()` above all: the panel said
+        // "not running" and could never start it again, while the tool path
+        // (which discards a settled start of its own accord) kept working.
+        //
+        // The identity check matters: a NEWER start may have taken the slot
+        // while this one was settling, and evicting it would reopen the
+        // double-spawn window the shared promise exists to close.
+        if (daemonStartPromise === start) daemonStartPromise = null;
         if (stats.daemonUp === false) {
-          // Do not cache the failure: the next call (after the cooldown) retries.
-          daemonStartPromise = null;
+          // The start did not bring a daemon up: count it. (The slot is
+          // released either way — the next call retries after the cooldown.)
           stats.spawnFailures += 1;
         }
       });
-    return daemonStartPromise;
+    daemonStartPromise = start;
+    return start;
   }
 
   /** Resolves `false` as soon as `signal` aborts, so a caller can stop awaiting. */
@@ -519,10 +537,12 @@ export function createRuntime({
     // in-flight signal; it is set synchronously when the start begins and
     // cleared in its `finally`.
     //
-    // Only a SETTLED start may be discarded, so that a start which succeeded
-    // before the daemon idle-exited (30min) or was killed is re-evaluated
-    // instead of being trusted forever.
-    if (daemonStartPromise !== null && !stats.daemonStarting) daemonStartPromise = null;
+    // A SETTLED start no longer has to be discarded here: `ensureDaemonStarted`
+    // releases the slot itself when its start settles (success or failure), so
+    // the slot is non-null only while a start is in flight. This line used to
+    // be the tool path's own escape hatch — it was the only place a settled
+    // start was ever dropped, which is why the tool path could re-evaluate a
+    // daemon that had died while the panel path could not.
     const started = signal
       ? await Promise.race([ensureDaemonStarted(), waitForAbort(signal)])
       : await ensureDaemonStarted();

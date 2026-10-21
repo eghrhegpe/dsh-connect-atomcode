@@ -26,6 +26,8 @@
  *     10  output-budget mount
  *     13  client-render fixture fidelity mount (asserts the panel's `FULL`
  *         covers every key the real stats handler emits)
+ *     14  stats-route restart case (the daemon has to be ABSENT at mount time
+ *         and present a moment later, so it needs a port of its own)
  *    (7, 11 and 12 were the review CLI's mounts and probes. They went with the
  *    CLI: `atomcode_review` is an ask turn now, so those suites install no
  *    fake daemon at their own sentinel any more. The numbers are NOT reused —
