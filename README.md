@@ -1,8 +1,22 @@
-# dsh-connect-atomcode
+<h1 align="center">dsh-connect-atomcode</h1>
 
-[![npm](https://img.shields.io/npm/v/dsh-connect-atomcode)](https://www.npmjs.com/package/dsh-connect-atomcode)
-[![ci](https://github.com/eghrhegpe/dsh-connect-atomcode/actions/workflows/ci.yml/badge.svg)](https://github.com/eghrhegpe/dsh-connect-atomcode/actions/workflows/ci.yml)
-[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+<p align="center"><b>把本机已登录的 AtomCode（官方终端 AI 编程助手）接成 DeepSeek Harness 的独立第二意见。</b></p>
+
+<p align="center">
+  <a href="#安装">安装</a> ·
+  <a href="#它给你什么">工作原理</a> ·
+  <a href="CHANGELOG.md">更新日志</a> ·
+  <a href="https://github.com/eghrhegpe/dsh-connect-atomcode/issues">问题反馈</a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-connect-atomcode"><img src="https://img.shields.io/npm/v/dsh-connect-atomcode?style=flat-square&label=npm&color=cb3837" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/dsh-connect-atomcode"><img src="https://img.shields.io/npm/d18m/dsh-connect-atomcode?style=flat-square&label=downloads&color=cb3837" alt="npm downloads"></a>
+  <a href="https://github.com/eghrhegpe/dsh-connect-atomcode/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/eghrhegpe/dsh-connect-atomcode/ci.yml?branch=main&style=flat-square&label=tests" alt="test status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/eghrhegpe/dsh-connect-atomcode?style=flat-square" alt="MIT license"></a>
+  <a href="https://github.com/eghrhegpe/dsh-connect-atomcode/stargazers"><img src="https://img.shields.io/github/stars/eghrhegpe/dsh-connect-atomcode?style=flat-square" alt="GitHub stars"></a>
+  <a href="https://dshfind.com/plugins/eghrhegpe/dsh-connect-atomcode"><img src="https://dshfind.com/api/badge/eghrhegpe/dsh-connect-atomcode" alt="dshfind plugin"></a>
+</p>
 
 把本机已登录的 [AtomCode](https://atomgit.com/atomgit_atomcode/atomcode)（官方二进制，终端 AI 编程助手）接成 DeepSeek Harness 的**独立第二意见**。
 
