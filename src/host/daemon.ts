@@ -54,8 +54,9 @@ export const TOOLS_CAP = 30;
  *
  * The list IS the daemon's measured vocabulary, and the reference document is
  * its source of truth: `docs/AtomCode-CLI与daemon接口参考.md` §「`/chat` 的 SSE
- * 词表」records the eleven types the daemon was observed to send (measured
- * 2026-10-17), and a test reads that block and asserts this set covers it — so
+ * 词表」records the types the daemon was observed to send (measured
+ * 2026-10-17, plus 4 additive progress/input events observed 2026-10-23), and a test
+ * reads that block and asserts this set covers it — so
  * a word the daemon sends and the document records cannot quietly fall out of
  * the client's vocabulary.
  *
@@ -80,6 +81,15 @@ export const KNOWN_SSE_TYPES = new Set([
   'done',
   'error',
   'rate_limited',
+  // 2026-10-23 batch: a real unattended `/chat` turn emitted all four of these
+  // (daemon upgraded and started sending internal progress / user-input events),
+  // and until they were whitelisted every such turn tripped the drift alarm. They
+  // carry no data this client reads, so they are listed only to keep the alarm
+  // honest — the whole point of the vocabulary (see the block comment above).
+  'tool_output',
+  'tool_progress',
+  'user_input_request',
+  'user_input_resolved',
 ]);
 
 /** @returns {string} the base URL for one daemon port. */

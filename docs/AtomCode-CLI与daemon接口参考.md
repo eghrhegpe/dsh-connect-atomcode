@@ -248,9 +248,13 @@ tokens            {prompt, completion, total}
 done              {tokens, tool_calls, session_id, stats:{duration_ms,rounds,tool_calls,prompt_tokens,completion_tokens,cached_tokens}, stop_reason}
 error             {message}
 rate_limited      {reset_at_display, reset_label, secs_until_reset, auto_resuming, server_message}   ← 只在被限流时出现
+tool_output        {…}                        ← 工具输出增量（2026-10-23 升级后实测出现；无人值守回合也会发，本客户端只读不解析，已并回已知词汇）
+tool_progress      {…}                        ← 工具进度（同上）
+user_input_request {…}                        ← 向用户提问请求（无人值守回合理论上不出现，但 2026-10-23 升级后偶尔随流发出；已并回已知词汇，避免误报漂移）
+user_input_resolved {…}                       ← 提问已答复（同上）
 ```
 
-> 客户端词汇里还有 `permission_request {call_id, tool_name, reason, arguments, allow_all_bash}`、`user_input_request`、`policy_intervention` 三个事件（SPA 包内字符串），但**无人值守回合实测不出现**（2026-10-17，见下节）：headless daemon 对 ask 类工具自动放行，不会发请求等人答。
+> 客户端词汇里还有 `permission_request {call_id, tool_name, reason, arguments, allow_all_bash}`、`policy_intervention` 两个事件（SPA 包内字符串），但**无人值守回合实测不出现**（2026-10-17，见下节）：headless daemon 对 ask 类工具自动放行，不会发请求等人答。`user_input_request` / `user_input_resolved` 早先被记成"不出现"也"在客户端词汇里"，但直到 2026-10-23 才真正并回 `KNOWN_SSE_TYPES`——那之前一次升级让它们随流出现，每回合都误报"可能已升级"。现在两者都是已知词汇，不再触发漂移告警。
 
 ### `approval_mode` 的合法值与无人值守行为 `[实测 2026-10-17，5.2.3]`（探针：`scripts/probes/approval-mode.mjs`）
 
