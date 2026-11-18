@@ -78,7 +78,8 @@ bundle 形式（与本机 `dsh-connect-*` 同品类），三种装法任选：
 
 1. **npm 包**（普通用户，已发 registry）：`dsh plugin add dsh-connect-atomcode`；或在 `plugin_manager` 里 `install_bundle` 且 `target` 填 `dsh-connect-atomcode`
 2. **GitHub 直装**（走 git dep，装 `main`）：`dsh plugin add eghrhegpe/dsh-connect-atomcode`
-3. **本地开发**（link 开发副本，一条命令装/卸）：`dsh plugin --profile web add link:<开发目录>` 与 `dsh plugin --profile web remove dsh-connect-atomcode`。DSH CLI 代跑 pnpm，装完自动 reconcile `dsh.profile.bundles`（新 bundle 默认启用），不用手改 profile 的 `package.json` / `pnpm-lock` / `node_modules`；锁文件里 pnpm 会把绝对路径规范成相对 `link:../../plugins/...`。GUI 插件页只装 registry 包，`link:` 开发副本走 CLI
+3. **本地开发**（link 开发副本，一条命令装/卸）：`dsh plugin --profile web add link:<开发目录>`
+> **`github:` 直装**若报 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`：把 pnpm 打印的 `allowBuilds:` 那行加进 `~/.dsh/profiles/<profile>/pnpm-workspace.yaml`（桌面端即 `~/.dsh/profiles/desktop/pnpm-workspace.yaml`），再重试——`prepare` 现场构建 `lib/` 与 `client.js`。 与 `dsh plugin --profile web remove dsh-connect-atomcode`。DSH CLI 代跑 pnpm，装完自动 reconcile `dsh.profile.bundles`（新 bundle 默认启用），不用手改 profile 的 `package.json` / `pnpm-lock` / `node_modules`；锁文件里 pnpm 会把绝对路径规范成相对 `link:../../plugins/...`。GUI 插件页只装 registry 包，`link:` 开发副本走 CLI
 
 bundle 自带的 `cordis.patch.yml`（`dsh.bundle.patch`）自动声明插入行与全部配置项，无需再写 profile patch。**装完重启 DSH 进程**——patch 在启动时读取、Host 半边只在启动时加载一次；只改 `client.js` 刷新浏览器即可。
 

@@ -56,7 +56,7 @@ Host（Node/cordis）只做五件事：注册工具（+ 一个 `/atomcode-review
   `dsh plugin --profile web add link:C:\Users\zhujieling11\.dsh\plugins\dsh-connect-atomcode` 与
   `dsh plugin --profile web remove dsh-connect-atomcode`。GUI 插件页只装 registry 包，`link:` 开发副本走 CLI。
 - **这里有一条构建纪律，和 qoder / sensenova 同款**：改 `src/` → 跑 `npm run build` →
-  **源码与产物一起提交**。浏览器与 Host 执行的是磁盘上的**产物**，所以"只改源码不构建"= 改动不生效，
+  **产物由 `prepare` 在安装/发布时现场构建、不入库**。浏览器与 Host 执行的是磁盘上的**产物**，所以"只改源码不构建"= 改动不生效，
   "只改产物不改进源码"= 下一次构建就被抹掉。两条都由 `test/build-gate.test.mjs` 拦：
   它用真 `tsdown.config.mjs` 重跑一次构建，要求与提交的产物**逐字节**相同，跑不干净就红。
 - ⚠️ **两半都已迁移，但产物的形状不一样**（别拿一半的形状推另一半）：
@@ -78,9 +78,10 @@ Host（Node/cordis）只做五件事：注册工具（+ 一个 `/atomcode-review
   产物才是真正跑起来的东西，而 build-gate 保证产物就是 `src/` 的忠实构建。改测试导入时**别图省事
   指向 `src/host/*.ts`**——见上一条，那会让模块级接缝失效。
 - 桌面端走安装副本；以 `~/.dsh/profiles/{web,desktop}/node_modules` 里的实际 junction 为准。
-- **产物不许删、不许 gitignore**：pnpm 拒绝为 git 依赖跑构建脚本
-  （`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，逃生阀是安装方没有的 `allowBuilds`），
-  所以"让 `prepare` 在安装时构建"是**死路**——GitHub 直装源会拿到一个 `main`/`client` 不存在的包。
+- **产物不入库**：`lib/` 与根 `client.js` 由 `prepare` 在安装/发布时**现场构建、不入库**（gitignore）。
+  pnpm 对 git 依赖只在 `allowBuilds` 批准后跑 prepare，未批准报
+  `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`——安装方把 pnpm 打印的那行加进
+  `~/.dsh/profiles/<profile>/pnpm-workspace.yaml` 的 `allowBuilds` 即可（见 README 安装节）。
   完整理由写在 `tsdown.config.mjs` 头部，那里是这段纪律的真源。
 - **`client.js` 里几乎没有注释**：打包器保留声明前的 JSDoc，但**抹掉函数体内的注释**，
   而本插件把"为什么挑这个座位""为什么这个 deadline 是 4s"这类契约写在函数体里。
@@ -89,7 +90,7 @@ Host（Node/cordis）只做五件事：注册工具（+ 一个 `/atomcode-review
 - `.gitignore` 里 `node_modules/`、`dist/`、`/upstream/` 都是为了防误提交；探针与审查残留那两条
   （`/.probe-*.mjs`、`/.prev_*`）**只挡仓库根**——探针的正式位置是 `scripts/probes/`（**入库**，
   结论与脚本必须一起在，否则证据不可复现）。
-  `lib/`、`client.js`、`src/`、`test/`、`docs/`、`scripts/` **都要入库**（GitHub 直装源不跑 prepack）。
+  `src/`、`test/`、`docs/`、`scripts/` **都要入库**；`lib/` 与根 `client.js` 是构建产物、**不入库**（`prepare` 现场构建，见上）。
 - **`upstream/` 绝不入库，与兄弟插件一致**（sensenova / agnes / modelscope 三家都写了
   `/upstream/` 且 `git ls-files upstream/` 为 0）。理由**不是体积**（本仓库那份才 0.2 MB），
   而是它是**自带 `.git` 与 remote 的嵌套 clone**（`baimocn/atomcode-open-api`）：

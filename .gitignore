@@ -32,3 +32,9 @@ Thumbs.db
 # 结论请写进 docs/，别用文件占着仓库根）。
 /.probe-*.mjs
 /.prev_*
+# lib/ 与根 client.js 是**构建产物、不入库**（与兄弟插件 sensenova/modelscope 同款决策）：
+# DSH 市场的 github: 安装源走 pnpm git-dep，pnpm 对 git 依赖只在 allowBuilds 批准后
+# 跑 prepare（未批准报 ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED，并打印要加的那行）——
+# 产物由 prepare 在安装/发布时现场重建，不需要提交进仓；批准步骤见 README 安装节。
+lib/
+client.js

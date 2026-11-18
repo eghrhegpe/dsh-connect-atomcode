@@ -1,17 +1,19 @@
 // @ts-check
 /**
  * Build configuration — `src/` holds the sources; the root `client.js` and everything
- * under `lib/` are ARTIFACTS that stay VERSIONED.
+ * under `lib/` are ARTIFACTS built by `prepare` (`npm run build`) on install/publish,
+ * NOT committed (gitignored).
  *
- * Why the artifacts are committed rather than gitignored (this is a contract, not a
- * preference): the DSH marketplace installs plugins with pnpm, and pnpm refuses to run
- * build scripts for git dependencies outright (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`;
- * the escape hatch is an `allowBuilds` entry an installer does not have). So "drop the
- * committed output and let `prepare` build on install" is a DEAD END — `prepare` works
- * on an npm git install and NOT on a pnpm one. Without a committed artifact, the
- * GitHub-direct channel ships a package whose `main`/`client` does not exist.
+ * Why the artifacts are gitignored and rebuilt on install (this is a contract, not a
+ * preference): the DSH marketplace installs plugins with pnpm, and pnpm only runs build
+ * scripts for git dependencies after an `allowBuilds` approval
+ * (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` otherwise, and pnpm prints the exact
+ * allowBuilds line to add — the installer adds it to
+ * `~/.dsh/profiles/<profile>/pnpm-workspace.yaml`, see README install section). So
+ * "let `prepare` build on install" is the aligned path: the GitHub-direct channel ships
+ * sources, `prepare` builds `main`/`client` after approval.
  * `test/build-gate.test.mjs` fails the suite when an artifact goes STALE, so the
- * committed output can never drift from the sources it claims to be built from.
+ * built output can never drift from the sources it claims to be built from.
  *
  * This repository previously had NO build layer on purpose ("edit and refresh"), which
  * is why `AGENTS.md` said so. That changed; the discipline now is "edit `src/`, run

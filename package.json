@@ -51,6 +51,7 @@
     "host-range:check": "node scripts/update-host-range.mjs --check",
     "build": "tsdown",
     "prepack": "npm run build",
+  "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "coverage": "node scripts/test.mjs --coverage",
     "any:baseline": "node test/any-budget.test.mjs --update-baseline",
